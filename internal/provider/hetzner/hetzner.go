@@ -1,0 +1,217 @@
+// Package hetzner implements provider.Provider against the Hetzner Cloud API
+// using hcloud-go. It encodes the spike findings: server types are discovered by
+// SPEC at runtime (never hardcoded — S1/F3), and creation searches type x location
+// for an available combination (availability is sparse).
+package hetzner
+
+import (
+	"context"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/envcore/envcore/internal/provider"
+	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+)
+
+// LabelClusterID tags every resource so ListByTag can reconcile from provider
+// truth even if local state is lost (C4).
+const LabelClusterID = "envcore-cluster-id"
+
+// Hetzner is a provider.Provider backed by Hetzner Cloud.
+type Hetzner struct {
+	c          *hcloud.Client
+	arch       string
+	regionPref []string
+}
+
+// New returns a Hetzner provider. token must be a project-scoped API token.
+func New(token string) *Hetzner {
+	return &Hetzner{
+		c:          hcloud.NewClient(hcloud.WithToken(token)),
+		arch:       string(hcloud.ArchitectureX86),
+		regionPref: []string{"fsn1", "nbg1", "hel1"},
+	}
+}
+
+// Name implements provider.Provider.
+func (h *Hetzner) Name() string { return "hetzner" }
+
+// CreateServer discovers an available (type,location) by spec and provisions a
+// tagged server with the given cloud-init user-data.
+func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (provider.Server, error) {
+	minCores, minRAM, image := spec.MinCores, spec.MinRAMGB, spec.Image
+	if minCores == 0 {
+		minCores = 2
+	}
+	if minRAM == 0 {
+		minRAM = 2
+	}
+	if image == "" {
+		image = "ubuntu-24.04"
+	}
+
+	// 1) discover server types -> candidate names by spec (S1/F3)
+	sts, err := h.c.ServerType.All(ctx)
+	if err != nil {
+		return provider.Server{}, fmt.Errorf("list server types: %w", err)
+	}
+	byName := make(map[string]*hcloud.ServerType, len(sts))
+	infos := make([]typeInfo, 0, len(sts))
+	for _, st := range sts {
+		byName[st.Name] = st
+		infos = append(infos, typeInfo{
+			Name: st.Name, Cores: st.Cores, MemGB: float64(st.Memory),
+			Arch: string(st.Architecture), Deprecated: st.IsDeprecated(),
+		})
+	}
+	candidates := selectCandidates(infos, minCores, minRAM, h.arch)
+	if len(candidates) == 0 {
+		return provider.Server{}, fmt.Errorf("no server type matches spec (>=%dc/%dGB, %s)", minCores, minRAM, h.arch)
+	}
+
+	// 2) discover + order locations
+	locs, err := h.c.Location.All(ctx)
+	if err != nil {
+		return provider.Server{}, fmt.Errorf("list locations: %w", err)
+	}
+	locNames := make([]string, 0, len(locs))
+	locByName := make(map[string]*hcloud.Location, len(locs))
+	for _, l := range locs {
+		locNames = append(locNames, l.Name)
+		locByName[l.Name] = l
+	}
+	pref := h.regionPref
+	if len(spec.RegionPref) > 0 {
+		pref = spec.RegionPref
+	}
+	ordered := orderLocations(locNames, pref)
+
+	// 3) architecture-matched image
+	img, _, err := h.c.Image.GetByNameAndArchitecture(ctx, image, hcloud.Architecture(h.arch))
+	if err != nil {
+		return provider.Server{}, fmt.Errorf("lookup image %q: %w", image, err)
+	}
+	if img == nil {
+		return provider.Server{}, fmt.Errorf("image %q not found for arch %s", image, h.arch)
+	}
+
+	labels := map[string]string{LabelClusterID: spec.ClusterID}
+
+	// 4) search type x location until one is available
+	var lastErr error
+	for _, tname := range candidates {
+		st := byName[tname]
+		for _, lname := range ordered {
+			res, _, cerr := h.c.Server.Create(ctx, hcloud.ServerCreateOpts{
+				Name:             spec.Name,
+				ServerType:       st,
+				Image:            img,
+				Location:         locByName[lname],
+				UserData:         spec.UserData,
+				Labels:           labels,
+				StartAfterCreate: hcloud.Ptr(true),
+			})
+			if cerr != nil {
+				lastErr = cerr
+				if isAvailabilityErr(cerr) {
+					continue // try next location/type
+				}
+				return provider.Server{}, fmt.Errorf("create %s@%s: %w", tname, lname, cerr)
+			}
+			srv, werr := h.waitRunning(ctx, res.Server.ID)
+			if werr != nil {
+				return provider.Server{}, werr
+			}
+			return toServer(srv, spec.ClusterID), nil
+		}
+	}
+	return provider.Server{}, fmt.Errorf("no available type/location for spec; last error: %v", lastErr)
+}
+
+func (h *Hetzner) waitRunning(ctx context.Context, id int64) (*hcloud.Server, error) {
+	deadline := time.Now().Add(2 * time.Minute)
+	for {
+		srv, _, err := h.c.Server.GetByID(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if srv == nil {
+			return nil, fmt.Errorf("server %d vanished during boot", id)
+		}
+		if srv.Status == hcloud.ServerStatusRunning && srv.PublicNet.IPv4.IP != nil {
+			return srv, nil
+		}
+		if time.Now().After(deadline) {
+			return nil, fmt.Errorf("server %d not running within timeout", id)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+}
+
+// DestroyServer deletes by id. Idempotent: a missing server is success (H7).
+func (h *Hetzner) DestroyServer(ctx context.Context, id string) error {
+	sid, err := strconv.ParseInt(id, 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid server id %q: %w", id, err)
+	}
+	srv, _, err := h.c.Server.GetByID(ctx, sid)
+	if err != nil {
+		return err
+	}
+	if srv == nil {
+		return nil // already gone
+	}
+	_, err = h.c.Server.Delete(ctx, srv)
+	return err
+}
+
+// ListByTag returns all servers for a cluster — the reconcile source of truth (C4).
+func (h *Hetzner) ListByTag(ctx context.Context, clusterID string) ([]provider.Server, error) {
+	srvs, err := h.c.Server.AllWithOpts(ctx, hcloud.ServerListOpts{
+		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID + "=" + clusterID},
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]provider.Server, 0, len(srvs))
+	for _, s := range srvs {
+		out = append(out, toServer(s, clusterID))
+	}
+	return out, nil
+}
+
+func toServer(s *hcloud.Server, clusterID string) provider.Server {
+	ps := provider.Server{
+		ID:        strconv.FormatInt(s.ID, 10),
+		Name:      s.Name,
+		ClusterID: clusterID,
+	}
+	if s.ServerType != nil {
+		ps.Type = s.ServerType.Name
+	}
+	if s.Datacenter != nil && s.Datacenter.Location != nil {
+		ps.Region = s.Datacenter.Location.Name
+	}
+	if ip := s.PublicNet.IPv4.IP; ip != nil {
+		ps.IP = ip.String()
+	}
+	return ps
+}
+
+// isAvailabilityErr reports a "this type isn't orderable here" error (try next),
+// versus a real failure. Mirrors the spike's robust matching.
+func isAvailabilityErr(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "unsupported location") ||
+		strings.Contains(m, "unavailable") ||
+		strings.Contains(m, "resource_unavailable")
+}
+
+// compile-time assertion that *Hetzner satisfies the interface
+var _ provider.Provider = (*Hetzner)(nil)
