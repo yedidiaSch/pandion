@@ -23,6 +23,10 @@ type ServerSpec struct {
 	RegionPref []string
 	Image      string
 	UserData   string // cloud-init user-data (incl. injected ssh_keys host key)
+	// LoginPubKey, if set, is registered with the provider so it is installed
+	// into root's authorized_keys reliably (validated path, spike S1). cloud-init
+	// default-user semantics are NOT relied upon for the login key.
+	LoginPubKey string
 }
 
 // Server is a provisioned host.
@@ -47,4 +51,11 @@ type Provider interface {
 	ListByTag(ctx context.Context, clusterID string) ([]Server, error)
 	// Name identifies the backend (e.g. "hetzner", "mock").
 	Name() string
+}
+
+// AuxReaper is an optional Provider capability: clean up cluster-scoped auxiliary
+// resources (e.g. registered SSH keys) that are not servers. The orchestrator
+// calls it during Down after servers are destroyed, so nothing leaks (C4).
+type AuxReaper interface {
+	ReapAux(ctx context.Context, clusterID string) error
 }

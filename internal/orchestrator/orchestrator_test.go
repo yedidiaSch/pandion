@@ -23,7 +23,7 @@ func TestM0_UpThenDown_NoLeaks(t *testing.T) {
 	o, m := newOrch(t)
 	ctx := context.Background()
 
-	c, err := o.Up(ctx, "test-cluster", "node-a", "#cloud-config\n")
+	c, err := o.Up(ctx, "test-cluster", "node-a", "#cloud-config\n", "")
 	if err != nil {
 		t.Fatalf("up: %v", err)
 	}
@@ -40,6 +40,10 @@ func TestM0_UpThenDown_NoLeaks(t *testing.T) {
 	if m.Count() != 0 {
 		t.Fatalf("want 0 servers after down, got %d", m.Count())
 	}
+	// AuxReaper must be invoked during teardown so registered SSH keys don't leak.
+	if m.ReapAuxCalls != 1 {
+		t.Fatalf("want ReapAux called once, got %d", m.ReapAuxCalls)
+	}
 }
 
 // C4: down must reconcile from provider truth even when local state is gone.
@@ -47,7 +51,7 @@ func TestM0_Down_RecoversWithoutLocalState(t *testing.T) {
 	o, m := newOrch(t)
 	ctx := context.Background()
 
-	if _, err := o.Up(ctx, "c2", "n", ""); err != nil {
+	if _, err := o.Up(ctx, "c2", "n", "", ""); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	// simulate a lost/deleted local state file (e.g. CLI crashed, laptop wiped)
@@ -67,7 +71,7 @@ func TestM0_Down_Idempotent_And_RetriesTransientFailure(t *testing.T) {
 	o, m := newOrch(t)
 	ctx := context.Background()
 
-	if _, err := o.Up(ctx, "c3", "n", ""); err != nil {
+	if _, err := o.Up(ctx, "c3", "n", "", ""); err != nil {
 		t.Fatalf("up: %v", err)
 	}
 	m.FailDestroyOnce = true // first destroy attempt fails; retry should succeed

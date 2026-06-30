@@ -83,7 +83,7 @@ func runUp(args []string) {
 
 	switch p.Name() {
 	case "mock":
-		c, err := o.Up(context.Background(), *id, *node, "#cloud-config\n")
+		c, err := o.Up(context.Background(), *id, *node, "#cloud-config\n", "")
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
@@ -108,8 +108,9 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string) {
 	// 2) build hardened cloud-init that injects our host key (race-free, S1/F1)
 	userData := harden.BuildCloudInit(host.PrivatePEM, host.PublicAuthorized, login.PublicAuthorized)
 
-	// 3) provision (tagged; journaled state machine)
-	c, err := o.Up(ctx, id, node, userData)
+	// 3) provision (tagged; journaled state machine). The login key is registered
+	//    with the provider so it lands on root (validated path, S1).
+	c, err := o.Up(ctx, id, node, userData, login.PublicAuthorized)
 	must(err)
 	ip := c.Nodes[0].IP
 	fmt.Printf("UP (hetzner): cluster %q node %q running at %s (host fp %s)\n",
@@ -123,7 +124,10 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string) {
 	// 5) connect with the PINNED host key and run the command. Retry tolerates the
 	//    cloud-init window: until our key is installed, pinning rejects and we wait.
 	fmt.Println("connecting (host-key pinned; waiting for cloud-init)...")
-	out, runErr := envssh.RunWithRetry(ctx, ip+":22", "root", login.Signer, host.Public, runCmd, 5*time.Second)
+	onAttempt := func(n int, reason string) {
+		fmt.Printf("  attempt %d: %s\n", n, reason)
+	}
+	out, runErr := envssh.RunWithRetry(ctx, ip+":22", "root", login.Signer, host.Public, runCmd, 5*time.Second, onAttempt)
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
 	if runErr != nil {
 		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)
@@ -147,7 +151,7 @@ func runDown(args []string) {
 func runDemo() {
 	o := orchestrator.New(mock.New(), mustStore())
 	ctx := context.Background()
-	c, err := o.Up(ctx, "demo", "node-a", "#cloud-config\n")
+	c, err := o.Up(ctx, "demo", "node-a", "#cloud-config\n", "")
 	must(err)
 	fmt.Printf("UP    cluster=%q node=%q phase=%s\n", c.ID, c.Nodes[0].Name, c.Nodes[0].Phase)
 	must(o.Down(ctx, "demo"))

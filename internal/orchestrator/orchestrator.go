@@ -23,7 +23,8 @@ func New(p provider.Provider, s *state.Store) *Orchestrator {
 }
 
 // Up provisions a single-node cluster, journaling each transition before/after.
-func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData string) (*state.Cluster, error) {
+// loginPubKey (optional) is registered with the provider for root SSH access.
+func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData, loginPubKey string) (*state.Cluster, error) {
 	c := &state.Cluster{
 		ID:       clusterID,
 		Provider: o.P.Name(),
@@ -39,9 +40,10 @@ func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData str
 	}
 
 	srv, err := o.P.CreateServer(ctx, provider.ServerSpec{
-		Name:      nodeName,
-		ClusterID: clusterID,
-		UserData:  userData,
+		Name:        nodeName,
+		ClusterID:   clusterID,
+		UserData:    userData,
+		LoginPubKey: loginPubKey,
 	})
 	if err != nil {
 		c.Nodes[0].Phase = state.Failed
@@ -92,6 +94,14 @@ func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
 	}
 	if len(left) != 0 {
 		return fmt.Errorf("teardown incomplete: %d server(s) remain for %q", len(left), clusterID)
+	}
+
+	// clean up cluster-scoped auxiliary resources (e.g. registered SSH keys) so
+	// nothing leaks, if the provider supports it (C4).
+	if reaper, ok := o.P.(provider.AuxReaper); ok {
+		if rerr := reaper.ReapAux(ctx, clusterID); rerr != nil {
+			return fmt.Errorf("reap aux resources for %q: %w", clusterID, rerr)
+		}
 	}
 	return o.S.Close(clusterID)
 }
