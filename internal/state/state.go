@@ -26,6 +26,7 @@ const (
 type Node struct {
 	Name     string `json:"name"`
 	ServerID string `json:"server_id,omitempty"`
+	IP       string `json:"ip,omitempty"`
 	Phase    Phase  `json:"phase"`
 }
 
