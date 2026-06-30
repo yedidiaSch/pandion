@@ -1,0 +1,78 @@
+// Package mock is an in-memory Provider used for fast, free, offline tests.
+// Per the roadmap it is built in M0 and KEPT FOREVER as the CI backbone — the
+// orchestrator's logic is validated here without ever touching a cloud or spending money.
+package mock
+
+import (
+	"context"
+	"fmt"
+	"sync"
+
+	"github.com/envcore/envcore/internal/provider"
+)
+
+// Mock is a thread-safe, in-memory provider with simple failure injection.
+type Mock struct {
+	mu      sync.Mutex
+	seq     int
+	servers map[string]provider.Server
+
+	// FailDestroyOnce makes the next DestroyServer call fail exactly once,
+	// to exercise the orchestrator's retry path (risk H7).
+	FailDestroyOnce bool
+}
+
+// New returns an empty mock provider.
+func New() *Mock { return &Mock{servers: map[string]provider.Server{}} }
+
+// Name implements provider.Provider.
+func (m *Mock) Name() string { return "mock" }
+
+// CreateServer records a new server and returns it.
+func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provider.Server, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.seq++
+	s := provider.Server{
+		ID:        fmt.Sprintf("mock-%d", m.seq),
+		Name:      spec.Name,
+		ClusterID: spec.ClusterID,
+		Type:      "mock-small",
+		Region:    "mock-dc",
+		IP:        fmt.Sprintf("10.0.0.%d", m.seq),
+	}
+	m.servers[s.ID] = s
+	return s, nil
+}
+
+// DestroyServer removes a server. Idempotent: deleting an absent id is success.
+func (m *Mock) DestroyServer(_ context.Context, id string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.FailDestroyOnce {
+		m.FailDestroyOnce = false
+		return fmt.Errorf("mock: simulated transient destroy failure for %s", id)
+	}
+	delete(m.servers, id)
+	return nil
+}
+
+// ListByTag returns all servers for a cluster (the reconcile source of truth).
+func (m *Mock) ListByTag(_ context.Context, clusterID string) ([]provider.Server, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]provider.Server, 0, len(m.servers))
+	for _, s := range m.servers {
+		if s.ClusterID == clusterID {
+			out = append(out, s)
+		}
+	}
+	return out, nil
+}
+
+// Count is a test helper: number of live servers.
+func (m *Mock) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.servers)
+}

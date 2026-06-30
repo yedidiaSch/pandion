@@ -1,0 +1,11 @@
+# build output
+/envcore
+/cmd/envcore/envcore
+*.exe
+
+# local state written by the demo
+.envcore/
+
+# editor / OS
+.DS_Store
+*.swp
