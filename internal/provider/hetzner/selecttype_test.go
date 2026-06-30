@@ -33,6 +33,26 @@ func TestSelectCandidates_RespectsMinima(t *testing.T) {
 	}
 }
 
+func TestSearchPlan_RegionFirstVsCheapestType(t *testing.T) {
+	types := []string{"small", "big"} // smallest-first
+	locs := []string{"fsn1", "ash"}   // preference-first
+
+	// RegionFirst: exhaust fsn1 (small THEN big) before touching ash —
+	// stays in-region even if it means a bigger type.
+	region := searchPlan(types, locs, RegionFirst)
+	wantRegion := [][2]string{{"small", "fsn1"}, {"big", "fsn1"}, {"small", "ash"}, {"big", "ash"}}
+	if !reflect.DeepEqual(region, wantRegion) {
+		t.Fatalf("RegionFirst = %v, want %v", region, wantRegion)
+	}
+
+	// CheapestType: try the small type in every region before the big one.
+	cheap := searchPlan(types, locs, CheapestType)
+	wantCheap := [][2]string{{"small", "fsn1"}, {"small", "ash"}, {"big", "fsn1"}, {"big", "ash"}}
+	if !reflect.DeepEqual(cheap, wantCheap) {
+		t.Fatalf("CheapestType = %v, want %v", cheap, wantCheap)
+	}
+}
+
 func TestOrderLocations_PrefersThenRest(t *testing.T) {
 	all := []string{"sin", "ash", "fsn1", "nbg1", "hil", "hel1"}
 	got := orderLocations(all, []string{"fsn1", "nbg1", "hel1"})

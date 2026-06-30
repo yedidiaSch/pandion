@@ -68,3 +68,37 @@ func orderLocations(all, preferred []string) []string {
 	}
 	return out
 }
+
+// SearchMode controls type-vs-location priority when availability is sparse
+// (risk R15 / finding F8).
+type SearchMode int
+
+const (
+	// RegionFirst (default): honor the preferred region first, then the smallest
+	// available type THERE — keeps nodes close (latency, in-region egress).
+	RegionFirst SearchMode = iota
+	// CheapestType: pick the cheapest available type even if only orderable in a
+	// far region. Saves a few cents at the cost of proximity.
+	CheapestType
+)
+
+// searchPlan returns the ordered (type, location) pairs to attempt.
+// types are smallest-first; locs are preference-ordered.
+func searchPlan(types, locs []string, mode SearchMode) [][2]string {
+	plan := make([][2]string, 0, len(types)*len(locs))
+	if mode == CheapestType {
+		for _, t := range types {
+			for _, l := range locs {
+				plan = append(plan, [2]string{t, l})
+			}
+		}
+		return plan
+	}
+	// RegionFirst (default): exhaust a region's types before moving on.
+	for _, l := range locs {
+		for _, t := range types {
+			plan = append(plan, [2]string{t, l})
+		}
+	}
+	return plan
+}

@@ -24,15 +24,37 @@ type Hetzner struct {
 	c          *hcloud.Client
 	arch       string
 	regionPref []string
+	mode       SearchMode
+}
+
+// Option configures a Hetzner provider.
+type Option func(*Hetzner)
+
+// WithSearchMode sets the type/location search ordering (default RegionFirst).
+func WithSearchMode(m SearchMode) Option { return func(h *Hetzner) { h.mode = m } }
+
+// WithRegionPref overrides the preferred locations, in priority order.
+func WithRegionPref(regions ...string) Option {
+	return func(h *Hetzner) {
+		if len(regions) > 0 {
+			h.regionPref = regions
+		}
+	}
 }
 
 // New returns a Hetzner provider. token must be a project-scoped API token.
-func New(token string) *Hetzner {
-	return &Hetzner{
+// Default search mode is RegionFirst (proximity over a marginal price delta).
+func New(token string, opts ...Option) *Hetzner {
+	h := &Hetzner{
 		c:          hcloud.NewClient(hcloud.WithToken(token)),
 		arch:       string(hcloud.ArchitectureX86),
 		regionPref: []string{"fsn1", "nbg1", "hel1"},
+		mode:       RegionFirst,
 	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h
 }
 
 // Name implements provider.Provider.
@@ -99,33 +121,31 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 
 	labels := map[string]string{LabelClusterID: spec.ClusterID}
 
-	// 4) search type x location until one is available
+	// 4) search type x location until one is available, ordered per mode (F8/R15)
 	var lastErr error
-	for _, tname := range candidates {
-		st := byName[tname]
-		for _, lname := range ordered {
-			res, _, cerr := h.c.Server.Create(ctx, hcloud.ServerCreateOpts{
-				Name:             spec.Name,
-				ServerType:       st,
-				Image:            img,
-				Location:         locByName[lname],
-				UserData:         spec.UserData,
-				Labels:           labels,
-				StartAfterCreate: hcloud.Ptr(true),
-			})
-			if cerr != nil {
-				lastErr = cerr
-				if isAvailabilityErr(cerr) {
-					continue // try next location/type
-				}
-				return provider.Server{}, fmt.Errorf("create %s@%s: %w", tname, lname, cerr)
+	for _, pair := range searchPlan(candidates, ordered, h.mode) {
+		tname, lname := pair[0], pair[1]
+		res, _, cerr := h.c.Server.Create(ctx, hcloud.ServerCreateOpts{
+			Name:             spec.Name,
+			ServerType:       byName[tname],
+			Image:            img,
+			Location:         locByName[lname],
+			UserData:         spec.UserData,
+			Labels:           labels,
+			StartAfterCreate: hcloud.Ptr(true),
+		})
+		if cerr != nil {
+			lastErr = cerr
+			if isAvailabilityErr(cerr) {
+				continue // try next (type,location) per the plan
 			}
-			srv, werr := h.waitRunning(ctx, res.Server.ID)
-			if werr != nil {
-				return provider.Server{}, werr
-			}
-			return toServer(srv, spec.ClusterID), nil
+			return provider.Server{}, fmt.Errorf("create %s@%s: %w", tname, lname, cerr)
 		}
+		srv, werr := h.waitRunning(ctx, res.Server.ID)
+		if werr != nil {
+			return provider.Server{}, werr
+		}
+		return toServer(srv, spec.ClusterID), nil
 	}
 	return provider.Server{}, fmt.Errorf("no available type/location for spec; last error: %v", lastErr)
 }
