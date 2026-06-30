@@ -50,6 +50,7 @@ func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData str
 	}
 
 	c.Nodes[0].ServerID = srv.ID
+	c.Nodes[0].IP = srv.IP
 	c.Nodes[0].Phase = state.Running
 	if err := o.S.Save(c); err != nil { // journal: RUNNING
 		return nil, err
