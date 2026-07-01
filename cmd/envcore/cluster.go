@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/envcore/envcore/internal/config"
+	"github.com/envcore/envcore/internal/discovery"
 	"github.com/envcore/envcore/internal/firewall"
 	"github.com/envcore/envcore/internal/harden"
 	"github.com/envcore/envcore/internal/orchestrator"
@@ -161,6 +163,37 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		}
 	}
 
+	// inject service discovery (overlay IPs) into every node so run commands can
+	// reach siblings via $ENVCORE_<NODE>_IP with no hardcoded IPs (C5/H1).
+	overlayByName := map[string]string{}
+	for _, p := range plans {
+		overlayByName[p.name] = p.overlayIP
+	}
+	fmt.Println("injecting service discovery...")
+	for _, p := range plans {
+		script := discovery.Script(overlayByName, p.name)
+		cmd := "echo " + b64(script) + " | base64 -d > " + discovery.Path + " && chmod 0644 " + discovery.Path
+		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
+			fmt.Fprintf(os.Stderr, "discovery injection failed on %s: %v\n", p.name, err)
+		}
+	}
+
+	// run each node's command with discovery in scope (login shell sources the
+	// profile.d file). NOTE: M3.3 runs commands synchronously — long-running
+	// services are the domain of M3.4's multiplexed streaming.
+	fmt.Println("running per-node commands...")
+	for _, p := range plans {
+		if strings.TrimSpace(p.run) == "" {
+			continue
+		}
+		out, rerr := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
+			"bash -lc "+shellQuote(p.run))
+		fmt.Printf("---- %s: %s ----\n%s\n", p.name, p.run, trimSpace(out))
+		if rerr != nil {
+			fmt.Printf("  (%s exited with error: %v — node left running for debugging)\n", p.name, rerr)
+		}
+	}
+
 	// write the operator's mesh config (peers = all nodes)
 	peers := make([]overlay.OperatorPeer, len(plans))
 	for i, p := range plans {
@@ -182,5 +215,5 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	fmt.Printf("operator overlay config: %s\n", confPath)
 	fmt.Printf("  join: sudo wg-quick up %s   (reach nodes at 10.99.0.1..%d)\n", confPath, len(plans))
 	fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
-	fmt.Println("note: discovery-IP injection, IPC firewall, and running per-node commands land in M3.3/M3.4.")
+	fmt.Println("note: commands ran synchronously; multiplexed streaming of long-running services lands in M3.4.")
 }

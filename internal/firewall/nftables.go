@@ -91,6 +91,16 @@ func NFTables(in Spec) string {
 	b.WriteString("    type filter hook output priority 0; policy drop;\n")
 	b.WriteString("    oif \"lo\" accept\n")
 	b.WriteString("    ct state established,related accept\n")
+	if s.AllowOverlayInput {
+		// let the node INITIATE traffic over the overlay (inner IPC) — finding
+		// F14: without this, egress-deny blocks node-initiated overlay IPC.
+		b.WriteString("    oif \"wg0\" accept\n")
+	}
+	if s.WGPort != 0 {
+		// WireGuard UNDERLAY egress: encrypted packets to peers' public IPs, so
+		// the node can reach/maintain the mesh under egress-deny (F14).
+		b.WriteString(fmt.Sprintf("    udp dport %d accept\n", s.WGPort))
+	}
 	if s.AllowDNS {
 		b.WriteString("    udp dport 53 accept\n")
 		b.WriteString("    tcp dport 53 accept\n")

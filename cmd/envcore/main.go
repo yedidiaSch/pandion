@@ -162,6 +162,11 @@ func trimSpace(s string) string    { return strings.TrimSpace(s) }
 func joinAmp(cmds []string) string { return strings.Join(cmds, " && ") }
 func b64(s string) string          { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
+// shellQuote single-quotes s for safe use as one shell argument.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}
+
 func itoa(n int) string { return strconv.Itoa(n) }
 
 func wgPortIf(overlayOn bool) int {
