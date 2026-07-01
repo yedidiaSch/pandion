@@ -29,14 +29,25 @@ envcore demo | version
 ```
 
 ## Install
-Prebuilt binaries (linux/macOS/windows, amd64/arm64) are attached to each
-[GitHub Release](https://github.com/yedidiaSch/envcore/releases) with a
-`checksums.txt` and per-archive SBOMs. Download, verify, extract:
+
+**Homebrew (macOS/Linux):**
 ```bash
-tar -xzf envcore_<version>_<os>_<arch>.tar.gz
-./envcore version
+brew install yedidiaSch/tap/envcore
 ```
-Or build from source: `go install github.com/envcore/envcore/cmd/envcore@latest`.
+
+**Debian/Ubuntu (.deb) or RHEL/Fedora (.rpm)** — download from the release and:
+```bash
+sudo dpkg -i envcore_<version>_linux_amd64.deb      # or: sudo rpm -i ..._amd64.rpm
+```
+
+**Prebuilt archives** (linux/macOS/windows, amd64/arm64) with `checksums.txt` and
+per-archive SBOMs are attached to each
+[GitHub Release](https://github.com/yedidiaSch/envcore/releases):
+```bash
+tar -xzf envcore_<version>_<os>_<arch>.tar.gz && ./envcore version
+```
+
+**From source:** `go install github.com/envcore/envcore/cmd/envcore@latest`
 
 ## Build & test
 ```bash
