@@ -28,11 +28,30 @@ envcore lockdown --id ID                                            # public den
 envcore demo | version
 ```
 
+## Install
+Prebuilt binaries (linux/macOS/windows, amd64/arm64) are attached to each
+[GitHub Release](https://github.com/yedidiaSch/envcore/releases) with a
+`checksums.txt` and per-archive SBOMs. Download, verify, extract:
+```bash
+tar -xzf envcore_<version>_<os>_<arch>.tar.gz
+./envcore version
+```
+Or build from source: `go install github.com/envcore/envcore/cmd/envcore@latest`.
+
 ## Build & test
 ```bash
 export PATH="$HOME/.local/go/bin:$PATH"
 make ci                 # gofmt + vet + go test -race + build  (offline, no cloud)
 go run ./cmd/envcore demo
+```
+
+## Releasing (maintainers)
+Releases are automated by [goreleaser](https://goreleaser.com) via
+`.github/workflows/release.yml`: push a semver tag and the pipeline builds every
+platform, generates checksums + SBOMs, writes the changelog, and publishes a
+GitHub Release.
+```bash
+git tag v0.1.0 && git push origin v0.1.0     # -> Release workflow runs
 ```
 
 ## Real-cloud e2e (a few cents each, self-cleaning)

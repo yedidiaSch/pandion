@@ -1,0 +1,76 @@
+# EnvCore release configuration (goreleaser v2).
+# Local check:   goreleaser check
+# Local build:   goreleaser build --snapshot --clean
+# Release:       push a tag `vX.Y.Z` -> GitHub Actions runs `goreleaser release`.
+version: 2
+
+project_name: envcore
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: envcore
+    main: ./cmd/envcore
+    binary: envcore
+    env:
+      - CGO_ENABLED=0 # pure Go: fully static, trivial cross-compile
+    goos: [linux, darwin, windows]
+    goarch: [amd64, arm64]
+    ignore:
+      - goos: windows
+        goarch: arm64 # uncommon target; skip
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}" # reproducible builds
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    format_overrides:
+      - goos: windows
+        formats: [zip]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - LICENSE
+      - NOTICE
+      - README.md
+
+checksum:
+  name_template: "checksums.txt"
+
+# Software Bill of Materials per archive (promised in the security design).
+# Requires `syft` on the runner (installed by the release workflow).
+sboms:
+  - artifacts: archive
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge remote-tracking branch"
+
+release:
+  draft: false
+  prerelease: auto # -rc/-beta tags are marked pre-release automatically
+  name_template: "EnvCore {{ .Tag }}"
+
+# Homebrew tap (opt-in): uncomment and create a `yedidiaSch/homebrew-tap` repo,
+# then set HOMEBREW_TAP_GITHUB_TOKEN in the release workflow to enable
+# `brew install yedidiaSch/tap/envcore`.
+# brews:
+#   - repository:
+#       owner: yedidiaSch
+#       name: homebrew-tap
+#     homepage: "https://github.com/yedidiaSch/envcore"
+#     description: "Provision, harden & orchestrate C++/IPC dev environments"
+#     license: "Apache-2.0"
