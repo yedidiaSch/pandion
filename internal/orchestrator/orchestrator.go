@@ -6,10 +6,25 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"sync"
+
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/sync/semaphore"
 
 	"github.com/envcore/envcore/internal/provider"
 	"github.com/envcore/envcore/internal/state"
 )
+
+// DefaultMaxConcurrency bounds concurrent provisioning to respect provider rate
+// limits (risk M6).
+const DefaultMaxConcurrency = 5
+
+// NodeSpec describes one node to provision in a cluster.
+type NodeSpec struct {
+	Name        string
+	UserData    string
+	LoginPubKey string
+}
 
 // Orchestrator drives clusters through their lifecycle.
 type Orchestrator struct {
@@ -56,6 +71,68 @@ func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData, lo
 	c.Nodes[0].Phase = state.Running
 	if err := o.S.Save(c); err != nil { // journal: RUNNING
 		return nil, err
+	}
+	return c, nil
+}
+
+// UpCluster provisions a multi-node cluster concurrently (bounded by maxConc; 0 =
+// default), journaling each node's transitions. It implements the provisioning
+// BARRIER (C5): it returns only after ALL nodes reach RUNNING — later slices form
+// the WG mesh and inject discovery only after this returns.
+//
+// Fail-fast (M10): if any node fails, the group context is cancelled (aborting
+// in-flight creates), the partial cluster is returned with the error, and the
+// caller decides rollback (default) vs --keep-on-failure.
+func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []NodeSpec, maxConc int) (*state.Cluster, error) {
+	if maxConc <= 0 {
+		maxConc = DefaultMaxConcurrency
+	}
+	c := &state.Cluster{ID: clusterID, Provider: o.P.Name(), Nodes: make([]state.Node, len(specs))}
+	for i, s := range specs {
+		c.Nodes[i] = state.Node{Name: s.Name, Phase: state.Planned}
+	}
+
+	var mu sync.Mutex
+	save := func() { mu.Lock(); defer mu.Unlock(); _ = o.S.Save(c) }
+	setPhase := func(i int, p state.Phase) { mu.Lock(); c.Nodes[i].Phase = p; mu.Unlock() }
+	save() // journal: all PLANNED
+
+	sem := semaphore.NewWeighted(int64(maxConc))
+	g, gctx := errgroup.WithContext(ctx)
+	for i := range specs {
+		i := i
+		g.Go(func() error {
+			if err := sem.Acquire(gctx, 1); err != nil {
+				return err
+			}
+			defer sem.Release(1)
+
+			setPhase(i, state.Provisioning)
+			save()
+			srv, err := o.P.CreateServer(gctx, provider.ServerSpec{
+				Name:        specs[i].Name,
+				ClusterID:   clusterID,
+				UserData:    specs[i].UserData,
+				LoginPubKey: specs[i].LoginPubKey,
+			})
+			if err != nil {
+				setPhase(i, state.Failed)
+				save()
+				return fmt.Errorf("provision %q: %w", specs[i].Name, err)
+			}
+			mu.Lock()
+			c.Nodes[i].ServerID = srv.ID
+			c.Nodes[i].IP = srv.IP
+			c.Nodes[i].Phase = state.Running
+			mu.Unlock()
+			save()
+			return nil
+		})
+	}
+
+	// BARRIER: block until every node is RUNNING (or one fails).
+	if err := g.Wait(); err != nil {
+		return c, err
 	}
 	return c, nil
 }
