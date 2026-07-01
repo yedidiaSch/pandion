@@ -1,0 +1,5 @@
+apiVersion: envcore/v2
+name: bad
+nodes:
+  - name: dev
+    run: ./app

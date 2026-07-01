@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://envcore.dev/schema/cluster.schema.json",
+  "title": "EnvCore cluster.yaml",
+  "description": "Topology + hardened-posture configuration for an EnvCore cluster (apiVersion envcore/v1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "name", "nodes"],
+  "properties": {
+    "apiVersion": {
+      "const": "envcore/v1",
+      "description": "Schema version. Unknown versions are rejected."
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{1,40}$",
+      "description": "Cluster name; combined with a run-id to form the envcore-cluster-id tag."
+    },
+    "provider": { "$ref": "#/$defs/provider" },
+    "defaults": {
+      "allOf": [{ "$ref": "#/$defs/nodeCommon" }],
+      "unevaluatedProperties": false
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "firewall": { "$ref": "#/$defs/firewall" },
+    "lifecycle": { "$ref": "#/$defs/lifecycle" }
+  },
+  "$defs": {
+    "provider": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "enum": ["hetzner", "digitalocean", "mock"] },
+        "credential": {
+          "type": "string",
+          "description": "Name of a credential in the local secret store. NEVER the token itself."
+        },
+        "region": { "type": "string" },
+        "private_network": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "cidr": { "type": "string", "format": "ipv4", "description": "e.g. 10.10.0.0/24" }
+          }
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "packages": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Version-pinned packages (e.g. gcc=4:13.2.0-7ubuntu1) for reproducibility."
+        }
+      }
+    },
+    "sync": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["source", "binaries"], "default": "source" },
+        "path": { "type": "string", "default": "./" },
+        "remote_path": { "type": "string" },
+        "build": { "type": "string", "description": "Remote build command (source mode only)." }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "All fields default to the hardened posture; present only to relax (with warning).",
+      "properties": {
+        "overlay": {
+          "oneOf": [{ "const": "auto" }, { "const": false }],
+          "default": "auto",
+          "description": "WireGuard overlay; false is NOT recommended (re-exposes public SSH)."
+        },
+        "egress_allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Outbound allowlist on top of always-on provider-API + overlay peers."
+        },
+        "open_egress_during_build": { "type": "boolean", "default": true },
+        "run_as": { "type": "string", "default": "envcore-run", "description": "Unprivileged run user." },
+        "capabilities": {
+          "oneOf": [
+            { "const": "drop-all" },
+            { "type": "array", "items": { "$ref": "#/$defs/capName" } }
+          ],
+          "default": "drop-all"
+        },
+        "encrypt_volumes": { "type": "boolean", "default": true },
+        "block_metadata_service": { "type": "boolean", "default": true },
+        "audit_log": { "type": "boolean", "default": true }
+      }
+    },
+    "capName": {
+      "type": "string",
+      "pattern": "^[A-Z_]+$",
+      "description": "Linux capability without CAP_ prefix, e.g. NET_RAW, NET_BIND_SERVICE."
+    },
+    "portSpec": {
+      "type": "string",
+      "pattern": "^[0-9]{1,5}/(tcp|udp)$",
+      "description": "Port and protocol, e.g. 5557/tcp."
+    },
+    "nodeCommon": {
+      "type": "object",
+      "description": "Fields valid at both defaults and per-node level. Composed via allOf; closedness enforced at use sites with unevaluatedProperties.",
+      "properties": {
+        "target": { "enum": ["cloud", "local"], "default": "cloud" },
+        "engine": { "enum": ["docker", "native"], "default": "docker" },
+        "size": { "type": "string" },
+        "image": { "type": "string" },
+        "ttl": {
+          "oneOf": [
+            { "type": "string", "pattern": "^[0-9]+(s|m|h)$" },
+            { "const": false }
+          ],
+          "default": "60m"
+        },
+        "toolchain": { "$ref": "#/$defs/toolchain" },
+        "sync": { "$ref": "#/$defs/sync" },
+        "security": { "$ref": "#/$defs/security" }
+      }
+    },
+    "node": {
+      "type": "object",
+      "required": ["name", "run"],
+      "allOf": [{ "$ref": "#/$defs/nodeCommon" }],
+      "unevaluatedProperties": false,
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,40}$" },
+        "role": { "type": "string", "description": "Free-form role label (broker, worker, ...)." },
+        "run": { "type": "string", "description": "User-defined run command (the §5 contract)." },
+        "ipc_ports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/portSpec" },
+          "description": "Ports this node LISTENS on; allowed only between cluster members."
+        },
+        "privileged_ports": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/portSpec" },
+          "description": "Low ports (<1024); EnvCore grants ONLY CAP_NET_BIND_SERVICE for these."
+        },
+        "needs_caps": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/capName" },
+          "description": "Capabilities added back on top of the drop-all default. Auditable."
+        },
+        "egress_allow": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Per-node egress entries merged with defaults.security.egress_allow."
+        }
+      }
+    },
+    "firewall": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "public_ingress": { "const": "deny-all", "default": "deny-all" },
+        "ssh": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "over": { "enum": ["overlay", "public"], "default": "overlay" }
+          }
+        },
+        "extra_public_ingress": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["port", "from"],
+            "properties": {
+              "port": { "$ref": "#/$defs/portSpec" },
+              "from": { "type": "string", "description": "Explicit source CIDR. Triggers a warning." }
+            }
+          }
+        }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "destroy_on_exit": { "type": "boolean", "default": false },
+        "confirm_teardown": { "type": "boolean", "default": true },
+        "keep_on_failure": { "type": "boolean", "default": false }
+      }
+    }
+  }
+}

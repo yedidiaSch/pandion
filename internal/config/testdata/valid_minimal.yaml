@@ -1,0 +1,5 @@
+apiVersion: envcore/v1
+name: minimal
+nodes:
+  - name: dev
+    run: ./build/app
