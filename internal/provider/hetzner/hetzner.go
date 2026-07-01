@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/envcore/envcore/internal/provider"
@@ -41,6 +42,7 @@ type Hetzner struct {
 	arch       string
 	regionPref []string
 	mode       SearchMode
+	keyMu      sync.Mutex // serializes get-or-create of the shared login SSH key
 }
 
 // Option configures a Hetzner provider.
@@ -139,15 +141,14 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 
 	// 3b) register the login key so it lands in root's authorized_keys reliably
 	//     (validated path, spike S1 — do not rely on cloud-init default-user).
+	//     Cluster nodes share ONE login key, so this is get-or-create by a
+	//     deterministic per-cluster name (Hetzner rejects duplicate public keys),
+	//     serialized to survive concurrent provisioning (finding F13).
 	var sshKeys []*hcloud.SSHKey
 	if spec.LoginPubKey != "" {
-		k, _, kerr := h.c.SSHKey.Create(ctx, hcloud.SSHKeyCreateOpts{
-			Name:      fmt.Sprintf("envcore-%s-%d", spec.ClusterID, time.Now().UnixNano()),
-			PublicKey: spec.LoginPubKey,
-			Labels:    labels,
-		})
-		if kerr != nil {
-			return provider.Server{}, fmt.Errorf("register login ssh key: %w", kerr)
+		k, err := h.ensureLoginKey(ctx, spec.ClusterID, spec.LoginPubKey, labels)
+		if err != nil {
+			return provider.Server{}, fmt.Errorf("register login ssh key: %w", err)
 		}
 		sshKeys = []*hcloud.SSHKey{k}
 	}
@@ -236,6 +237,31 @@ func (h *Hetzner) ListByTag(ctx context.Context, clusterID string) ([]provider.S
 		out = append(out, toServer(s, clusterID))
 	}
 	return out, nil
+}
+
+// ensureLoginKey get-or-creates the cluster's shared login SSH key by a
+// deterministic name, tolerating concurrent callers and duplicate-key errors.
+func (h *Hetzner) ensureLoginKey(ctx context.Context, clusterID, pubKey string, labels map[string]string) (*hcloud.SSHKey, error) {
+	name := "envcore-login-" + clusterID
+	h.keyMu.Lock()
+	defer h.keyMu.Unlock()
+
+	if k, _, err := h.c.SSHKey.GetByName(ctx, name); err != nil {
+		return nil, err
+	} else if k != nil {
+		return k, nil // already registered for this cluster
+	}
+	k, _, err := h.c.SSHKey.Create(ctx, hcloud.SSHKeyCreateOpts{
+		Name: name, PublicKey: pubKey, Labels: labels,
+	})
+	if err == nil {
+		return k, nil
+	}
+	// lost a race (or key exists under this name) — fetch it.
+	if k2, _, gerr := h.c.SSHKey.GetByName(ctx, name); gerr == nil && k2 != nil {
+		return k2, nil
+	}
+	return nil, err
 }
 
 // ReapAux deletes cluster-scoped SSH keys we registered (implements
