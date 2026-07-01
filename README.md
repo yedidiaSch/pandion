@@ -1,35 +1,61 @@
 # EnvCore
 
-Provisioning, hardening & orchestration CLI for C++ and distributed-IPC dev/test
-environments. Design docs live in `../plan/`.
+Provision, harden & orchestrate ephemeral C++ / distributed-IPC dev & test
+environments from one CLI — single nodes or multi-node clusters — with a
+security-first posture, on your own Hetzner account. No backend, no service to
+run, no secrets leave your machine.
 
-> **Status: M0 — walking skeleton.** Proves the architecture's spine (state machine +
-> reconcile loop) against an in-memory **mock provider**, with no cloud and no cost.
-> stdlib-only by design so it builds and tests fully offline. cobra CLI + the Hetzner
-> provider arrive in M1.
+> **Status: MVP complete (M0–M3.5)** — feature-complete core, validated on real
+> cloud. Design docs live in `../plan/`; roadmap in `../plan/envcore-roadmap.md`;
+> summary in `../plan/envcore-mvp-summary.md`.
 
-## What M0 demonstrates
-- `internal/provider` — the `Provider` interface (the only cloud seam).
-- `internal/provider/mock` — free, offline fake; the permanent CI backbone.
-- `internal/state` — journaled, atomic on-disk cluster state (a cache, not the truth).
-- `internal/orchestrator` — `Up` (single node) and `Down` (reconcile-to-empty).
-- `internal/harden` — cloud-init builder using `ssh_keys` host-key injection
-  (validated by spike **S1**; never `write_files`).
+## Highlights
+- **Security-first:** provision-time hardening, **SSH host-key pinning** (MITM-proof),
+  default-deny egress, **WireGuard overlay**, and lockout-safe **public deny-all**.
+- **Clusters:** `cluster.yaml` topology, concurrent provisioning + barrier, full
+  **WireGuard mesh**, service discovery (`$ENVCORE_<NODE>_IP`), IPC over the overlay,
+  **multiplexed** per-node output + logs.
+- **Safe by construction:** journaled state, orphan reconcile by tag, idempotent
+  teardown, fail-fast crash handling, Ctrl+C auto-rollback / detach-not-destroy.
+
+## Commands
+```
+envcore up   [--provider mock|hetzner] [--id ID] [flags] -- <cmd>   # single node
+envcore up   --provider hetzner -f cluster.yaml --id ID             # cluster
+envcore down [--provider ...] --id ID                               # verified teardown
+envcore validate [-f cluster.yaml]                                  # schema check
+envcore lockdown --id ID                                            # public deny-all (overlay-only)
+envcore demo | version
+```
 
 ## Build & test
 ```bash
 export PATH="$HOME/.local/go/bin:$PATH"
-go test ./...        # the authoritative M0 proof
-go build ./...
+make ci                 # gofmt + vet + go test -race + build  (offline, no cloud)
 go run ./cmd/envcore demo
 ```
 
-## Key invariants (asserted by tests)
-- **No leaks:** `Up` then `Down` leaves zero servers.
-- **C4 recovery:** `Down` reconciles from the provider even if local state is lost.
-- **H7 resilience:** `Down` retries a transient destroy failure and is idempotent.
-- **S1 regression guard:** host keys go through `ssh_keys`, never `write_files`.
+## Real-cloud e2e (a few cents each, self-cleaning)
+Set `HCLOUD_TOKEN` (project-scoped) first.
+```bash
+scripts/e2e_m22.sh    # overlay + operator-scoped SSH
+scripts/e2e_m32b.sh   # 2-node cluster + WireGuard mesh
+scripts/e2e_m33.sh    # service discovery + IPC over overlay
+scripts/e2e_m34.sh    # multiplexed output + logs
+```
 
-## Roadmap
-See `../plan/envcore-roadmap.md`. Next: **M1** (real Hetzner provider — runtime type
-discovery + region preference per S1/F3 — cloud-init hardening, host-key pinning).
+## Layout
+```
+cmd/envcore/            # CLI: up / down / validate / lockdown / demo
+internal/
+  provider/{hetzner,mock}   # the cloud seam (mock = offline CI backbone)
+  orchestrator/         # state machine + reconcile loop; Up / UpCluster (barrier)
+  harden/  overlay/  firewall/  discovery/  stream/   # the hardening pipeline
+  config/  ssh/  sshkeys/  state/
+scripts/                # self-cleaning real-cloud e2e
+```
+
+## Design & findings
+The `../plan/` folder holds the full design (review, requirements, security
+architecture, provider comparison, risk register, roadmap) and the record of
+**9 findings** that only surfaced against the live cloud API. Licensed Apache-2.0.
