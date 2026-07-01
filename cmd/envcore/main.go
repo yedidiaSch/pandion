@@ -27,7 +27,9 @@ import (
 	"github.com/envcore/envcore/internal/state"
 )
 
-const version = "0.1.0-m1"
+// version is set at release time via -ldflags "-X main.version=...". Defaults to
+// "dev" for local builds.
+var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
