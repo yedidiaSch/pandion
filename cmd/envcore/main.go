@@ -5,6 +5,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envcore/envcore/internal/firewall"
 	"github.com/envcore/envcore/internal/harden"
 	"github.com/envcore/envcore/internal/orchestrator"
 	"github.com/envcore/envcore/internal/provider"
@@ -76,6 +78,8 @@ func runUp(args []string) {
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
+	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
+	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
 	_ = fs.Parse(flagArgs)
 
 	p, err := newProvider(*prov)
@@ -89,11 +93,36 @@ func runUp(args []string) {
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
 	case "hetzner":
-		upHetzner(o, *id, *node, runCmd, !*noToolchain)
+		upHetzner(o, hetznerUpOpts{
+			id: *id, node: *node, runCmd: runCmd,
+			toolchain: !*noToolchain, firewall: !*noFirewall,
+			egressAllow: splitCSV(*egressAllow),
+		})
 	}
 }
 
-func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string, toolchain bool) {
+type hetznerUpOpts struct {
+	id, node, runCmd string
+	toolchain        bool
+	firewall         bool
+	egressAllow      []string
+}
+
+func splitCSV(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	var out []string
+	for _, p := range strings.Split(s, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
+	id, node, runCmd, toolchain := opt.id, opt.node, opt.runCmd, opt.toolchain
 	if runCmd == "" {
 		runCmd = "echo ENVCORE_READY && uname -a"
 	}
@@ -115,6 +144,9 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string, toolchain 
 	}
 	if toolchain {
 		ci.Packages = harden.DefaultToolchain()
+	}
+	if opt.firewall {
+		ci.Packages = append(ci.Packages, "nftables") // needed to apply the lockdown
 	}
 	userData := harden.Build(ci)
 
@@ -144,9 +176,31 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string, toolchain 
 		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
 		return
 	}
-	fmt.Println("node ready (cloud-init complete). running command...")
+	fmt.Println("node ready (cloud-init complete).")
 
-	// 6) run the user command on the now-ready node.
+	// 6) close the egress build-window (S2): the toolchain was fetched with egress
+	//    open; now apply default-deny ingress+egress BEFORE running user code, so a
+	//    compromised workload cannot exfiltrate. Applied atomically via `nft -f`, so
+	//    the established control SSH connection survives.
+	if opt.firewall {
+		rules := firewall.NFTables(firewall.Spec{AllowDNS: true, EgressAllowIPs: opt.egressAllow})
+		b64 := base64.StdEncoding.EncodeToString([]byte(rules))
+		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
+		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
+			fmt.Printf("firewall apply failed: %v\n%s(node left running)\n", err, out)
+			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+			return
+		}
+		if len(opt.egressAllow) == 0 {
+			fmt.Println("egress locked down: default-deny (DNS only); ingress: SSH only.")
+		} else {
+			fmt.Printf("egress locked down: allow %v (+DNS); ingress: SSH only.\n", opt.egressAllow)
+		}
+	}
+
+	fmt.Println("running command...")
+
+	// 7) run the user command on the now-ready, locked-down node.
 	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runCmd)
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
 	if runErr != nil {
