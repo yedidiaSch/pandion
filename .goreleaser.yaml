@@ -37,6 +37,20 @@ archives:
       - NOTICE
       - README.md
 
+# Linux packages (.deb / .rpm / .apk) attached to each GitHub Release. These need
+# no external repo/token — download and `dpkg -i` / `rpm -i`. Hosting a signed APT
+# repo (Cloudsmith/PPA) for `apt install envcore` is a separate, later step.
+nfpms:
+  - id: packages
+    package_name: envcore
+    vendor: EnvCore
+    homepage: "https://github.com/yedidiaSch/envcore"
+    maintainer: "EnvCore authors <noreply@github.com>"
+    description: "Provision, harden & orchestrate C++/IPC dev & test environments"
+    license: "Apache-2.0"
+    formats: [deb, rpm, apk]
+    bindir: /usr/bin
+
 checksum:
   name_template: "checksums.txt"
 
@@ -64,13 +78,25 @@ release:
   prerelease: auto # -rc/-beta tags are marked pre-release automatically
   name_template: "EnvCore {{ .Tag }}"
 
-# Homebrew tap (opt-in): uncomment and create a `yedidiaSch/homebrew-tap` repo,
-# then set HOMEBREW_TAP_GITHUB_TOKEN in the release workflow to enable
-# `brew install yedidiaSch/tap/envcore`.
-# brews:
-#   - repository:
-#       owner: yedidiaSch
-#       name: homebrew-tap
-#     homepage: "https://github.com/yedidiaSch/envcore"
-#     description: "Provision, harden & orchestrate C++/IPC dev environments"
-#     license: "Apache-2.0"
+# Homebrew tap: publishes a cask to yedidiaSch/homebrew-tap so users can
+# `brew install yedidiaSch/tap/envcore`. Pushing needs a PAT with contents:write
+# on the tap repo, provided as HOMEBREW_TAP_GITHUB_TOKEN. If that secret is unset,
+# skip_upload is true and the release still succeeds (cask just isn't pushed).
+# (goreleaser v2 replaced `brews` with `homebrew_casks` for CLI binaries.)
+homebrew_casks:
+  - name: envcore
+    repository:
+      owner: yedidiaSch
+      name: homebrew-tap
+      branch: master
+      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+    homepage: "https://github.com/yedidiaSch/envcore"
+    description: "Provision, harden & orchestrate C++/IPC dev environments"
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
+    # remove the macOS Gatekeeper quarantine on the unsigned binary at install
+    hooks:
+      post:
+        install: |
+          if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/envcore"]
+          end
