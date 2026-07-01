@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/envcore/envcore/internal/config"
@@ -16,6 +18,7 @@ import (
 	"github.com/envcore/envcore/internal/overlay"
 	envssh "github.com/envcore/envcore/internal/ssh"
 	"github.com/envcore/envcore/internal/sshkeys"
+	"github.com/envcore/envcore/internal/stream"
 )
 
 // nodePlan holds the locally-generated identity for one cluster node.
@@ -178,22 +181,6 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		}
 	}
 
-	// run each node's command with discovery in scope (login shell sources the
-	// profile.d file). NOTE: M3.3 runs commands synchronously — long-running
-	// services are the domain of M3.4's multiplexed streaming.
-	fmt.Println("running per-node commands...")
-	for _, p := range plans {
-		if strings.TrimSpace(p.run) == "" {
-			continue
-		}
-		out, rerr := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-			"bash -lc "+shellQuote(p.run))
-		fmt.Printf("---- %s: %s ----\n%s\n", p.name, p.run, trimSpace(out))
-		if rerr != nil {
-			fmt.Printf("  (%s exited with error: %v — node left running for debugging)\n", p.name, rerr)
-		}
-	}
-
 	// write the operator's mesh config (peers = all nodes)
 	peers := make([]overlay.OperatorPeer, len(plans))
 	for i, p := range plans {
@@ -214,6 +201,63 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}
 	fmt.Printf("operator overlay config: %s\n", confPath)
 	fmt.Printf("  join: sudo wg-quick up %s   (reach nodes at 10.99.0.1..%d)\n", confPath, len(plans))
+
+	// run per-node commands with MULTIPLEXED streaming (M4): color-coded, prefixed
+	// by node, tee'd to per-node logs. First Ctrl+C detaches and leaves infra up
+	// (C3); a crash (non-zero exit) is reported without auto-restart (§5 fail-fast).
+	streamCluster(id, plans, login)
+
 	fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
-	fmt.Println("note: commands ran synchronously; multiplexed streaming of long-running services lands in M3.4.")
+}
+
+// streamCluster runs each node's command concurrently and multiplexes output.
+func streamCluster(id string, plans []*nodePlan, login *sshkeys.KeyPair) {
+	var runnable []*nodePlan
+	for _, p := range plans {
+		if strings.TrimSpace(p.run) != "" {
+			runnable = append(runnable, p)
+		}
+	}
+	if len(runnable) == 0 {
+		return
+	}
+
+	logDir := filepath.Join(envHome(), ".envcore", "logs", id)
+	printer := stream.NewPrinter(os.Stdout, logDir, colorEnabled())
+	defer printer.Close()
+
+	// first Ctrl+C detaches (cancel the stream ctx, leave infra up).
+	ctx, cancel := context.WithCancel(context.Background())
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() {
+		<-sig
+		fmt.Println("\n^C — detaching from stream; cluster left running.")
+		cancel()
+	}()
+	defer signal.Stop(sig)
+
+	fmt.Printf("streaming %d node command(s) (Ctrl+C detaches; logs: %s)\n", len(runnable), logDir)
+	fmt.Println("----------------------------------------------------------------")
+
+	var wg sync.WaitGroup
+	for _, p := range runnable {
+		wg.Add(1)
+		go func(p *nodePlan) {
+			defer wg.Done()
+			err := envssh.Stream(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
+				"bash -lc "+shellQuote(p.run),
+				func(s, line string) { printer.Print(p.name, s, line) })
+			if err != nil && ctx.Err() == nil {
+				// fail-fast: report the crash, leave the node up for debugging (§5).
+				printer.Print(p.name, "err", "process exited: "+err.Error()+" (node left up for GDB/SSH)")
+			}
+		}(p)
+	}
+	wg.Wait()
+}
+
+// colorEnabled reports whether to colorize output (respects NO_COLOR).
+func colorEnabled() bool {
+	return os.Getenv("NO_COLOR") == ""
 }
