@@ -18,6 +18,10 @@ type CloudInit struct {
 	LoginPubKey string
 	// Packages are installed at first boot (e.g. the C++ toolchain). Empty = none.
 	Packages []string
+	// WGConfig, if set, is written to /etc/wireguard/wg0.conf and brought up at
+	// boot via wg-quick@wg0. Rendered via write_files (finding F11), not inline
+	// shell, which is fragile.
+	WGConfig string
 }
 
 // DefaultToolchain is EnvCore's C++ toolchain per the Execution Contract (§5):
@@ -65,6 +69,22 @@ func Build(ci CloudInit) string {
 		b.WriteString("  - ")
 		b.WriteString(strings.TrimSpace(ci.LoginPubKey))
 		b.WriteString("\n")
+	}
+
+	if ci.WGConfig != "" {
+		// write_files with a block scalar (F11): render the wg0.conf indented, then
+		// enable wg-quick@wg0 at boot.
+		b.WriteString("write_files:\n")
+		b.WriteString("  - path: /etc/wireguard/wg0.conf\n")
+		b.WriteString("    permissions: '0600'\n")
+		b.WriteString("    content: |\n")
+		for _, line := range strings.Split(strings.TrimRight(ci.WGConfig, "\n"), "\n") {
+			b.WriteString("      ")
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		b.WriteString("runcmd:\n")
+		b.WriteString("  - [ systemctl, enable, --now, wg-quick@wg0 ]\n")
 	}
 	return b.String()
 }

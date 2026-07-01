@@ -50,6 +50,28 @@ func TestNFTables_EgressAllowlistAndIngressPorts(t *testing.T) {
 	}
 }
 
+func TestNFTables_OverlayAndOperatorRestrictedSSH(t *testing.T) {
+	out := NFTables(Spec{
+		SSHFromCIDR:       "203.0.113.4/32",
+		WGPort:            51820,
+		AllowOverlayInput: true,
+		AllowDNS:          true,
+	})
+	for _, want := range []string{
+		"iif \"wg0\" accept",                          // trust the overlay
+		"udp dport 51820 accept",                      // WireGuard public port
+		"ip saddr 203.0.113.4/32 tcp dport 22 accept", // SSH only from operator
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ruleset missing %q\n%s", want, out)
+		}
+	}
+	// with a restricted source, there must be NO unrestricted "tcp dport 22 accept"
+	if strings.Contains(out, "\n    tcp dport 22 accept\n") {
+		t.Errorf("SSH must be restricted to the operator source, found unrestricted rule:\n%s", out)
+	}
+}
+
 // The exfiltration-protection property from S2: with no allowlist and DNS off,
 // the only permitted outbound is loopback + established — no new connections.
 func TestNFTables_NoArbitraryEgress(t *testing.T) {

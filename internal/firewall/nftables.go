@@ -20,6 +20,16 @@ import (
 type Spec struct {
 	// SSHPort is allowed inbound so the control connection survives (default 22).
 	SSHPort int
+	// SSHFromCIDR, if set, restricts inbound SSH to this source (e.g. the
+	// operator's IP as "203.0.113.4/32"). Empty = allow SSH from anywhere.
+	SSHFromCIDR string
+	// WGPort, if non-zero, allows inbound UDP for the WireGuard overlay so the
+	// operator (and, later, sibling nodes) can reach it. This is the ONE public
+	// port that stays open under the hardened posture.
+	WGPort int
+	// AllowOverlayInput accepts any traffic arriving on the wg0 interface, so
+	// management/IPC over the encrypted overlay is unrestricted.
+	AllowOverlayInput bool
 	// IngressPorts are additional inbound TCP ports (e.g. IPC) to allow.
 	IngressPorts []int
 	// EgressAllowIPs are outbound-allowed IPv4 addresses/CIDRs (already resolved).
@@ -60,7 +70,17 @@ func NFTables(in Spec) string {
 	b.WriteString("    iif \"lo\" accept\n")
 	b.WriteString("    ct state established,related accept\n")
 	b.WriteString("    ip protocol icmp accept\n")
-	b.WriteString(fmt.Sprintf("    tcp dport %d accept\n", s.SSHPort))
+	if s.AllowOverlayInput {
+		b.WriteString("    iif \"wg0\" accept\n") // trust the encrypted overlay
+	}
+	if s.WGPort != 0 {
+		b.WriteString(fmt.Sprintf("    udp dport %d accept\n", s.WGPort)) // WireGuard
+	}
+	if s.SSHFromCIDR != "" {
+		b.WriteString(fmt.Sprintf("    ip saddr %s tcp dport %d accept\n", s.SSHFromCIDR, s.SSHPort))
+	} else {
+		b.WriteString(fmt.Sprintf("    tcp dport %d accept\n", s.SSHPort))
+	}
 	for _, p := range s.IngressPorts {
 		b.WriteString(fmt.Sprintf("    tcp dport %d accept\n", p))
 	}
