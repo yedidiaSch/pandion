@@ -76,3 +76,38 @@ func TestOperatorConfig_HasEndpointAndKeepalive(t *testing.T) {
 		}
 	}
 }
+
+func TestInterfaceConfig_NoPeers(t *testing.T) {
+	out := InterfaceConfig("PRIV", "10.99.0.1/24", 0)
+	for _, want := range []string{"[Interface]", "Address = 10.99.0.1/24", "ListenPort = 51820", "PrivateKey = PRIV"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "[Peer]") {
+		t.Error("InterfaceConfig must not contain peers")
+	}
+}
+
+func TestSetPeerCommand(t *testing.T) {
+	got := SetPeerCommand("wg0", "PEERPUB", "1.2.3.4", 0, "10.99.0.2")
+	want := "wg set wg0 peer PEERPUB endpoint 1.2.3.4:51820 allowed-ips 10.99.0.2/32 persistent-keepalive 25"
+	if got != want {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+func TestOperatorConfigMulti_AllPeers(t *testing.T) {
+	out := OperatorConfigMulti("OP", "10.99.0.254/32", []OperatorPeer{
+		{PubKey: "N1", Endpoint: "1.1.1.1:51820", AllowedIP: "10.99.0.1/32"},
+		{PubKey: "N2", Endpoint: "2.2.2.2:51820", AllowedIP: "10.99.0.2/32"},
+	})
+	if strings.Count(out, "[Peer]") != 2 {
+		t.Fatalf("want 2 peers:\n%s", out)
+	}
+	for _, want := range []string{"PublicKey = N1", "Endpoint = 2.2.2.2:51820", "AllowedIPs = 10.99.0.1/32"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+}

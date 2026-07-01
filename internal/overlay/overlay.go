@@ -74,6 +74,32 @@ func NodeConfig(s NodeSpec) string {
 	return b.String()
 }
 
+// InterfaceConfig renders a wg0.conf with ONLY the [Interface] section. Mesh
+// peers are added at runtime via `wg set` once every node's public IP is known
+// (the S3 barrier pattern), because peer endpoints aren't known at boot.
+func InterfaceConfig(privKey, address string, port int) string {
+	if port == 0 {
+		port = DefaultPort
+	}
+	var b strings.Builder
+	b.WriteString("[Interface]\n")
+	fmt.Fprintf(&b, "Address = %s\n", address)
+	fmt.Fprintf(&b, "ListenPort = %d\n", port)
+	fmt.Fprintf(&b, "PrivateKey = %s\n", privKey)
+	return b.String()
+}
+
+// SetPeerCommand builds the `wg set` command that adds/updates one peer at
+// runtime: endpoint = <public ip>:<port>, allowed-ips = <overlay ip>/32.
+func SetPeerCommand(iface, peerPub, endpointIP string, port int, overlayIP string) string {
+	if port == 0 {
+		port = DefaultPort
+	}
+	return fmt.Sprintf(
+		"wg set %s peer %s endpoint %s:%d allowed-ips %s/32 persistent-keepalive 25",
+		iface, peerPub, endpointIP, port, overlayIP)
+}
+
 // OperatorSpec renders the operator's local wg config.
 type OperatorSpec struct {
 	PrivKey       string
@@ -85,14 +111,30 @@ type OperatorSpec struct {
 
 // OperatorConfig renders the operator-side config (brought up with wg-quick).
 func OperatorConfig(s OperatorSpec) string {
+	return OperatorConfigMulti(s.PrivKey, s.Address, []OperatorPeer{{
+		PubKey: s.PeerPubKey, Endpoint: s.Endpoint, AllowedIP: s.PeerAllowedIP,
+	}})
+}
+
+// OperatorPeer is one node the operator meshes with.
+type OperatorPeer struct {
+	PubKey    string
+	Endpoint  string // node public IP:port
+	AllowedIP string // node overlay IP/32
+}
+
+// OperatorConfigMulti renders an operator config peering with every cluster node.
+func OperatorConfigMulti(privKey, address string, peers []OperatorPeer) string {
 	var b strings.Builder
 	b.WriteString("[Interface]\n")
-	fmt.Fprintf(&b, "Address = %s\n", s.Address)
-	fmt.Fprintf(&b, "PrivateKey = %s\n", s.PrivKey)
-	b.WriteString("\n[Peer]\n")
-	fmt.Fprintf(&b, "PublicKey = %s\n", s.PeerPubKey)
-	fmt.Fprintf(&b, "Endpoint = %s\n", s.Endpoint)
-	fmt.Fprintf(&b, "AllowedIPs = %s\n", s.PeerAllowedIP)
-	b.WriteString("PersistentKeepalive = 25\n")
+	fmt.Fprintf(&b, "Address = %s\n", address)
+	fmt.Fprintf(&b, "PrivateKey = %s\n", privKey)
+	for _, p := range peers {
+		b.WriteString("\n[Peer]\n")
+		fmt.Fprintf(&b, "PublicKey = %s\n", p.PubKey)
+		fmt.Fprintf(&b, "Endpoint = %s\n", p.Endpoint)
+		fmt.Fprintf(&b, "AllowedIPs = %s\n", p.AllowedIP)
+		b.WriteString("PersistentKeepalive = 25\n")
+	}
 	return b.String()
 }
