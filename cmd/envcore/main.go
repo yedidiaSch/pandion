@@ -45,6 +45,8 @@ func main() {
 		runDown(os.Args[2:])
 	case "validate":
 		runValidate(os.Args[2:])
+	case "lockdown":
+		runLockdown(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -373,6 +375,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  envcore up   [--provider mock|hetzner] [--id ID] [--node NAME] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  envcore down [--provider mock|hetzner] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  envcore validate [-f cluster.yaml]")
+	fmt.Fprintln(os.Stderr, "  envcore lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  envcore demo | version")
 }
 

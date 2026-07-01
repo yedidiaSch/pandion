@@ -91,3 +91,15 @@ func TestNFTables_NoArbitraryEgress(t *testing.T) {
 		t.Fatalf("egress must default-drop:\n%s", egress)
 	}
 }
+
+func TestNFTables_NoPublicSSH_OverlayOnly(t *testing.T) {
+	out := NFTables(Spec{NoPublicSSH: true, WGPort: 51820, AllowOverlayInput: true, AllowDNS: true})
+	// no public SSH rule at all (neither open nor operator-restricted)
+	if strings.Contains(out, "tcp dport 22 accept") {
+		t.Errorf("NoPublicSSH must emit NO public SSH rule:\n%s", out)
+	}
+	// but the overlay is still trusted (so SSH-over-overlay works) and WG is open
+	if !strings.Contains(out, "iif \"wg0\" accept") || !strings.Contains(out, "udp dport 51820 accept") {
+		t.Errorf("overlay + WG must remain reachable:\n%s", out)
+	}
+}

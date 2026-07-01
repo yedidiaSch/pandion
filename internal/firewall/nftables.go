@@ -37,6 +37,10 @@ type Spec struct {
 	EgressAllowIPs []string
 	// AllowDNS permits outbound DNS so name resolution still works under lockdown.
 	AllowDNS bool
+	// NoPublicSSH removes all public SSH rules — SSH is then reachable ONLY over
+	// the overlay (via AllowOverlayInput). This is the full deny-all posture; only
+	// apply it once overlay SSH is confirmed working (see `envcore lockdown`).
+	NoPublicSSH bool
 }
 
 func (s Spec) normalize() Spec {
@@ -76,9 +80,12 @@ func NFTables(in Spec) string {
 	if s.WGPort != 0 {
 		b.WriteString(fmt.Sprintf("    udp dport %d accept\n", s.WGPort)) // WireGuard
 	}
-	if s.SSHFromCIDR != "" {
+	switch {
+	case s.NoPublicSSH:
+		// no public SSH rule — reachable only over the overlay (wg0)
+	case s.SSHFromCIDR != "":
 		b.WriteString(fmt.Sprintf("    ip saddr %s tcp dport %d accept\n", s.SSHFromCIDR, s.SSHPort))
-	} else {
+	default:
 		b.WriteString(fmt.Sprintf("    tcp dport %d accept\n", s.SSHPort))
 	}
 	for _, p := range s.IngressPorts {
