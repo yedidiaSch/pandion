@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/envcore/envcore/internal/firewall"
 	"github.com/envcore/envcore/internal/harden"
 	"github.com/envcore/envcore/internal/orchestrator"
+	"github.com/envcore/envcore/internal/overlay"
 	"github.com/envcore/envcore/internal/provider"
 	"github.com/envcore/envcore/internal/provider/hetzner"
 	"github.com/envcore/envcore/internal/provider/mock"
@@ -79,6 +81,7 @@ func runUp(args []string) {
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
+	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
 	_ = fs.Parse(flagArgs)
 
@@ -95,7 +98,7 @@ func runUp(args []string) {
 	case "hetzner":
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
-			toolchain: !*noToolchain, firewall: !*noFirewall,
+			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow),
 		})
 	}
@@ -105,7 +108,17 @@ type hetznerUpOpts struct {
 	id, node, runCmd string
 	toolchain        bool
 	firewall         bool
+	overlay          bool
 	egressAllow      []string
+}
+
+func itoa(n int) string { return strconv.Itoa(n) }
+
+func wgPortIf(overlayOn bool) int {
+	if overlayOn {
+		return overlay.DefaultPort
+	}
+	return 0
 }
 
 func splitCSV(s string) []string {
@@ -148,6 +161,22 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if opt.firewall {
 		ci.Packages = append(ci.Packages, "nftables") // needed to apply the lockdown
 	}
+
+	// overlay: generate node + operator WG keys; node peers with the operator.
+	// node = 10.99.0.1, operator = 10.99.0.2 (single-node; mesh is M3).
+	const nodeOverlayIP, opOverlayIP = "10.99.0.1", "10.99.0.2"
+	var nodeWG, opWG overlay.Keypair
+	if opt.overlay {
+		nodeWG, err = overlay.GenerateKeypair()
+		must(err)
+		opWG, err = overlay.GenerateKeypair()
+		must(err)
+		ci.Packages = append(ci.Packages, "wireguard")
+		ci.WGConfig = overlay.NodeConfig(overlay.NodeSpec{
+			PrivKey: nodeWG.Private, Address: nodeOverlayIP + "/24",
+			PeerPubKey: opWG.Public, PeerAllowedIP: opOverlayIP + "/32",
+		})
+	}
 	userData := harden.Build(ci)
 
 	// 3) provision (tagged; journaled state machine). The login key is registered
@@ -178,12 +207,42 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 	fmt.Println("node ready (cloud-init complete).")
 
-	// 6) close the egress build-window (S2): the toolchain was fetched with egress
-	//    open; now apply default-deny ingress+egress BEFORE running user code, so a
-	//    compromised workload cannot exfiltrate. Applied atomically via `nft -f`, so
-	//    the established control SSH connection survives.
+	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
+	//    (as the node sees our SSH connection — no external lookup needed) to use
+	//    as the SSH safety-valve source, then write the operator's local WG config.
+	var operatorCIDR string
+	if opt.overlay {
+		srcIP, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
+			"echo $SSH_CLIENT | awk '{print $1}'")
+		srcIP = strings.TrimSpace(srcIP)
+		if err != nil || srcIP == "" {
+			fmt.Printf("could not detect operator IP (%v); SSH will stay open to any source\n", err)
+		} else {
+			operatorCIDR = srcIP + "/32"
+		}
+		opConf := overlay.OperatorConfig(overlay.OperatorSpec{
+			PrivKey: opWG.Private, Address: opOverlayIP + "/32",
+			PeerPubKey: nodeWG.Public, Endpoint: ip + ":" + itoa(overlay.DefaultPort),
+			PeerAllowedIP: nodeOverlayIP + "/32",
+		})
+		confPath := filepath.Join(keyDir, "wg-"+id+".conf")
+		must(os.WriteFile(confPath, []byte(opConf), 0o600))
+		fmt.Printf("overlay up on node (%s). operator config: %s\n", nodeOverlayIP, confPath)
+		fmt.Printf("  join the overlay:  sudo wg-quick up %s   (then ssh root@%s)\n", confPath, nodeOverlayIP)
+	}
+
+	// 7) close the egress build-window (S2) and apply ingress hardening: the
+	//    toolchain was fetched with egress open; now default-deny egress + restrict
+	//    ingress to SSH-from-operator + the WG port. Atomic `nft -f` keeps the
+	//    established control connection alive.
 	if opt.firewall {
-		rules := firewall.NFTables(firewall.Spec{AllowDNS: true, EgressAllowIPs: opt.egressAllow})
+		rules := firewall.NFTables(firewall.Spec{
+			AllowDNS:          true,
+			EgressAllowIPs:    opt.egressAllow,
+			SSHFromCIDR:       operatorCIDR,
+			WGPort:            wgPortIf(opt.overlay),
+			AllowOverlayInput: opt.overlay,
+		})
 		b64 := base64.StdEncoding.EncodeToString([]byte(rules))
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
@@ -191,11 +250,11 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
 			return
 		}
-		if len(opt.egressAllow) == 0 {
-			fmt.Println("egress locked down: default-deny (DNS only); ingress: SSH only.")
-		} else {
-			fmt.Printf("egress locked down: allow %v (+DNS); ingress: SSH only.\n", opt.egressAllow)
+		sshScope := "any source"
+		if operatorCIDR != "" {
+			sshScope = operatorCIDR
 		}
+		fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
 	}
 
 	fmt.Println("running command...")
