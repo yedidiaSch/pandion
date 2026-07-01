@@ -86,11 +86,19 @@ func runUp(args []string) {
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
+	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
 	p, err := newProvider(*prov)
 	must(err)
 	o := orchestrator.New(p, mustStore())
+
+	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
+	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
+	if *file != "" {
+		upCluster(o, p.Name(), *file, *id)
+		return
+	}
 
 	switch p.Name() {
 	case "mock":
@@ -113,6 +121,38 @@ type hetznerUpOpts struct {
 	firewall         bool
 	overlay          bool
 	egressAllow      []string
+}
+
+// upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
+// provider only (concurrent provisioning + barrier). The real Hetzner mesh path
+// (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
+	cl, err := config.Load(file)
+	must(err)
+	if id == "demo" || id == "" {
+		id = cl.Name // default the cluster id to the topology name
+	}
+	if providerName != "mock" {
+		must(fmt.Errorf("multi-node (-f) on provider %q is not wired yet; use --provider=mock (M3.2b adds hetzner)", providerName))
+	}
+
+	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
+	for i, n := range cl.Nodes {
+		specs[i] = orchestrator.NodeSpec{Name: n.Name, UserData: "#cloud-config\n"}
+	}
+
+	fmt.Printf("UP cluster %q: provisioning %d nodes (provider=mock, bounded concurrency)...\n", id, len(specs))
+	c, err := o.UpCluster(context.Background(), id, specs, orchestrator.DefaultMaxConcurrency)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cluster provisioning failed: %v — rolling back...\n", err)
+		_ = o.Down(context.Background(), id)
+		os.Exit(5)
+	}
+	for _, n := range c.Nodes {
+		fmt.Printf("  %-12s %-8s ip=%s\n", n.Name, n.Phase, n.IP)
+	}
+	fmt.Printf("barrier passed: all %d nodes RUNNING. teardown: envcore down --id %s\n", len(c.Nodes), id)
+	fmt.Println("note: mock provider creates no cloud resources; real mesh + IPC land in M3.2b/M3.3.")
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

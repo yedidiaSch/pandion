@@ -87,3 +87,64 @@ func TestM0_Down_Idempotent_And_RetriesTransientFailure(t *testing.T) {
 		t.Fatalf("second down (idempotent): %v", err)
 	}
 }
+
+func specs(names ...string) []NodeSpec {
+	out := make([]NodeSpec, len(names))
+	for i, n := range names {
+		out[i] = NodeSpec{Name: n, UserData: "#cloud-config\n"}
+	}
+	return out
+}
+
+// M3.2: UpCluster provisions all nodes and the barrier holds (all RUNNING on return).
+func TestUpCluster_AllNodesRunning_BarrierHolds(t *testing.T) {
+	o, m := newOrch(t)
+	c, err := o.UpCluster(context.Background(), "cl", specs("a", "b", "c"), 5)
+	if err != nil {
+		t.Fatalf("upcluster: %v", err)
+	}
+	if m.Count() != 3 {
+		t.Fatalf("want 3 servers, got %d", m.Count())
+	}
+	for _, n := range c.Nodes {
+		if n.Phase != state.Running {
+			t.Fatalf("barrier violated: node %s in phase %s (want RUNNING)", n.Name, n.Phase)
+		}
+		if n.IP == "" || n.ServerID == "" {
+			t.Fatalf("node %s missing IP/ServerID after provisioning", n.Name)
+		}
+	}
+}
+
+// M6: concurrency is bounded by maxConc.
+func TestUpCluster_BoundedConcurrency(t *testing.T) {
+	o, m := newOrch(t)
+	if _, err := o.UpCluster(context.Background(), "cl", specs("a", "b", "c", "d", "e", "f"), 2); err != nil {
+		t.Fatalf("upcluster: %v", err)
+	}
+	if m.MaxConcurrent > 2 {
+		t.Fatalf("concurrency exceeded bound: peak=%d, max=2", m.MaxConcurrent)
+	}
+	if m.MaxConcurrent < 2 {
+		t.Logf("note: peak concurrency was %d (<2); scheduling-dependent", m.MaxConcurrent)
+	}
+}
+
+// M10: a node failure fails the whole UpCluster; the caller can then roll back.
+func TestUpCluster_PartialFailure_ThenRollback(t *testing.T) {
+	o, m := newOrch(t)
+	m.FailCreateFor = map[string]bool{"b": true}
+	ctx := context.Background()
+
+	_, err := o.UpCluster(ctx, "cl", specs("a", "b", "c"), 5)
+	if err == nil {
+		t.Fatal("expected UpCluster to fail when a node fails")
+	}
+	// caller rolls back the partial cluster
+	if derr := o.Down(ctx, "cl"); derr != nil {
+		t.Fatalf("rollback down: %v", derr)
+	}
+	if m.Count() != 0 {
+		t.Fatalf("rollback left %d servers", m.Count())
+	}
+}

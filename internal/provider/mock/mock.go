@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/envcore/envcore/internal/provider"
 )
@@ -23,6 +24,14 @@ type Mock struct {
 
 	// ReapAuxCalls counts ReapAux invocations (test observability).
 	ReapAuxCalls int
+
+	// FailCreateFor makes CreateServer fail for these node names, to exercise
+	// partial-cluster-failure handling (M10).
+	FailCreateFor map[string]bool
+	// MaxConcurrent records the peak simultaneous CreateServer calls, to assert
+	// bounded concurrency (M6).
+	MaxConcurrent int
+	curConcurrent int
 }
 
 // ReapAux implements provider.AuxReaper so the orchestrator's cleanup branch is
@@ -42,8 +51,23 @@ func (m *Mock) Name() string { return "mock" }
 
 // CreateServer records a new server and returns it.
 func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provider.Server, error) {
+	// enter: track concurrency peak (for M6 bounded-concurrency assertions)
 	m.mu.Lock()
-	defer m.mu.Unlock()
+	m.curConcurrent++
+	if m.curConcurrent > m.MaxConcurrent {
+		m.MaxConcurrent = m.curConcurrent
+	}
+	fail := m.FailCreateFor[spec.Name]
+	m.mu.Unlock()
+
+	// stay "in flight" briefly so overlapping callers are actually observed
+	time.Sleep(3 * time.Millisecond)
+
+	m.mu.Lock()
+	defer func() { m.curConcurrent--; m.mu.Unlock() }()
+	if fail {
+		return provider.Server{}, fmt.Errorf("mock: simulated create failure for %q", spec.Name)
+	}
 	m.seq++
 	s := provider.Server{
 		ID:        fmt.Sprintf("mock-%d", m.seq),
