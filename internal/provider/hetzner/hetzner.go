@@ -7,6 +7,7 @@ package hetzner
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,21 @@ import (
 	"github.com/envcore/envcore/internal/provider"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
+
+var nonDNS = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// serverName namespaces the Hetzner server name by cluster id so names are unique
+// per project (Hetzner requirement) and never collide across clusters or retries
+// (finding F9). Reconciliation still keys off the cluster-id LABEL, not the name.
+func serverName(clusterID, node string) string {
+	s := strings.ToLower(fmt.Sprintf("envcore-%s-%s", clusterID, node))
+	s = nonDNS.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 63 {
+		s = strings.Trim(s[:63], "-")
+	}
+	return s
+}
 
 // LabelClusterID tags every resource so ListByTag can reconcile from provider
 // truth even if local state is lost (C4).
@@ -121,16 +137,32 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 
 	labels := map[string]string{LabelClusterID: spec.ClusterID}
 
+	// 3b) register the login key so it lands in root's authorized_keys reliably
+	//     (validated path, spike S1 — do not rely on cloud-init default-user).
+	var sshKeys []*hcloud.SSHKey
+	if spec.LoginPubKey != "" {
+		k, _, kerr := h.c.SSHKey.Create(ctx, hcloud.SSHKeyCreateOpts{
+			Name:      fmt.Sprintf("envcore-%s-%d", spec.ClusterID, time.Now().UnixNano()),
+			PublicKey: spec.LoginPubKey,
+			Labels:    labels,
+		})
+		if kerr != nil {
+			return provider.Server{}, fmt.Errorf("register login ssh key: %w", kerr)
+		}
+		sshKeys = []*hcloud.SSHKey{k}
+	}
+
 	// 4) search type x location until one is available, ordered per mode (F8/R15)
 	var lastErr error
 	for _, pair := range searchPlan(candidates, ordered, h.mode) {
 		tname, lname := pair[0], pair[1]
 		res, _, cerr := h.c.Server.Create(ctx, hcloud.ServerCreateOpts{
-			Name:             spec.Name,
+			Name:             serverName(spec.ClusterID, spec.Name),
 			ServerType:       byName[tname],
 			Image:            img,
 			Location:         locByName[lname],
 			UserData:         spec.UserData,
+			SSHKeys:          sshKeys,
 			Labels:           labels,
 			StartAfterCreate: hcloud.Ptr(true),
 		})
@@ -204,6 +236,24 @@ func (h *Hetzner) ListByTag(ctx context.Context, clusterID string) ([]provider.S
 		out = append(out, toServer(s, clusterID))
 	}
 	return out, nil
+}
+
+// ReapAux deletes cluster-scoped SSH keys we registered (implements
+// provider.AuxReaper) so teardown leaves nothing behind.
+func (h *Hetzner) ReapAux(ctx context.Context, clusterID string) error {
+	keys, err := h.c.SSHKey.AllWithOpts(ctx, hcloud.SSHKeyListOpts{
+		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID + "=" + clusterID},
+	})
+	if err != nil {
+		return err
+	}
+	var firstErr error
+	for _, k := range keys {
+		if _, derr := h.c.SSHKey.Delete(ctx, k); derr != nil && firstErr == nil {
+			firstErr = derr
+		}
+	}
+	return firstErr
 }
 
 func toServer(s *hcloud.Server, clusterID string) provider.Server {

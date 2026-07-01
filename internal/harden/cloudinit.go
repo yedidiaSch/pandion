@@ -1,37 +1,69 @@
-// Package harden builds the provision-time hardening artifacts. M0 ships the
-// cloud-init builder for SSH host-key injection; firewall/overlay/LUKS land in M1–M2.
+// Package harden builds the provision-time hardening artifacts. M1 ships the
+// cloud-init builder for SSH host-key injection and C++ toolchain install;
+// firewall/overlay/LUKS land in M2.
 package harden
 
 import "strings"
 
-// BuildCloudInit produces cloud-init user-data that injects a KNOWN SSH host key
-// via the cloud-init `ssh_keys:` module.
+// CloudInit is the input to Build. It grows as later milestones add hardening
+// (egress rules, firewall, LUKS) without changing call sites.
+type CloudInit struct {
+	// HostPrivKeyPEM is the OpenSSH-format ed25519 host private key, injected via
+	// the cloud-init ssh_keys module (race-free — spike S1 finding F1).
+	HostPrivKeyPEM string
+	// HostPubKey is "ssh-ed25519 AAAA... [comment]".
+	HostPubKey string
+	// LoginPubKey, if set, is added to ssh_authorized_keys as a belt-and-suspenders
+	// (the primary path registers it with the provider so it lands on root).
+	LoginPubKey string
+	// Packages are installed at first boot (e.g. the C++ toolchain). Empty = none.
+	Packages []string
+}
+
+// DefaultToolchain is EnvCore's C++ toolchain per the Execution Contract (§5):
+// gcc/g++/make (build-essential), clang, cmake, gdb, plus tmux for `attach`.
 //
-// Spike S1 finding F1 (validated 2026-06-30): this is the race-free method.
-// Do NOT use `write_files` + `systemctl restart ssh` — it races with cloud-init's
-// own host-key handling and Ubuntu 24.04's socket-activated sshd, and hangs.
+// NOTE (reproducibility, H2): these are unpinned for M1. Version pinning +
+// lockfile recording is a later refinement; pass explicit "pkg=version" strings
+// here to pin.
+func DefaultToolchain() []string {
+	return []string{"build-essential", "clang", "cmake", "gdb", "tmux"}
+}
+
+// Build produces cloud-init user-data.
 //
-//	hostPrivKeyPEM — the OpenSSH-format ed25519 private key (multi-line)
-//	hostPubKey     — "ssh-ed25519 AAAA... [comment]"
-//	loginPubKey    — optional client login public key for ssh_authorized_keys
-func BuildCloudInit(hostPrivKeyPEM, hostPubKey, loginPubKey string) string {
+// Host key injection uses the cloud-init `ssh_keys:` module — NOT `write_files`
+// + `systemctl restart ssh`, which races with cloud-init and socket-activated
+// sshd and hangs (spike S1 finding F1).
+func Build(ci CloudInit) string {
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
+
+	if len(ci.Packages) > 0 {
+		b.WriteString("package_update: true\n")
+		b.WriteString("packages:\n")
+		for _, p := range ci.Packages {
+			b.WriteString("  - ")
+			b.WriteString(strings.TrimSpace(p))
+			b.WriteString("\n")
+		}
+	}
+
 	b.WriteString("ssh_keys:\n")
 	b.WriteString("  ed25519_private: |\n")
-	for _, line := range strings.Split(strings.TrimRight(hostPrivKeyPEM, "\n"), "\n") {
+	for _, line := range strings.Split(strings.TrimRight(ci.HostPrivKeyPEM, "\n"), "\n") {
 		b.WriteString("    ")
 		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	b.WriteString("  ed25519_public: ")
-	b.WriteString(strings.TrimSpace(hostPubKey))
+	b.WriteString(strings.TrimSpace(ci.HostPubKey))
 	b.WriteString("\n")
 
-	if loginPubKey != "" {
+	if ci.LoginPubKey != "" {
 		b.WriteString("ssh_authorized_keys:\n")
 		b.WriteString("  - ")
-		b.WriteString(strings.TrimSpace(loginPubKey))
+		b.WriteString(strings.TrimSpace(ci.LoginPubKey))
 		b.WriteString("\n")
 	}
 	return b.String()

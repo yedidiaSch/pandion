@@ -75,6 +75,7 @@ func runUp(args []string) {
 	prov := fs.String("provider", "mock", "provider: mock|hetzner")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
+	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
 	_ = fs.Parse(flagArgs)
 
 	p, err := newProvider(*prov)
@@ -83,16 +84,16 @@ func runUp(args []string) {
 
 	switch p.Name() {
 	case "mock":
-		c, err := o.Up(context.Background(), *id, *node, "#cloud-config\n")
+		c, err := o.Up(context.Background(), *id, *node, "#cloud-config\n", "")
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
 	case "hetzner":
-		upHetzner(o, *id, *node, runCmd)
+		upHetzner(o, *id, *node, runCmd, !*noToolchain)
 	}
 }
 
-func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string) {
+func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string, toolchain bool) {
 	if runCmd == "" {
 		runCmd = "echo ENVCORE_READY && uname -a"
 	}
@@ -105,11 +106,21 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string) {
 	login, err := sshkeys.Generate("envcore-login")
 	must(err)
 
-	// 2) build hardened cloud-init that injects our host key (race-free, S1/F1)
-	userData := harden.BuildCloudInit(host.PrivatePEM, host.PublicAuthorized, login.PublicAuthorized)
+	// 2) build hardened cloud-init: inject host key (race-free, S1/F1) + install
+	//    the C++ toolchain per the Execution Contract (§5)
+	ci := harden.CloudInit{
+		HostPrivKeyPEM: host.PrivatePEM,
+		HostPubKey:     host.PublicAuthorized,
+		LoginPubKey:    login.PublicAuthorized,
+	}
+	if toolchain {
+		ci.Packages = harden.DefaultToolchain()
+	}
+	userData := harden.Build(ci)
 
-	// 3) provision (tagged; journaled state machine)
-	c, err := o.Up(ctx, id, node, userData)
+	// 3) provision (tagged; journaled state machine). The login key is registered
+	//    with the provider so it lands on root (validated path, S1).
+	c, err := o.Up(ctx, id, node, userData, login.PublicAuthorized)
 	must(err)
 	ip := c.Nodes[0].IP
 	fmt.Printf("UP (hetzner): cluster %q node %q running at %s (host fp %s)\n",
@@ -120,10 +131,23 @@ func upHetzner(o *orchestrator.Orchestrator, id, node, runCmd string) {
 	must(host.Save(keyDir, "host_ed25519"))
 	must(login.Save(keyDir, "login_ed25519"))
 
-	// 5) connect with the PINNED host key and run the command. Retry tolerates the
-	//    cloud-init window: until our key is installed, pinning rejects and we wait.
-	fmt.Println("connecting (host-key pinned; waiting for cloud-init)...")
-	out, runErr := envssh.RunWithRetry(ctx, ip+":22", "root", login.Signer, host.Public, runCmd, 5*time.Second)
+	// 5) connect with the PINNED host key. RunWithRetry tolerates the cloud-init
+	//    window (until our key is installed, pinning rejects and we wait), and
+	//    `cloud-init status --wait` blocks until packages + hardening are applied
+	//    (S1/F4) — so the toolchain is READY before we run the user command.
+	addr := ip + ":22"
+	fmt.Println("connecting (host-key pinned; waiting for cloud-init + toolchain)...")
+	onAttempt := func(n int, reason string) { fmt.Printf("  attempt %d: %s\n", n, reason) }
+	if _, err := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
+		"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
+		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", err)
+		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+		return
+	}
+	fmt.Println("node ready (cloud-init complete). running command...")
+
+	// 6) run the user command on the now-ready node.
+	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runCmd)
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
 	if runErr != nil {
 		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)
@@ -147,7 +171,7 @@ func runDown(args []string) {
 func runDemo() {
 	o := orchestrator.New(mock.New(), mustStore())
 	ctx := context.Background()
-	c, err := o.Up(ctx, "demo", "node-a", "#cloud-config\n")
+	c, err := o.Up(ctx, "demo", "node-a", "#cloud-config\n", "")
 	must(err)
 	fmt.Printf("UP    cluster=%q node=%q phase=%s\n", c.ID, c.Nodes[0].Name, c.Nodes[0].Phase)
 	must(o.Down(ctx, "demo"))

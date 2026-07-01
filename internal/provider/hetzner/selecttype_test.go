@@ -2,6 +2,7 @@ package hetzner
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -50,6 +51,31 @@ func TestSearchPlan_RegionFirstVsCheapestType(t *testing.T) {
 	wantCheap := [][2]string{{"small", "fsn1"}, {"small", "ash"}, {"big", "fsn1"}, {"big", "ash"}}
 	if !reflect.DeepEqual(cheap, wantCheap) {
 		t.Fatalf("CheapestType = %v, want %v", cheap, wantCheap)
+	}
+}
+
+func TestServerName_NamespacedAndDNSSafe(t *testing.T) {
+	cases := map[string][2]string{
+		"envcore-e2e-node-a":     {"e2e", "node-a"},
+		"envcore-team1-broker":   {"team1", "broker"},
+		"envcore-a-b-c-worker-1": {"a.b.c", "worker_1"}, // dots/underscores -> hyphens
+	}
+	for want, in := range cases {
+		if got := serverName(in[0], in[1]); got != want {
+			t.Errorf("serverName(%q,%q)=%q, want %q", in[0], in[1], got, want)
+		}
+	}
+	// different clusters, same node name -> different server names (no collision)
+	if serverName("c1", "node-a") == serverName("c2", "node-a") {
+		t.Fatal("same node name in different clusters must not collide")
+	}
+	// bounded length, no leading/trailing hyphen
+	long := serverName("verylongclusteridentifier0123456789", "verylongnodename0123456789abcdef")
+	if len(long) > 63 {
+		t.Fatalf("server name too long: %d", len(long))
+	}
+	if strings.HasPrefix(long, "-") || strings.HasSuffix(long, "-") {
+		t.Fatalf("server name has stray hyphen: %q", long)
 	}
 }
 

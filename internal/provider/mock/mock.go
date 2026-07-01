@@ -20,6 +20,18 @@ type Mock struct {
 	// FailDestroyOnce makes the next DestroyServer call fail exactly once,
 	// to exercise the orchestrator's retry path (risk H7).
 	FailDestroyOnce bool
+
+	// ReapAuxCalls counts ReapAux invocations (test observability).
+	ReapAuxCalls int
+}
+
+// ReapAux implements provider.AuxReaper so the orchestrator's cleanup branch is
+// exercised offline.
+func (m *Mock) ReapAux(_ context.Context, _ string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.ReapAuxCalls++
+	return nil
 }
 
 // New returns an empty mock provider.
