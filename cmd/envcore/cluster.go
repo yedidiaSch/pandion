@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/envcore/envcore/internal/config"
@@ -90,6 +91,29 @@ func loadManifest(id string) (*clusterManifest, error) {
 func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
+
+	// Phase-aware Ctrl+C handling (F15): during SETUP an interrupt rolls the
+	// cluster back (so an aborted creation never orphans a billing node); once we
+	// reach the streaming phase it DETACHES instead, leaving infra up (C3).
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	var streaming atomic.Bool
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	go func() {
+		for range sigCh {
+			if streaming.Load() {
+				fmt.Println("\n^C — detaching from stream; cluster left running.")
+				streamCancel()
+			} else {
+				fmt.Fprintln(os.Stderr, "\n^C — aborting provisioning; rolling back...")
+				_ = o.Down(context.Background(), id)
+				fmt.Fprintln(os.Stderr, "rolled back (no resources left).")
+				os.Exit(5)
+			}
+		}
+	}()
 
 	// shared login key for the whole cluster; operator WG identity
 	login, err := sshkeys.Generate("envcore-login")
@@ -254,15 +278,18 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	fmt.Printf("  join: sudo wg-quick up %s   (reach nodes at 10.99.0.1..%d)\n", confPath, len(plans))
 
 	// run per-node commands with MULTIPLEXED streaming (M4): color-coded, prefixed
-	// by node, tee'd to per-node logs. First Ctrl+C detaches and leaves infra up
-	// (C3); a crash (non-zero exit) is reported without auto-restart (§5 fail-fast).
-	streamCluster(id, plans, login)
+	// by node, tee'd to per-node logs. From here Ctrl+C detaches (streaming=true),
+	// leaving infra up (C3); a crash (non-zero exit) is reported without auto-
+	// restart (§5 fail-fast).
+	streaming.Store(true)
+	streamCluster(streamCtx, id, plans, login)
 
 	fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
 }
 
 // streamCluster runs each node's command concurrently and multiplexes output.
-func streamCluster(id string, plans []*nodePlan, login *sshkeys.KeyPair) {
+// ctx is cancelled by the caller's Ctrl+C handler to detach.
+func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *sshkeys.KeyPair) {
 	var runnable []*nodePlan
 	for _, p := range plans {
 		if strings.TrimSpace(p.run) != "" {
@@ -276,17 +303,6 @@ func streamCluster(id string, plans []*nodePlan, login *sshkeys.KeyPair) {
 	logDir := filepath.Join(envHome(), ".envcore", "logs", id)
 	printer := stream.NewPrinter(os.Stdout, logDir, colorEnabled())
 	defer printer.Close()
-
-	// first Ctrl+C detaches (cancel the stream ctx, leave infra up).
-	ctx, cancel := context.WithCancel(context.Background())
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	go func() {
-		<-sig
-		fmt.Println("\n^C — detaching from stream; cluster left running.")
-		cancel()
-	}()
-	defer signal.Stop(sig)
 
 	fmt.Printf("streaming %d node command(s) (Ctrl+C detaches; logs: %s)\n", len(runnable), logDir)
 	fmt.Println("----------------------------------------------------------------")
