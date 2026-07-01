@@ -257,11 +257,31 @@ func (h *Hetzner) ensureLoginKey(ctx context.Context, clusterID, pubKey string, 
 	if err == nil {
 		return k, nil
 	}
-	// lost a race (or key exists under this name) — fetch it.
+	// lost a race (same name) — fetch by name.
 	if k2, _, gerr := h.c.SSHKey.GetByName(ctx, name); gerr == nil && k2 != nil {
 		return k2, nil
 	}
+	// duplicate public key under a DIFFERENT name (e.g. a leftover from a prior
+	// run) — Hetzner dedupes on key material, so find and reuse it.
+	if all, aerr := h.c.SSHKey.All(ctx); aerr == nil {
+		want := keyMaterial(pubKey)
+		for _, existing := range all {
+			if keyMaterial(existing.PublicKey) == want {
+				return existing, nil
+			}
+		}
+	}
 	return nil, err
+}
+
+// keyMaterial extracts the base64 body of an SSH public key ("ssh-ed25519 BODY
+// comment" -> "BODY"), so keys are compared by material, ignoring name/comment.
+func keyMaterial(pub string) string {
+	f := strings.Fields(strings.TrimSpace(pub))
+	if len(f) >= 2 {
+		return f[1]
+	}
+	return strings.TrimSpace(pub)
 }
 
 // ReapAux deletes cluster-scoped SSH keys we registered (implements
