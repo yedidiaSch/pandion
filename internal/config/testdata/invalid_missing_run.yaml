@@ -1,0 +1,4 @@
+apiVersion: envcore/v1
+name: bad
+nodes:
+  - name: dev
