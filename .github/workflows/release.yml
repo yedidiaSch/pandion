@@ -34,3 +34,7 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Optional: a PAT with contents:write on yedidiaSch/homebrew-tap enables
+          # the Homebrew formula push. If unset, the release still succeeds and the
+          # brew step is skipped (see skip_upload in .goreleaser.yaml).
+          HOMEBREW_TAP_GITHUB_TOKEN: ${{ secrets.HOMEBREW_TAP_GITHUB_TOKEN }}
