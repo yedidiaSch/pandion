@@ -89,10 +89,20 @@ that is secure by default and leaves nothing behind.**
 brew install yedidiaSch/tap/envcore
 ```
 
-**Debian/Ubuntu (`.deb`) · RHEL/Fedora (`.rpm`)** — from the [latest release](https://github.com/yedidiaSch/envcore/releases/latest):
+**Debian / Ubuntu** — from the signed APT repo:
 ```bash
-sudo dpkg -i envcore_<version>_linux_amd64.deb      # or:  sudo rpm -i ..._amd64.rpm
+curl -fsSL https://yedidiaSch.github.io/envcore/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/envcore.gpg
+echo "deb [signed-by=/usr/share/keyrings/envcore.gpg] https://yedidiaSch.github.io/envcore/deb stable main" | sudo tee /etc/apt/sources.list.d/envcore.list
+sudo apt update && sudo apt install envcore
 ```
+
+**RHEL / Fedora** — from the signed YUM repo:
+```bash
+sudo curl -fsSL https://yedidiaSch.github.io/envcore/envcore.repo -o /etc/yum.repos.d/envcore.repo
+sudo dnf install envcore
+```
+
+Or grab a single `.deb`/`.rpm` from the [latest release](https://github.com/yedidiaSch/envcore/releases/latest) and `dpkg -i` / `rpm -i` it directly.
 
 **Prebuilt archive** (linux/macOS/windows · amd64/arm64), shipped with `checksums.txt` and per-archive SBOMs:
 ```bash
