@@ -7,6 +7,7 @@ package hetzner
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -14,6 +15,21 @@ import (
 	"github.com/envcore/envcore/internal/provider"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
 )
+
+var nonDNS = regexp.MustCompile(`[^a-z0-9-]+`)
+
+// serverName namespaces the Hetzner server name by cluster id so names are unique
+// per project (Hetzner requirement) and never collide across clusters or retries
+// (finding F9). Reconciliation still keys off the cluster-id LABEL, not the name.
+func serverName(clusterID, node string) string {
+	s := strings.ToLower(fmt.Sprintf("envcore-%s-%s", clusterID, node))
+	s = nonDNS.ReplaceAllString(s, "-")
+	s = strings.Trim(s, "-")
+	if len(s) > 63 {
+		s = strings.Trim(s[:63], "-")
+	}
+	return s
+}
 
 // LabelClusterID tags every resource so ListByTag can reconcile from provider
 // truth even if local state is lost (C4).
@@ -141,7 +157,7 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 	for _, pair := range searchPlan(candidates, ordered, h.mode) {
 		tname, lname := pair[0], pair[1]
 		res, _, cerr := h.c.Server.Create(ctx, hcloud.ServerCreateOpts{
-			Name:             spec.Name,
+			Name:             serverName(spec.ClusterID, spec.Name),
 			ServerType:       byName[tname],
 			Image:            img,
 			Location:         locByName[lname],
