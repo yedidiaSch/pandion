@@ -1,0 +1,17 @@
+apiVersion: envcore/v1
+name: zmq-pipeline
+provider:
+  name: hetzner
+  region: nbg1
+defaults:
+  engine: native
+  size: cpx21
+nodes:
+  - name: broker
+    role: broker
+    ipc_ports: [5557/tcp, 5558/tcp]
+    run: ./build/broker
+  - name: worker-a
+    role: worker
+    needs_caps: [NET_RAW]
+    run: ./build/worker

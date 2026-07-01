@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/envcore/envcore/internal/config"
 	"github.com/envcore/envcore/internal/firewall"
 	"github.com/envcore/envcore/internal/harden"
 	"github.com/envcore/envcore/internal/orchestrator"
@@ -42,6 +43,8 @@ func main() {
 		runUp(os.Args[2:])
 	case "down":
 		runDown(os.Args[2:])
+	case "validate":
+		runValidate(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -268,6 +271,17 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
 }
 
+func runValidate(args []string) {
+	fs := flag.NewFlagSet("validate", flag.ExitOnError)
+	file := fs.String("f", "cluster.yaml", "path to cluster.yaml")
+	_ = fs.Parse(args)
+	if _, err := config.Load(*file); err != nil {
+		fmt.Fprintf(os.Stderr, "invalid: %v\n", err)
+		os.Exit(2) // usage/validation failure per the CLI spec
+	}
+	fmt.Printf("%s: valid\n", *file)
+}
+
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	prov := fs.String("provider", "mock", "provider: mock|hetzner")
@@ -306,6 +320,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  envcore up   [--provider mock|hetzner] [--id ID] [--node NAME] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  envcore down [--provider mock|hetzner] [--id ID]")
+	fmt.Fprintln(os.Stderr, "  envcore validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  envcore demo | version")
 }
 

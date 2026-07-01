@@ -1,0 +1,6 @@
+apiVersion: envcore/v1
+name: bad
+nodes:
+  - name: dev
+    run: ./app
+    bogus_field: 123
