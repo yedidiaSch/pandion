@@ -7,10 +7,12 @@
 package ssh
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
@@ -53,6 +55,75 @@ func Run(ctx context.Context, addr, user string, signer gossh.Signer, pinned gos
 
 	out, err := sess.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// Stream runs cmd and streams stdout/stderr line-by-line to onLine (streamName
+// is "out" or "err"), returning the command's exit error when it finishes. The
+// session is torn down if ctx is cancelled (used to detach on Ctrl+C — C3).
+func Stream(ctx context.Context, addr, user string, signer gossh.Signer, pinned gossh.PublicKey, cmd string, onLine func(streamName, line string)) error {
+	cfg := &gossh.ClientConfig{
+		User:            user,
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		HostKeyCallback: pinnedCallback(pinned),
+		Timeout:         10 * time.Second,
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf("dial %s: %w", addr, err)
+	}
+	c, chans, reqs, err := gossh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return fmt.Errorf("ssh handshake %s: %w", addr, err)
+	}
+	client := gossh.NewClient(c, chans, reqs)
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	stdout, err := sess.StdoutPipe()
+	if err != nil {
+		return err
+	}
+	stderr, err := sess.StderrPipe()
+	if err != nil {
+		return err
+	}
+	if err := sess.Start(cmd); err != nil {
+		return fmt.Errorf("start %q: %w", cmd, err)
+	}
+
+	// cancel -> close the session so blocked reads unwind (detach on Ctrl+C).
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = sess.Close()
+		case <-stop:
+		}
+	}()
+
+	var wg sync.WaitGroup
+	scan := func(r interface{ Read([]byte) (int, error) }, name string) {
+		defer wg.Done()
+		sc := bufio.NewScanner(r)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			onLine(name, sc.Text())
+		}
+	}
+	wg.Add(2)
+	go scan(stdout, "out")
+	go scan(stderr, "err")
+	wg.Wait()
+
+	return sess.Wait() // exit error (e.g. *ExitError with code, incl. 139)
 }
 
 // Classify maps a connection error to a short, human diagnosis so retries are
