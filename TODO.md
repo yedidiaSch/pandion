@@ -78,4 +78,91 @@ is set; public key in `packaging/`).
 - **macOS/Windows CLI** is built + released but **unvalidated** — that's roadmap
   **M7** (`../plan/envcore-roadmap.md` in the design set), not part of this checklist.
 - After all three are green, every channel is live: `brew` · `apt` · `dnf` ·
-  direct download · `go install`. Then delete this file.
+  direct download · `go install`. Then delete this section.
+
+---
+
+# Remaining implementation backlog (from the design & plan)
+
+What the MVP (v0.1.0) delivered vs. what the design (`../plan/`) still calls for.
+Grouped by priority. IDs reference the design review findings / roadmap milestones.
+
+> **Read this first — the one gap that blocks real use:**
+> **Workspace sync is not implemented (P0).** Nodes run your `run:` command, but
+> EnvCore never copies your source/binaries to them. Today only commands that need
+> no local code work (the e2e used `echo`/`ping`). A real C++ workload needs the
+> workspace synced (and built) on the node first. Until P0-1 lands, `run:
+> ./build/app` assumes `./build/app` already exists on the node — it won't.
+
+## P0 — makes it usable for real C++/IPC workloads
+- [ ] **Workspace synchronization** (design §4, H3, L5) — rsync-over-SSH of the
+      local workspace to each node before running; `--sync=source` (build remotely)
+      vs `--sync=binaries` (validate target arch/libc, H3); `.envcoreignore`
+      (fallback `.gitignore`). *Without this the tool can't run user code.*
+- [ ] **Apply `cluster.yaml` fields that are currently parsed-but-ignored** — the
+      config layer reads them, but `upClusterHetzner` only uses `name` + `run`.
+      Wire up per-node: `size`, `image`, `region`, `engine`, `sync`, `ttl`,
+      `ipc_ports` (→ firewall), `needs_caps`/`privileged_ports` (→ least-priv),
+      `egress_allow`, and the `security:` overrides. Plus `defaults:` inheritance.
+- [ ] **Docker engine** (`--engine=docker`, spec §2) — run the toolchain/workload
+      in a hardened container (non-root, seccomp/AppArmor, no docker.sock, read-only
+      rootfs). Only the native/host path exists today.
+- [ ] **Local target** (`--target=local`, spec §2) — run on the workstation; keep
+      the `local+native` guardrail (`--allow-local-native`, Linux-only, H4).
+
+## P1 — security hardening the design promises (M1.x + security architecture)
+- [ ] **Least-privilege run user** (S-C) — commands currently run as **root**. Add a
+      dedicated `envcore-run` user, dropped caps, `NoNewPrivileges`, add-back only
+      declared `needs_caps`/`privileged_ports`.
+- [ ] **Encrypted volumes at rest** (LUKS, S-E).
+- [ ] **Cloud metadata block** (`169.254.169.254`, S-F) post-provision.
+- [ ] **auditd** with off-node, tamper-evident log shipping (S-F).
+- [ ] **Secret keychain** (H6) — token/keys via OS keychain (macOS Keychain /
+      libsecret / Windows Credential Manager); today the token is env-only and keys
+      are `0600` files.
+- [ ] **Provider-level Cloud Firewall** (M8) — Hetzner network firewall in front of
+      host nftables (defense in depth).
+- [ ] **fail2ban** as secondary defense (M7-review), `unattended-upgrades` on
+      longer-lived nodes.
+- [ ] **Reproducibility** (H2) — pin toolchain versions + record a per-cluster
+      lockfile (`~/.envcore/lock/<id>.json`). Toolchain is currently unpinned.
+- [ ] **Signed releases** — add cosign signing to goreleaser (checksums + SBOM exist;
+      artifact signatures don't).
+
+## P2 — lifecycle & cost (roadmap M4)
+- [ ] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that
+      self-destroys a node with no heartbeat; the real leak-prevention when the
+      laptop dies. `--ttl`, `--no-ttl`.
+- [ ] **`envcore ls` / `status`** (L1) — list active clusters, nodes, uptime, and
+      **live cost**.
+- [ ] **`envcore reap`** (C4) — sweep orphaned tagged resources across all clusters
+      (today `down --id` reconciles one cluster).
+- [ ] **`envcore attach`** (L6) — reconnect to a running cluster's multiplexed
+      streams. *Foundation exists:* the manifest persisted for `lockdown`.
+- [ ] **Budget controls** (L2) — `--max-cost`, idle auto-stop (built on the TTL).
+
+## P3 — providers, portability, polish
+- [ ] **DigitalOcean provider** (M6) — prove the `Provider` seam with a 2nd backend.
+- [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
+      the per-OS operator overlay join; consider userspace `wireguard-go` so the
+      operator side needs no admin install.
+- [ ] **`--dry-run`** (L4) — preview the plan without creating anything.
+- [ ] **Structured logging / audit trail** (L3) — `log/slog` for EnvCore's own infra
+      actions (today it's plain `fmt` prints).
+- [ ] **Config precedence + profiles** (CLI spec) — `flags > env > cluster.yaml >
+      ~/.envcore/config.yaml > defaults`; named credential/config profiles.
+- [ ] **Shell completion** (`envcore completion …`), richer `--help` examples.
+
+## Explicitly NOT planned (don't "implement" these)
+- **Auto-restart of crashed processes** — fail-fast is a deliberate design choice
+  (§5): freeze, alert, leave the node up for GDB. Do not add a supervisor.
+- **AWS / GCP providers** — deferred until there's a concrete need (see
+  `envcore-provider-comparison.md`); the `Provider` seam is ready if so.
+- **Non-Ubuntu / non-Linux nodes** — provisioned environments are Ubuntu-by-design.
+
+---
+
+### Suggested order
+P0-1 (workspace sync) and P0-2 (apply cluster.yaml) first — they unblock real
+usage. Then P1 least-privilege run user (biggest security delta: root → scoped).
+Then P2 TTL (closes the last real leak vector). Everything else as needed.
