@@ -58,13 +58,19 @@ func TestNFTables_OverlayAndOperatorRestrictedSSH(t *testing.T) {
 		AllowDNS:          true,
 	})
 	for _, want := range []string{
-		"iif \"wg0\" accept",                          // trust the overlay
-		"udp dport 51820 accept",                      // WireGuard public port
+		"iif \"wg0\" accept",                          // trust the overlay (ingress)
+		"oif \"wg0\" accept",                          // node-initiated overlay egress (F14)
+		"udp dport 51820 accept",                      // WireGuard port (both chains)
 		"ip saddr 203.0.113.4/32 tcp dport 22 accept", // SSH only from operator
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ruleset missing %q\n%s", want, out)
 		}
+	}
+	// overlay egress must be in the OUTPUT chain, not just input (the F14 bug)
+	oi := strings.Index(out, "chain output")
+	if oi < 0 || !strings.Contains(out[oi:], "oif \"wg0\" accept") {
+		t.Errorf("output chain must allow overlay egress (oif wg0):\n%s", out)
 	}
 	// with a restricted source, there must be NO unrestricted "tcp dport 22 accept"
 	if strings.Contains(out, "\n    tcp dport 22 accept\n") {
