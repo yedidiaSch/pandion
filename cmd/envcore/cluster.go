@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -32,6 +33,51 @@ type nodePlan struct {
 }
 
 const operatorOverlayIP = "10.99.0.254"
+
+// nodeManifest is the persisted, reconnect-time view of a node (enough to SSH-pin
+// and reach it over the overlay for `lockdown`/`attach`).
+type nodeManifest struct {
+	Name      string `json:"name"`
+	IP        string `json:"ip"`
+	OverlayIP string `json:"overlay_ip"`
+	HostPub   string `json:"host_pub"` // authorized-keys line, to pin
+}
+
+// clusterManifest is written to ~/.envcore/keys/<id>/manifest.json at `up`.
+type clusterManifest struct {
+	ID    string         `json:"id"`
+	Nodes []nodeManifest `json:"nodes"`
+}
+
+func manifestPath(id string) string {
+	return filepath.Join(envHome(), ".envcore", "keys", id, "manifest.json")
+}
+
+func saveManifest(id string, plans []*nodePlan) error {
+	m := clusterManifest{ID: id}
+	for _, p := range plans {
+		m.Nodes = append(m.Nodes, nodeManifest{
+			Name: p.name, IP: p.ip, OverlayIP: p.overlayIP, HostPub: p.host.PublicAuthorized,
+		})
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(manifestPath(id), b, 0o600)
+}
+
+func loadManifest(id string) (*clusterManifest, error) {
+	b, err := os.ReadFile(manifestPath(id))
+	if err != nil {
+		return nil, err
+	}
+	var m clusterManifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return &m, nil
+}
 
 // upClusterHetzner provisions a hardened N-node cluster and forms the WireGuard
 // mesh (M3.2b), applying the S3-validated barrier pattern:
@@ -192,6 +238,11 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	opConf := overlay.OperatorConfigMulti(opWG.Private, operatorOverlayIP+"/32", peers)
 	confPath := filepath.Join(keyDir, "wg-"+id+".conf")
 	must(os.WriteFile(confPath, []byte(opConf), 0o600))
+
+	// persist the manifest so `lockdown`/`attach` can reconnect (pin + overlay)
+	if err := saveManifest(id, plans); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save cluster manifest: %v\n", err)
+	}
 
 	fmt.Println("----------------------------------------------------------------")
 	if meshOK {
