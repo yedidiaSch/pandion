@@ -132,15 +132,17 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
 	if id == "demo" || id == "" {
 		id = cl.Name // default the cluster id to the topology name
 	}
-	if providerName != "mock" {
-		must(fmt.Errorf("multi-node (-f) on provider %q is not wired yet; use --provider=mock (M3.2b adds hetzner)", providerName))
+
+	if providerName == "hetzner" {
+		upClusterHetzner(o, cl, id)
+		return
 	}
 
+	// mock path: concurrent provisioning + barrier only (no cloud/mesh).
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
 	for i, n := range cl.Nodes {
 		specs[i] = orchestrator.NodeSpec{Name: n.Name, UserData: "#cloud-config\n"}
 	}
-
 	fmt.Printf("UP cluster %q: provisioning %d nodes (provider=mock, bounded concurrency)...\n", id, len(specs))
 	c, err := o.UpCluster(context.Background(), id, specs, orchestrator.DefaultMaxConcurrency)
 	if err != nil {
@@ -154,6 +156,11 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
 	fmt.Printf("barrier passed: all %d nodes RUNNING. teardown: envcore down --id %s\n", len(c.Nodes), id)
 	fmt.Println("note: mock provider creates no cloud resources; real mesh + IPC land in M3.2b/M3.3.")
 }
+
+// small helpers shared by the cluster flow
+func trimSpace(s string) string    { return strings.TrimSpace(s) }
+func joinAmp(cmds []string) string { return strings.Join(cmds, " && ") }
+func b64(s string) string          { return base64.StdEncoding.EncodeToString([]byte(s)) }
 
 func itoa(n int) string { return strconv.Itoa(n) }
 
