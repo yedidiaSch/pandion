@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore capability add-back e2e (P1b). Proves declared caps are granted back
+# Pandion capability add-back e2e (P1b). Proves declared caps are granted back
 # on top of the least-privilege baseline, for BOTH engines. Self-cleaning.
 #
 #   export HCLOUD_TOKEN=your-token
@@ -9,7 +9,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 
 c_ok(){ printf '\033[32m[ PASS ]\033[0m %s\n' "$*"; }
@@ -28,16 +28,16 @@ teardown(){
 }
 trap teardown EXIT
 
-c_in "building envcore..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+c_in "building pandion..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 PASS=1
 
-# --- native engine: envcore-run + cap NET_BIND_SERVICE binds a privileged port ---
-c_in "native: run as envcore-run with NET_BIND_SERVICE, bind port 80 (~2-4 min)..."
+# --- native engine: pandion-run + cap NET_BIND_SERVICE binds a privileged port ---
+c_in "native: run as pandion-run with NET_BIND_SERVICE, bind port 80 (~2-4 min)..."
 DOWN_IDS+=("e2e-caps-native")
 N=$("$BIN" up --provider=hetzner --id e2e-caps-native --cap-add NET_BIND_SERVICE -- \
   'echo "USER=$(whoami)"; (timeout 1 nc -l -p 80 >/dev/null 2>&1 &) ; sleep 0.3; \
    ss -ltn "( sport = :80 )" | grep -q :80 && echo "BOUND80=yes" || echo "BOUND80=no"')
-echo "$N" | grep -q "USER=envcore-run" && c_ok "native: workload is non-root (envcore-run)" || { c_no "native user"; PASS=0; }
+echo "$N" | grep -q "USER=pandion-run" && c_ok "native: workload is non-root (pandion-run)" || { c_no "native user"; PASS=0; }
 echo "$N" | grep -q "BOUND80=yes" && c_ok "native: NET_BIND_SERVICE granted (bound :80 as non-root)" || { c_no "native cap add-back (see output)"; echo "$N" | tail -5; PASS=0; }
 
 # --- docker engine: --cap-add NET_RAW shows the cap in the container's CapEff ---

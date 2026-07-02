@@ -16,16 +16,16 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
-	"github.com/envcore/envcore/internal/config"
-	"github.com/envcore/envcore/internal/discovery"
-	"github.com/envcore/envcore/internal/firewall"
-	"github.com/envcore/envcore/internal/harden"
-	"github.com/envcore/envcore/internal/orchestrator"
-	"github.com/envcore/envcore/internal/overlay"
-	envssh "github.com/envcore/envcore/internal/ssh"
-	"github.com/envcore/envcore/internal/sshkeys"
-	"github.com/envcore/envcore/internal/stream"
-	"github.com/envcore/envcore/internal/workspace"
+	"github.com/yedidiaSch/pandion/internal/config"
+	"github.com/yedidiaSch/pandion/internal/discovery"
+	"github.com/yedidiaSch/pandion/internal/firewall"
+	"github.com/yedidiaSch/pandion/internal/harden"
+	"github.com/yedidiaSch/pandion/internal/orchestrator"
+	"github.com/yedidiaSch/pandion/internal/overlay"
+	envssh "github.com/yedidiaSch/pandion/internal/ssh"
+	"github.com/yedidiaSch/pandion/internal/sshkeys"
+	"github.com/yedidiaSch/pandion/internal/stream"
+	"github.com/yedidiaSch/pandion/internal/workspace"
 )
 
 // syncSpec describes a workspace to push to a node and an optional remote build.
@@ -107,11 +107,11 @@ func workspaceDir(runUser, override string) string {
 	return "/home/" + runUser + "/workspace"
 }
 
-// syncWorkspace archives LocalPath (honoring .envcoreignore/.gitignore), streams
+// syncWorkspace archives LocalPath (honoring .pandionignore/.gitignore), streams
 // it to the node over the pinned SSH connection, extracts it, and runs the
 // optional Build command. Must run inside the egress build-window (before the
 // firewall lockdown) so the build can fetch dependencies.
-// syncFiles archives LocalPath (honoring .envcoreignore) and extracts it on the
+// syncFiles archives LocalPath (honoring .pandionignore) and extracts it on the
 // node, chowning to runUser. Returns the remote workspace dir. No build.
 func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
 	remote := workspaceDir(runUser, s.RemotePath)
@@ -212,14 +212,14 @@ type nodeManifest struct {
 	HostPub   string `json:"host_pub"` // authorized-keys line, to pin
 }
 
-// clusterManifest is written to ~/.envcore/keys/<id>/manifest.json at `up`.
+// clusterManifest is written to ~/.pandion/keys/<id>/manifest.json at `up`.
 type clusterManifest struct {
 	ID    string         `json:"id"`
 	Nodes []nodeManifest `json:"nodes"`
 }
 
 func manifestPath(id string) string {
-	return filepath.Join(envHome(), ".envcore", "keys", id, "manifest.json")
+	return filepath.Join(envHome(), ".pandion", "keys", id, "manifest.json")
 }
 
 func saveManifest(id string, plans []*nodePlan) error {
@@ -284,7 +284,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}()
 
 	// shared login key for the whole cluster; operator WG identity
-	login, err := sshkeys.Generate("envcore-login")
+	login, err := sshkeys.Generate("pandion-login")
 	must(err)
 	opWG, err := overlay.GenerateKeypair()
 	must(err)
@@ -293,7 +293,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	plans := make([]*nodePlan, len(cl.Nodes))
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
 	for i, n := range cl.Nodes {
-		host, e := sshkeys.Generate("envcore-host-" + n.Name)
+		host, e := sshkeys.Generate("pandion-host-" + n.Name)
 		must(e)
 		wg, e := overlay.GenerateKeypair()
 		must(e)
@@ -352,7 +352,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}
 
 	// persist keys for later attach/debug
-	keyDir := filepath.Join(envHome(), ".envcore", "keys", id)
+	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)
 	must(login.Save(keyDir, "login_ed25519"))
 
 	// wait for each node's cloud-init to finish (toolchain + wg iface up), pinned
@@ -362,7 +362,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if _, err := envssh.RunWithRetry(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
 			"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
 			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, err)
-			fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
+			fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
 			return
 		}
 	}
@@ -377,7 +377,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		wd, err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, p.runUser)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
-			fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
+			fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
 			return
 		}
 		p.workdir = wd
@@ -443,7 +443,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}
 
 	// inject service discovery (overlay IPs) into every node so run commands can
-	// reach siblings via $ENVCORE_<NODE>_IP with no hardcoded IPs (C5/H1).
+	// reach siblings via $PANDION_<NODE>_IP with no hardcoded IPs (C5/H1).
 	overlayByName := map[string]string{}
 	for _, p := range plans {
 		overlayByName[p.name] = p.overlayIP
@@ -490,7 +490,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	streaming.Store(true)
 	streamCluster(streamCtx, id, plans, login)
 
-	fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
+	fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
 }
 
 // streamCluster runs each node's command concurrently and multiplexes output.
@@ -506,7 +506,7 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		return
 	}
 
-	logDir := filepath.Join(envHome(), ".envcore", "logs", id)
+	logDir := filepath.Join(envHome(), ".pandion", "logs", id)
 	printer := stream.NewPrinter(os.Stdout, logDir, colorEnabled())
 	defer printer.Close()
 

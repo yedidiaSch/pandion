@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore M3.4 e2e: MULTIPLEXED per-node output + per-node log files.
+# Pandion M3.4 e2e: MULTIPLEXED per-node output + per-node log files.
 # Two nodes each emit several timestamped lines; output should interleave with
 # [node] prefixes, and per-node logs should be written locally. Self-cleaning.
 #
@@ -11,9 +11,9 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-m34"
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 CLYAML="$(mktemp --suffix=.yaml)"
-LOGDIR="$HOME/.envcore/logs/$ID"
+LOGDIR="$HOME/.pandion/logs/$ID"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 
 c_ok(){ printf '\033[32m[ PASS ]\033[0m %s\n' "$*"; }
@@ -35,7 +35,7 @@ trap teardown EXIT
 # each node prints 3 lines (finite, so the stream ends on its own) — broker to
 # stdout, worker mixes a stderr line to exercise the stderr marker.
 cat > "$CLYAML" <<EOF
-apiVersion: envcore/v1
+apiVersion: pandion/v1
 name: $ID
 nodes:
   - name: broker
@@ -44,7 +44,7 @@ nodes:
     run: 'for i in 1 2 3; do echo "worker line \$i"; sleep 1; done; echo "worker warning" 1>&2'
 EOF
 
-c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
 c_in "provisioning + streaming multiplexed output (~3-5 min)..."
 # NO_COLOR so assertions match plain prefixes

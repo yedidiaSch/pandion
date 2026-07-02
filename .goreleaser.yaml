@@ -1,19 +1,19 @@
-# EnvCore release configuration (goreleaser v2).
+# Pandion release configuration (goreleaser v2).
 # Local check:   goreleaser check
 # Local build:   goreleaser build --snapshot --clean
 # Release:       push a tag `vX.Y.Z` -> GitHub Actions runs `goreleaser release`.
 version: 2
 
-project_name: envcore
+project_name: pandion
 
 before:
   hooks:
     - go mod tidy
 
 builds:
-  - id: envcore
-    main: ./cmd/envcore
-    binary: envcore
+  - id: pandion
+    main: ./cmd/pandion
+    binary: pandion
     env:
       - CGO_ENABLED=0 # pure Go: fully static, trivial cross-compile
     goos: [linux, darwin, windows]
@@ -39,13 +39,13 @@ archives:
 
 # Linux packages (.deb / .rpm / .apk) attached to each GitHub Release. These need
 # no external repo/token — download and `dpkg -i` / `rpm -i`. Hosting a signed APT
-# repo (Cloudsmith/PPA) for `apt install envcore` is a separate, later step.
+# repo (Cloudsmith/PPA) for `apt install pandion` is a separate, later step.
 nfpms:
   - id: packages
-    package_name: envcore
-    vendor: EnvCore
-    homepage: "https://github.com/yedidiaSch/envcore"
-    maintainer: "EnvCore authors <noreply@github.com>"
+    package_name: pandion
+    vendor: Pandion
+    homepage: "https://github.com/yedidiaSch/pandion"
+    maintainer: "Pandion authors <noreply@github.com>"
     description: "Provision, harden & orchestrate C++/IPC dev & test environments"
     license: "Apache-2.0"
     formats: [deb, rpm, apk]
@@ -76,21 +76,21 @@ changelog:
 release:
   draft: false
   prerelease: auto # -rc/-beta tags are marked pre-release automatically
-  name_template: "EnvCore {{ .Tag }}"
+  name_template: "Pandion {{ .Tag }}"
 
 # Homebrew tap: publishes a cask to yedidiaSch/homebrew-tap so users can
-# `brew install yedidiaSch/tap/envcore`. Pushing needs a PAT with contents:write
+# `brew install yedidiaSch/tap/pandion`. Pushing needs a PAT with contents:write
 # on the tap repo, provided as HOMEBREW_TAP_GITHUB_TOKEN. If that secret is unset,
 # skip_upload is true and the release still succeeds (cask just isn't pushed).
 # (goreleaser v2 replaced `brews` with `homebrew_casks` for CLI binaries.)
 homebrew_casks:
-  - name: envcore
+  - name: pandion
     repository:
       owner: yedidiaSch
       name: homebrew-tap
       branch: master
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    homepage: "https://github.com/yedidiaSch/envcore"
+    homepage: "https://github.com/yedidiaSch/pandion"
     description: "Provision, harden & orchestrate C++/IPC dev environments"
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
     # remove the macOS Gatekeeper quarantine on the unsigned binary at install
@@ -98,5 +98,5 @@ homebrew_casks:
       post:
         install: |
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/envcore"]
+            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/pandion"]
           end

@@ -2,7 +2,7 @@
 //
 // M2 increment 1 implements the egress build-window validated by spike S2:
 // during provisioning the node fetches its toolchain with egress open, then
-// EnvCore applies a default-deny egress policy BEFORE running the user command,
+// Pandion applies a default-deny egress policy BEFORE running the user command,
 // so a compromised workload cannot exfiltrate or phone home. Ingress is also
 // default-deny, keeping only SSH (and any declared ports) reachable.
 //
@@ -39,7 +39,7 @@ type Spec struct {
 	AllowDNS bool
 	// NoPublicSSH removes all public SSH rules — SSH is then reachable ONLY over
 	// the overlay (via AllowOverlayInput). This is the full deny-all posture; only
-	// apply it once overlay SSH is confirmed working (see `envcore lockdown`).
+	// apply it once overlay SSH is confirmed working (see `pandion lockdown`).
 	NoPublicSSH bool
 }
 
@@ -57,7 +57,7 @@ func NFTables(in Spec) string {
 	s := in.normalize()
 	var b strings.Builder
 	b.WriteString("flush ruleset\n")
-	b.WriteString("table inet envcore {\n")
+	b.WriteString("table inet pandion {\n")
 
 	if len(s.EgressAllowIPs) > 0 {
 		ips := append([]string(nil), s.EgressAllowIPs...)

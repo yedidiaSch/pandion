@@ -1,7 +1,7 @@
 name: Publish package repo
 
 # Builds a SIGNED apt + yum repository from a release's .deb/.rpm artifacts and
-# deploys it to GitHub Pages (served at https://<owner>.github.io/envcore/).
+# deploys it to GitHub Pages (served at https://<owner>.github.io/pandion/).
 #
 # Requires:
 #   - secret GPG_PRIVATE_KEY  (armored private signing key; set already)
@@ -60,12 +60,12 @@ jobs:
         run: |
           mkdir -p aptrepo/conf site/deb
           cat > aptrepo/conf/distributions <<EOF
-          Origin: EnvCore
-          Label: EnvCore
+          Origin: Pandion
+          Label: Pandion
           Codename: stable
           Architectures: amd64 arm64
           Components: main
-          Description: EnvCore apt repository
+          Description: Pandion apt repository
           SignWith: $FPR
           EOF
           for d in pkgs/*.deb; do reprepro -b aptrepo includedeb stable "$d"; done
@@ -82,27 +82,27 @@ jobs:
 
       - name: Assemble site (public key, .repo, landing page)
         run: |
-          cp packaging/envcore-packages.gpg.key site/gpg.key
-          cat > site/envcore.repo <<'EOF'
-          [envcore]
-          name=EnvCore
-          baseurl=https://yedidiaSch.github.io/envcore/rpm
+          cp packaging/pandion-packages.gpg.key site/gpg.key
+          cat > site/pandion.repo <<'EOF'
+          [pandion]
+          name=Pandion
+          baseurl=https://yedidiaSch.github.io/pandion/rpm
           enabled=1
           repo_gpgcheck=1
           gpgcheck=0
-          gpgkey=https://yedidiaSch.github.io/envcore/gpg.key
+          gpgkey=https://yedidiaSch.github.io/pandion/gpg.key
           EOF
           cat > site/index.html <<'EOF'
-          <!doctype html><meta charset=utf-8><title>EnvCore packages</title>
+          <!doctype html><meta charset=utf-8><title>Pandion packages</title>
           <body style="font-family:system-ui;max-width:52rem;margin:3rem auto;padding:0 1rem;line-height:1.5">
-          <h1>EnvCore package repository</h1>
+          <h1>Pandion package repository</h1>
           <h2>Debian / Ubuntu</h2>
-          <pre>curl -fsSL https://yedidiaSch.github.io/envcore/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/envcore.gpg
-          echo "deb [signed-by=/usr/share/keyrings/envcore.gpg] https://yedidiaSch.github.io/envcore/deb stable main" | sudo tee /etc/apt/sources.list.d/envcore.list
-          sudo apt update &amp;&amp; sudo apt install envcore</pre>
+          <pre>curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/pandion.gpg
+          echo "deb [signed-by=/usr/share/keyrings/pandion.gpg] https://yedidiaSch.github.io/pandion/deb stable main" | sudo tee /etc/apt/sources.list.d/pandion.list
+          sudo apt update &amp;&amp; sudo apt install pandion</pre>
           <h2>RHEL / Fedora</h2>
-          <pre>sudo curl -fsSL https://yedidiaSch.github.io/envcore/envcore.repo -o /etc/yum.repos.d/envcore.repo
-          sudo dnf install envcore</pre>
+          <pre>sudo curl -fsSL https://yedidiaSch.github.io/pandion/pandion.repo -o /etc/yum.repos.d/pandion.repo
+          sudo dnf install pandion</pre>
           </body>
           EOF
           touch site/.nojekyll

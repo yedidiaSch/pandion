@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/envcore/envcore/internal/provider/mock"
-	"github.com/envcore/envcore/internal/state"
+	"github.com/yedidiaSch/pandion/internal/provider/mock"
+	"github.com/yedidiaSch/pandion/internal/state"
 )
 
 func newOrch(t *testing.T) (*Orchestrator, *mock.Mock) {

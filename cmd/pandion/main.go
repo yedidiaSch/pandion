@@ -1,4 +1,4 @@
-// Command envcore is the M1 CLI: a single-node provision/run/teardown flow over
+// Command pandion is the M1 CLI: a single-node provision/run/teardown flow over
 // either the in-memory mock provider (default, free, offline) or the real
 // Hetzner provider (--provider=hetzner), with security-hardened bootstrap.
 package main
@@ -14,17 +14,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/envcore/envcore/internal/config"
-	"github.com/envcore/envcore/internal/firewall"
-	"github.com/envcore/envcore/internal/harden"
-	"github.com/envcore/envcore/internal/orchestrator"
-	"github.com/envcore/envcore/internal/overlay"
-	"github.com/envcore/envcore/internal/provider"
-	"github.com/envcore/envcore/internal/provider/hetzner"
-	"github.com/envcore/envcore/internal/provider/mock"
-	envssh "github.com/envcore/envcore/internal/ssh"
-	"github.com/envcore/envcore/internal/sshkeys"
-	"github.com/envcore/envcore/internal/state"
+	"github.com/yedidiaSch/pandion/internal/config"
+	"github.com/yedidiaSch/pandion/internal/firewall"
+	"github.com/yedidiaSch/pandion/internal/harden"
+	"github.com/yedidiaSch/pandion/internal/orchestrator"
+	"github.com/yedidiaSch/pandion/internal/overlay"
+	"github.com/yedidiaSch/pandion/internal/provider"
+	"github.com/yedidiaSch/pandion/internal/provider/hetzner"
+	"github.com/yedidiaSch/pandion/internal/provider/mock"
+	envssh "github.com/yedidiaSch/pandion/internal/ssh"
+	"github.com/yedidiaSch/pandion/internal/sshkeys"
+	"github.com/yedidiaSch/pandion/internal/state"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". Defaults to
@@ -38,7 +38,7 @@ func main() {
 	}
 	switch os.Args[1] {
 	case "version":
-		fmt.Println("envcore", version)
+		fmt.Println("pandion", version)
 	case "demo":
 		runDemo()
 	case "up":
@@ -183,7 +183,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
 	for _, n := range c.Nodes {
 		fmt.Printf("  %-12s %-8s ip=%s\n", n.Name, n.Phase, n.IP)
 	}
-	fmt.Printf("barrier passed: all %d nodes RUNNING. teardown: envcore down --id %s\n", len(c.Nodes), id)
+	fmt.Printf("barrier passed: all %d nodes RUNNING. teardown: pandion down --id %s\n", len(c.Nodes), id)
 	fmt.Println("note: mock provider creates no cloud resources; real mesh + IPC land in M3.2b/M3.3.")
 }
 
@@ -238,15 +238,15 @@ func splitCSV(s string) []string {
 func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	id, node, runCmd, toolchain := opt.id, opt.node, opt.runCmd, opt.toolchain
 	if runCmd == "" {
-		runCmd = "echo ENVCORE_READY && uname -a"
+		runCmd = "echo PANDION_READY && uname -a"
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 
 	// 1) generate the host key (to inject + pin) and the login key (S1)
-	host, err := sshkeys.Generate("envcore-host")
+	host, err := sshkeys.Generate("pandion-host")
 	must(err)
-	login, err := sshkeys.Generate("envcore-login")
+	login, err := sshkeys.Generate("pandion-login")
 	must(err)
 
 	// 2) build hardened cloud-init: inject host key (race-free, S1/F1) + install
@@ -296,7 +296,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		c.ID, node, ip, host.Fingerprint())
 
 	// 4) persist keys for later attach/down (0600)
-	keyDir := filepath.Join(envHome(), ".envcore", "keys", id)
+	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)
 	must(host.Save(keyDir, "host_ed25519"))
 	must(login.Save(keyDir, "login_ed25519"))
 
@@ -310,7 +310,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if _, err := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
 		"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
 		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", err)
-		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+		fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
 		return
 	}
 	fmt.Println("node ready (cloud-init complete).")
@@ -321,7 +321,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	workdir := ""
 	failNode := func(err error) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
-		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+		fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
 	}
 	if opt.engine == "docker" {
 		// pull the image NOW (egress is still open); the post-lockdown `docker run`
@@ -399,7 +399,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
 			fmt.Printf("firewall apply failed: %v\n%s(node left running)\n", err, out)
-			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+			fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
 			return
 		}
 		sshScope := "any source"
@@ -424,7 +424,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if runErr != nil {
 		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)
 	}
-	fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+	fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
 }
 
 func runValidate(args []string) {
@@ -438,7 +438,7 @@ func runValidate(args []string) {
 	fmt.Printf("%s: valid\n", *file)
 }
 
-// runReap finds every EnvCore-tagged server at the provider and destroys orphans
+// runReap finds every Pandion-tagged server at the provider and destroys orphans
 // — the no-backend way to prevent billing leaks when local state or the
 // controlling laptop is gone (C4). Confirms in a TTY unless --yes.
 func runReap(args []string) {
@@ -455,7 +455,7 @@ func runReap(args []string) {
 	plan, err := o.ReapPlan(context.Background(), *olderThan)
 	must(err)
 	if len(plan) == 0 {
-		fmt.Println("reap: no EnvCore clusters to remove.")
+		fmt.Println("reap: no Pandion clusters to remove.")
 		return
 	}
 	fmt.Printf("reap: %d cluster(s) at %s:\n", len(plan), p.Name())
@@ -505,7 +505,7 @@ func runDemo() {
 }
 
 func mustStore() *state.Store {
-	st, err := state.NewStore(filepath.Join(envHome(), ".envcore", "state"))
+	st, err := state.NewStore(filepath.Join(envHome(), ".pandion", "state"))
 	must(err)
 	return st
 }
@@ -517,12 +517,12 @@ func envHome() string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  envcore up   [--provider mock|hetzner] [--id ID] [--node NAME] -- <run cmd>")
-	fmt.Fprintln(os.Stderr, "  envcore down [--provider mock|hetzner] [--id ID]")
-	fmt.Fprintln(os.Stderr, "  envcore validate [-f cluster.yaml]")
-	fmt.Fprintln(os.Stderr, "  envcore lockdown --id ID   (public deny-all; SSH over overlay only)")
-	fmt.Fprintln(os.Stderr, "  envcore reap [--older-than DUR] [--yes]   (destroy orphaned EnvCore nodes)")
-	fmt.Fprintln(os.Stderr, "  envcore demo | version")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner] [--id ID] [--node NAME] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner] [--id ID]")
+	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
+	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
+	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
+	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
 func must(err error) {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore M3.3 e2e: cluster + mesh + SERVICE DISCOVERY. Each node reaches its
-# sibling via the injected $ENVCORE_<NODE>_IP over the overlay. Self-cleaning.
+# Pandion M3.3 e2e: cluster + mesh + SERVICE DISCOVERY. Each node reaches its
+# sibling via the injected $PANDION_<NODE>_IP over the overlay. Self-cleaning.
 #
 #   export HCLOUD_TOKEN=your-token
 #   ./scripts/e2e_m33.sh
@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-m33"
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 CLYAML="$(mktemp --suffix=.yaml)"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 
@@ -33,16 +33,16 @@ trap teardown EXIT
 # broker prints the worker's discovered IP; worker pings the broker over the
 # overlay using its discovered IP — proving discovery + IPC-over-overlay.
 cat > "$CLYAML" <<EOF
-apiVersion: envcore/v1
+apiVersion: pandion/v1
 name: $ID
 nodes:
   - name: broker
-    run: 'echo "broker sees worker at \$ENVCORE_WORKER_IP"'
+    run: 'echo "broker sees worker at \$PANDION_WORKER_IP"'
   - name: worker
-    run: 'ping -c2 -W3 \$ENVCORE_BROKER_IP >/dev/null 2>&1 && echo "worker reached broker at \$ENVCORE_BROKER_IP via overlay" || echo FAIL'
+    run: 'ping -c2 -W3 \$PANDION_BROKER_IP >/dev/null 2>&1 && echo "worker reached broker at \$PANDION_BROKER_IP via overlay" || echo FAIL'
 EOF
 
-c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
 c_in "provisioning cluster + mesh + discovery (~3-5 min)..."
 OUT=$("$BIN" up --provider=hetzner --id "$ID" -f "$CLYAML")
@@ -53,7 +53,7 @@ echo "----------------------------------------------------------------"
 PASS=1
 echo "$OUT" | grep -q "mesh verified" && c_ok "mesh verified" || { c_no "mesh"; PASS=0; }
 echo "$OUT" | grep -q "broker sees worker at 10.99.0.2" \
-  && c_ok "discovery: broker resolved \$ENVCORE_WORKER_IP to overlay IP" || { c_no "discovery var not resolved"; PASS=0; }
+  && c_ok "discovery: broker resolved \$PANDION_WORKER_IP to overlay IP" || { c_no "discovery var not resolved"; PASS=0; }
 echo "$OUT" | grep -q "worker reached broker at 10.99.0.1 via overlay" \
   && c_ok "IPC-over-overlay: worker reached broker via discovered IP" || { c_no "worker could not reach broker via discovery"; PASS=0; }
 

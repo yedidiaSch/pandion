@@ -1,7 +1,7 @@
 // Package workspace syncs the local project to remote nodes by streaming a
-// gzip'd tar over EnvCore's existing pinned SSH connection (no rsync, no external
+// gzip'd tar over Pandion's existing pinned SSH connection (no rsync, no external
 // ssh, no key files — consistent with the security model). Honors an ignore file
-// (.envcoreignore, falling back to .gitignore) and always excludes .git.
+// (.pandionignore, falling back to .gitignore) and always excludes .git.
 package workspace
 
 import (
@@ -20,9 +20,9 @@ const DefaultRemotePath = "/root/workspace"
 // Ignore matches paths to exclude from the archive (a pragmatic .gitignore subset).
 type Ignore struct{ patterns []string }
 
-// LoadIgnore reads .envcoreignore, or .gitignore if the former is absent.
+// LoadIgnore reads .pandionignore, or .gitignore if the former is absent.
 func LoadIgnore(root string) *Ignore {
-	for _, name := range []string{".envcoreignore", ".gitignore"} {
+	for _, name := range []string{".pandionignore", ".gitignore"} {
 		if b, err := os.ReadFile(filepath.Join(root, name)); err == nil {
 			return NewIgnore(strings.Split(string(b), "\n"))
 		}

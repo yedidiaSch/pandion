@@ -1,4 +1,4 @@
-apiVersion: envcore/v2
+apiVersion: pandion/v2
 name: bad
 nodes:
   - name: dev

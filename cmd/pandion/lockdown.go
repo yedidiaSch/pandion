@@ -8,9 +8,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/envcore/envcore/internal/firewall"
-	"github.com/envcore/envcore/internal/overlay"
-	envssh "github.com/envcore/envcore/internal/ssh"
+	"github.com/yedidiaSch/pandion/internal/firewall"
+	"github.com/yedidiaSch/pandion/internal/overlay"
+	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	gossh "golang.org/x/crypto/ssh"
 )
 
@@ -22,7 +22,7 @@ import (
 //
 // Prereq: you must have joined the overlay first, e.g.
 //
-//	sudo wg-quick up ~/.envcore/keys/<id>/wg-<id>.conf
+//	sudo wg-quick up ~/.pandion/keys/<id>/wg-<id>.conf
 func runLockdown(args []string) {
 	fs := flag.NewFlagSet("lockdown", flag.ExitOnError)
 	id := fs.String("id", "", "cluster id (required)")
@@ -35,12 +35,12 @@ func runLockdown(args []string) {
 	man, err := loadManifest(*id)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lockdown: cannot load cluster manifest for %q: %v\n", *id, err)
-		fmt.Fprintln(os.Stderr, "  (was the cluster created with `up -f`? manifest lives in ~/.envcore/keys/<id>/)")
+		fmt.Fprintln(os.Stderr, "  (was the cluster created with `up -f`? manifest lives in ~/.pandion/keys/<id>/)")
 		os.Exit(3)
 	}
 
 	// login signer for SSH
-	loginPath := filepath.Join(envHome(), ".envcore", "keys", *id, "login_ed25519")
+	loginPath := filepath.Join(envHome(), ".pandion", "keys", *id, "login_ed25519")
 	pem, err := os.ReadFile(loginPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lockdown: cannot read login key %s: %v\n", loginPath, err)
@@ -67,7 +67,7 @@ func runLockdown(args []string) {
 			fmt.Fprintf(os.Stderr, "REFUSING to lock down: cannot SSH %s over the overlay (%s): %v\n",
 				n.Name, n.OverlayIP, err)
 			fmt.Fprintf(os.Stderr, "  join the overlay first:  sudo wg-quick up %s\n",
-				filepath.Join(envHome(), ".envcore", "keys", *id, "wg-"+*id+".conf"))
+				filepath.Join(envHome(), ".pandion", "keys", *id, "wg-"+*id+".conf"))
 			fmt.Fprintln(os.Stderr, "  (locking down without overlay access would cut you off — aborted, nothing changed)")
 			os.Exit(6)
 		}

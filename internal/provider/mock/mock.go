@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/envcore/envcore/internal/provider"
+	"github.com/yedidiaSch/pandion/internal/provider"
 )
 
 // Mock is a thread-safe, in-memory provider with simple failure injection.
