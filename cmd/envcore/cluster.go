@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	gossh "golang.org/x/crypto/ssh"
+
 	"github.com/envcore/envcore/internal/config"
 	"github.com/envcore/envcore/internal/discovery"
 	"github.com/envcore/envcore/internal/firewall"
@@ -21,7 +24,44 @@ import (
 	envssh "github.com/envcore/envcore/internal/ssh"
 	"github.com/envcore/envcore/internal/sshkeys"
 	"github.com/envcore/envcore/internal/stream"
+	"github.com/envcore/envcore/internal/workspace"
 )
+
+// syncSpec describes a workspace to push to a node and an optional remote build.
+type syncSpec struct {
+	LocalPath  string
+	RemotePath string
+	Build      string
+}
+
+// syncWorkspace archives LocalPath (honoring .envcoreignore/.gitignore), streams
+// it to the node over the pinned SSH connection, extracts it, and runs the
+// optional Build command. Must run inside the egress build-window (before the
+// firewall lockdown) so the build can fetch dependencies.
+func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec) error {
+	remote := s.RemotePath
+	if remote == "" {
+		remote = workspace.DefaultRemotePath
+	}
+	ig := workspace.LoadIgnore(s.LocalPath)
+	data, files, err := workspace.Archive(s.LocalPath, ig)
+	if err != nil {
+		return fmt.Errorf("archive %s: %w", s.LocalPath, err)
+	}
+	fmt.Printf("  syncing %d files -> %s ...\n", files, remote)
+	extract := "mkdir -p " + shellQuote(remote) + " && tar -xzf - -C " + shellQuote(remote)
+	if out, err := envssh.RunWithInput(ctx, addr, "root", signer, pinned, extract, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("extract on node: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(s.Build) != "" {
+		fmt.Printf("  building: %s\n", s.Build)
+		build := "cd " + shellQuote(remote) + " && bash -lc " + shellQuote(s.Build)
+		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, build); err != nil {
+			return fmt.Errorf("remote build failed: %v\n%s", err, out)
+		}
+	}
+	return nil
+}
 
 // nodePlan holds the locally-generated identity for one cluster node.
 type nodePlan struct {
@@ -30,7 +70,25 @@ type nodePlan struct {
 	wg        overlay.Keypair  // per-node WireGuard key
 	overlayIP string           // e.g. 10.99.0.1
 	run       string
-	ip        string // public IP, filled after provisioning
+	ip        string    // public IP, filled after provisioning
+	sync      *syncSpec // workspace to push + optional remote build
+}
+
+// resolveSync picks the node's sync config, falling back to cluster defaults.
+func resolveSync(node config.Node, defaults config.NodeCommon) *syncSpec {
+	s := node.Sync
+	if s == nil {
+		s = defaults.Sync
+	}
+	if s == nil || strings.EqualFold(s.Mode, "binaries") {
+		// M-sync-1 supports source sync; binaries mode is a fast-follow (H3).
+		return nil
+	}
+	local := s.Path
+	if local == "" {
+		local = "./"
+	}
+	return &syncSpec{LocalPath: local, RemotePath: s.RemotePath, Build: s.Build}
 }
 
 const operatorOverlayIP = "10.99.0.254"
@@ -130,7 +188,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		wg, e := overlay.GenerateKeypair()
 		must(e)
 		oip := fmt.Sprintf("10.99.0.%d", i+1)
-		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run}
+		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
+			sync: resolveSync(n, cl.Defaults)}
 
 		ci := harden.CloudInit{
 			HostPrivKeyPEM: host.PrivatePEM,
@@ -172,6 +231,20 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if _, err := envssh.RunWithRetry(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
 			"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
 			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, err)
+			fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
+			return
+		}
+	}
+
+	// sync workspaces + remote build, in the egress build-window (before the
+	// firewall lockdown so builds can fetch dependencies). (C5/H1/H3, P0-1)
+	for _, p := range plans {
+		if p.sync == nil {
+			continue
+		}
+		fmt.Printf("[%s] workspace sync...\n", p.name)
+		if err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync); err != nil {
+			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
 			fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
 			return
 		}

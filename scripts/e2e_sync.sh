@@ -1,0 +1,60 @@
+#!/usr/bin/env bash
+# ============================================================================
+# EnvCore workspace-sync e2e: sync a local C++ project to a node, build it
+# remotely, and run it — proving EnvCore can run YOUR code. Self-cleaning.
+#
+#   export HCLOUD_TOKEN=your-token
+#   ./scripts/e2e_sync.sh
+# ============================================================================
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+ID="e2e-sync"
+BIN="./bin/envcore"
+SRC="$(mktemp -d)"
+: "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
+
+c_ok(){ printf '\033[32m[ PASS ]\033[0m %s\n' "$*"; }
+c_no(){ printf '\033[31m[ FAIL ]\033[0m %s\n' "$*"; }
+c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
+
+teardown(){
+  local code=$?; echo; c_in "cleaning up..."
+  "$BIN" down --provider=hetzner --id "$ID" >/dev/null 2>&1 || true
+  rm -rf "$SRC"
+  if command -v hcloud >/dev/null 2>&1; then
+    local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)
+    [ "${left:-0}" = 0 ] && c_ok "teardown: no servers left" || c_no "teardown: $left left"
+  fi
+  c_in "done (exit $code)"
+}
+trap teardown EXIT
+
+# a tiny local C++ "project" + a build dir that MUST be excluded from the sync
+mkdir -p "$SRC/build"
+cat > "$SRC/hello.cpp" <<'CPP'
+#include <cstdio>
+int main(){ std::puts("HELLO_FROM_SYNCED_SOURCE"); return 0; }
+CPP
+echo "this must NOT be uploaded" > "$SRC/build/stale.o"
+printf 'build/\n' > "$SRC/.envcoreignore"
+
+c_in "building envcore..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+
+c_in "provision + sync $SRC + remote build + run (~2-4 min)..."
+OUT=$("$BIN" up --provider=hetzner --id "$ID" \
+  --workspace "$SRC" --remote-path /root/proj \
+  --build 'g++ -O2 hello.cpp -o hello' \
+  -- 'cd /root/proj && ls && ./hello')
+echo "----------------------------------------------------------------"
+echo "$OUT"
+echo "----------------------------------------------------------------"
+
+PASS=1
+echo "$OUT" | grep -q "syncing .* files -> /root/proj" && c_ok "workspace archived + streamed to node" || { c_no "sync step"; PASS=0; }
+echo "$OUT" | grep -q "HELLO_FROM_SYNCED_SOURCE" && c_ok "remote build + run of MY source succeeded" || { c_no "build/run"; PASS=0; }
+echo "$OUT" | grep -q "hello.cpp" && c_ok "source file present on node" || { c_no "source missing"; PASS=0; }
+echo "$OUT" | grep -q "stale.o" && { c_no ".envcoreignore not honored (build/ leaked)"; PASS=0; } || c_ok ".envcoreignore honored (build/ excluded)"
+
+echo "================================================================"
+[ "$PASS" = 1 ] && c_ok "WORKSPACE SYNC: verified" || c_no "workspace sync: see failures above"

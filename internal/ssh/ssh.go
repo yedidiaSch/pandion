@@ -8,8 +8,10 @@ package ssh
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"strings"
 	"sync"
@@ -55,6 +57,55 @@ func Run(ctx context.Context, addr, user string, signer gossh.Signer, pinned gos
 
 	out, err := sess.CombinedOutput(cmd)
 	return string(out), err
+}
+
+// RunWithInput runs cmd with stdin fed from r (e.g. streaming a tar archive to
+// `tar -x` on the node), returning combined stdout+stderr. Same pinned-host-key
+// verification as Run.
+func RunWithInput(ctx context.Context, addr, user string, signer gossh.Signer, pinned gossh.PublicKey, cmd string, r io.Reader) (string, error) {
+	cfg := &gossh.ClientConfig{
+		User:            user,
+		Auth:            []gossh.AuthMethod{gossh.PublicKeys(signer)},
+		HostKeyCallback: pinnedCallback(pinned),
+		Timeout:         10 * time.Second,
+	}
+	var d net.Dialer
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return "", fmt.Errorf("dial %s: %w", addr, err)
+	}
+	c, chans, reqs, err := gossh.NewClientConn(conn, addr, cfg)
+	if err != nil {
+		_ = conn.Close()
+		return "", fmt.Errorf("ssh handshake %s: %w", addr, err)
+	}
+	client := gossh.NewClient(c, chans, reqs)
+	defer client.Close()
+
+	sess, err := client.NewSession()
+	if err != nil {
+		return "", fmt.Errorf("ssh session: %w", err)
+	}
+	defer sess.Close()
+
+	var out bytes.Buffer
+	sess.Stdout = &out
+	sess.Stderr = &out
+	stdin, err := sess.StdinPipe()
+	if err != nil {
+		return "", err
+	}
+	if err := sess.Start(cmd); err != nil {
+		return "", fmt.Errorf("start %q: %w", cmd, err)
+	}
+	if _, err := io.Copy(stdin, r); err != nil {
+		_ = stdin.Close()
+		return out.String(), fmt.Errorf("stream stdin: %w", err)
+	}
+	if err := stdin.Close(); err != nil {
+		return out.String(), err
+	}
+	return out.String(), sess.Wait()
 }
 
 // Stream runs cmd and streams stdout/stderr line-by-line to onLine (streamName
