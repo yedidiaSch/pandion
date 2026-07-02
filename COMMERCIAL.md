@@ -6,9 +6,8 @@ for internal evaluation/development/testing by anyone. Larger organizations that
 use it commercially need a **commercial license** — that's what funds ongoing
 development.
 
-> ⚠️ **This document is a draft.** Fill in the contact address, finalize the
-> pricing tiers, and have a lawyer review both this file and `LICENSE` before you
-> rely on them. Nothing here is legal advice.
+> ⚠️ **Before relying on this:** have a lawyer review this file and `LICENSE`
+> (especially the Additional Use Grant). Nothing here is legal advice.
 
 ---
 
@@ -33,25 +32,25 @@ If you're unsure whether your use qualifies, email us — we're happy to clarify
 - *(Optional, define per tier)* priority support, security-response SLAs, and
   early access to new releases.
 
-## Pricing (placeholder — set your own)
+## Pricing
+
+Pricing is set per engagement, based on your organization's size and how you use
+EnvCore. Commercial licenses are typically **annual, per company**.
 
 | Tier | Who | Price |
 |---|---|---|
-| **Startup** | Orgs $1M–$10M revenue | $___ / year |
-| **Business** | Orgs $10M–$100M revenue | $___ / year |
+| **Startup** | Orgs $1M–$10M revenue | Contact us |
+| **Business** | Orgs $10M–$100M revenue | Contact us |
 | **Enterprise** | Orgs > $100M, custom terms, support SLA | Contact us |
-
-*Per-company annual licenses are typical for a CLI tool; adjust to per-seat or
-per-cluster if that fits your customers better.*
 
 ## How to buy
 
-Email **`licensing@REPLACE-ME.example`** with:
+Email **`didisc123@gmail.com`** with:
 1. Your company name and approximate size (revenue or headcount),
 2. How you intend to use EnvCore,
-3. The tier you're interested in.
+3. Roughly how many people / teams will use it.
 
-We'll send a commercial license agreement and an invoice.
+We'll reply with a quote and a commercial license agreement.
 
 ---
 
