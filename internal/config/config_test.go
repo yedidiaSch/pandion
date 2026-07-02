@@ -87,3 +87,29 @@ func TestValidate_MatchesPublishedExample(t *testing.T) {
 		t.Errorf("git/plan/cluster.example.yaml no longer matches the schema: %v", err)
 	}
 }
+
+func TestEffective_DefaultsInheritanceAndOverride(t *testing.T) {
+	c := &Cluster{
+		Provider: Provider{Region: "nbg1"},
+		Defaults: NodeCommon{Size: "cpx21", Image: "ubuntu-24.04",
+			Toolchain: &Toolchain{Packages: []string{"nodejs", "npm"}}},
+		Nodes: []Node{
+			{Name: "web"}, // inherits all defaults
+			{NodeCommon: NodeCommon{Size: "cpx31"}, Name: "worker"}, // overrides size
+			{NodeCommon: NodeCommon{Toolchain: &Toolchain{Packages: []string{"postgresql"}}}, Name: "db"},
+		},
+	}
+	web := c.Effective(c.Nodes[0])
+	if web.Size != "cpx21" || web.Image != "ubuntu-24.04" || web.Region != "nbg1" {
+		t.Fatalf("web inheritance wrong: %+v", web)
+	}
+	if len(web.Packages) != 2 || web.Packages[0] != "nodejs" {
+		t.Fatalf("web packages inheritance wrong: %v", web.Packages)
+	}
+	if c.Effective(c.Nodes[1]).Size != "cpx31" {
+		t.Fatalf("worker size override not applied")
+	}
+	if got := c.Effective(c.Nodes[2]).Packages; len(got) != 1 || got[0] != "postgresql" {
+		t.Fatalf("db toolchain override not applied: %v", got)
+	}
+}
