@@ -93,6 +93,7 @@ func runUp(args []string) {
 	workspacePath := fs.String("workspace", "", "local dir to sync to the node before running")
 	remotePath := fs.String("remote-path", "", "where to place the workspace on the node")
 	buildCmd := fs.String("build", "", "build command to run on the node after sync")
+	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
@@ -121,7 +122,7 @@ func runUp(args []string) {
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
-			egressAllow: splitCSV(*egressAllow), sync: ws,
+			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser,
 		})
 	}
 }
@@ -133,6 +134,7 @@ type hetznerUpOpts struct {
 	overlay          bool
 	egressAllow      []string
 	sync             *syncSpec
+	runUser          string
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -221,6 +223,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		HostPrivKeyPEM: host.PrivatePEM,
 		HostPubKey:     host.PublicAuthorized,
 		LoginPubKey:    login.PublicAuthorized,
+		RunUser:        opt.runUser, // unprivileged workload user (S-C)
 	}
 	if toolchain {
 		ci.Packages = harden.DefaultToolchain()
@@ -276,13 +279,16 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 
 	// 5b) sync workspace + remote build, in the egress build-window (before the
 	//     firewall lockdown) so the build can fetch dependencies (P0-1).
+	workdir := ""
 	if opt.sync != nil {
 		fmt.Println("workspace sync...")
-		if err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync); err != nil {
+		wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
 			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
 			return
 		}
+		workdir = wd
 	}
 
 	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
@@ -335,10 +341,11 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
 	}
 
-	fmt.Println("running command...")
+	fmt.Printf("running command (as %s)...\n", orRoot(opt.runUser))
 
-	// 7) run the user command on the now-ready, locked-down node.
-	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runCmd)
+	// 7) run the user command on the now-ready, locked-down node, as the
+	//    unprivileged run user (S-C), from the workspace dir if one was synced.
+	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runAs(opt.runUser, workdir, runCmd))
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
 	if runErr != nil {
 		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)

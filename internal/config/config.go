@@ -98,6 +98,7 @@ type Effective struct {
 	Image    string
 	Packages []string
 	Region   string
+	RunUser  string // security.run_as; empty means "use the default"
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -118,6 +119,12 @@ func (c *Cluster) Effective(n Node) Effective {
 		e.Packages = n.Toolchain.Packages
 	case c.Defaults.Toolchain != nil:
 		e.Packages = c.Defaults.Toolchain.Packages
+	}
+	switch {
+	case n.Sec != nil && n.Sec.RunAs != "":
+		e.RunUser = n.Sec.RunAs
+	case c.Defaults.Sec != nil:
+		e.RunUser = c.Defaults.Sec.RunAs
 	}
 	return e
 }

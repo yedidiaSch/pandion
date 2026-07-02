@@ -59,3 +59,28 @@ func TestBuild_NoPackagesSectionWhenEmpty(t *testing.T) {
 		t.Errorf("no packages should be emitted when list is empty:\n%s", out)
 	}
 }
+
+func TestBuild_CreatesRunUser(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		RunUser:        "envcore-run",
+	})
+	if !strings.Contains(out, "runcmd:") {
+		t.Fatalf("expected runcmd for user creation:\n%s", out)
+	}
+	if !strings.Contains(out, "useradd -m -s /bin/bash envcore-run") {
+		t.Errorf("run user not created:\n%s", out)
+	}
+}
+
+func TestBuild_RootRunUser_NoUseradd(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		RunUser:        "root",
+	})
+	if strings.Contains(out, "useradd") {
+		t.Errorf("root run user must not create a user:\n%s", out)
+	}
+}
