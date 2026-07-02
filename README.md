@@ -275,7 +275,11 @@ git tag v0.1.1 && git push origin v0.1.1
 
 ## 📄 License
 
-[Apache-2.0](LICENSE) © EnvCore authors. See [NOTICE](NOTICE).
+EnvCore is **source-available** under the [Business Source License 1.1](LICENSE):
+**free** for individuals, non-commercial use, small organizations (< $1M/yr), and
+internal evaluation/development/testing by anyone. Larger organizations using it
+commercially need a [commercial license](COMMERCIAL.md). Each version becomes
+**Apache-2.0** four years after its release. © 2026 Yedidya Schwartz.
 
 <div align="center">
 <sub>Built with a spike-before-you-build, verify-before-you-merge discipline — every cloud-facing slice proven on real infrastructure before it shipped.</sub>
