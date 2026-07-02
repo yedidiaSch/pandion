@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -34,19 +35,64 @@ type syncSpec struct {
 	Build      string
 }
 
+// capsFor normalizes declared capabilities (needs_caps) plus any capability
+// implied by a privileged (<1024) port, into cap names WITHOUT the CAP_ prefix
+// (e.g. "NET_RAW", "NET_BIND_SERVICE") — the form docker --cap-add wants.
+func capsFor(needsCaps, privPorts []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(c string) {
+		c = strings.ToUpper(strings.TrimSpace(c))
+		c = strings.TrimPrefix(c, "CAP_")
+		if c != "" && !seen[c] {
+			seen[c] = true
+			out = append(out, c)
+		}
+	}
+	for _, c := range needsCaps {
+		add(c)
+	}
+	for _, p := range privPorts {
+		n := p
+		if i := strings.IndexByte(p, '/'); i >= 0 {
+			n = p[:i]
+		}
+		if v, err := strconv.Atoi(strings.TrimSpace(n)); err == nil && v > 0 && v < 1024 {
+			add("NET_BIND_SERVICE")
+		}
+	}
+	return out
+}
+
+// ambientCapList renders caps for setpriv, e.g. "+net_raw,+net_bind_service".
+// setpriv's cap parser uses names WITHOUT the "cap_" prefix (finding F17).
+func ambientCapList(caps []string) string {
+	parts := make([]string, len(caps))
+	for i, c := range caps {
+		parts[i] = "+" + strings.ToLower(c)
+	}
+	return strings.Join(parts, ",")
+}
+
 // runAs wraps a command to run as `user` (login shell, so /etc/profile.d
 // discovery is sourced), optionally from workdir. root runs directly; a non-root
-// user is dropped into via runuser (least privilege, S-C).
-func runAs(user, workdir, cmd string) string {
+// user is dropped into via runuser (least privilege, S-C). If caps are requested
+// for a non-root user, setpriv grants exactly those ambient caps (P1b).
+func runAs(user, workdir, cmd string, caps []string) string {
 	inner := cmd
 	if strings.TrimSpace(workdir) != "" {
 		inner = "cd " + shellQuote(workdir) + " && " + cmd
 	}
 	loginShell := "bash -lc " + shellQuote(inner)
 	if user == "" || user == "root" {
-		return loginShell
+		return loginShell // root already holds all capabilities
 	}
-	return "runuser -u " + shellQuote(user) + " -- " + loginShell
+	if len(caps) == 0 {
+		return "runuser -u " + shellQuote(user) + " -- " + loginShell
+	}
+	cl := ambientCapList(caps)
+	return "setpriv --reuid=" + shellQuote(user) + " --regid=" + shellQuote(user) +
+		" --init-groups --inh-caps=" + cl + " --ambient-caps=" + cl + " -- " + loginShell
 }
 
 // workspaceDir is where a synced workspace lands: the run user's home (so a
@@ -94,7 +140,7 @@ func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned
 	}
 	if strings.TrimSpace(s.Build) != "" {
 		fmt.Printf("  building (as %s): %s\n", orRoot(runUser), s.Build)
-		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, runAs(runUser, remote, s.Build)); err != nil {
+		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, runAs(runUser, remote, s.Build, nil)); err != nil {
 			return "", fmt.Errorf("remote build failed: %v\n%s", err, out)
 		}
 	}
@@ -105,8 +151,11 @@ func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned
 // workspace mounted (S-D: drop all caps, no-new-privileges, read-only rootfs,
 // no docker.sock, no --privileged). --network=host so the node's overlay is
 // usable. cmd runs via sh -c for minimal-image compatibility.
-func dockerRun(image, workdir, cmd string) string {
+func dockerRun(image, workdir, cmd string, caps []string) string {
 	flags := "--rm --cap-drop=ALL --security-opt=no-new-privileges --read-only --tmpfs /tmp:exec --network=host"
+	for _, c := range caps {
+		flags += " --cap-add=" + c // add back only declared caps (P1b)
+	}
 	mount := ""
 	if strings.TrimSpace(workdir) != "" {
 		mount = " -v " + shellQuote(workdir) + ":/workspace -w /workspace"
@@ -132,6 +181,7 @@ type nodePlan struct {
 	sync      *syncSpec // workspace to push + optional remote build
 	runUser   string    // unprivileged user the workload runs as (S-C)
 	workdir   string    // remote workspace dir (cwd for run), if synced
+	caps      []string  // capabilities to grant back (needs_caps/priv ports, P1b)
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -266,7 +316,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		}
 
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
-			sync: resolveSync(n, cl.Defaults), runUser: runUser}
+			sync: resolveSync(n, cl.Defaults), runUser: runUser,
+			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts)}
 
 		ci := harden.CloudInit{
 			HostPrivKeyPEM: host.PrivatePEM,
@@ -468,7 +519,7 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		go func(p *nodePlan) {
 			defer wg.Done()
 			err := envssh.Stream(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-				runAs(p.runUser, p.workdir, p.run),
+				runAs(p.runUser, p.workdir, p.run, p.caps),
 				func(s, line string) { printer.Print(p.name, s, line) })
 			if err != nil && ctx.Err() == nil {
 				// fail-fast: report the crash, leave the node up for debugging (§5).
