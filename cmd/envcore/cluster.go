@@ -65,7 +65,9 @@ func workspaceDir(runUser, override string) string {
 // it to the node over the pinned SSH connection, extracts it, and runs the
 // optional Build command. Must run inside the egress build-window (before the
 // firewall lockdown) so the build can fetch dependencies.
-func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
+// syncFiles archives LocalPath (honoring .envcoreignore) and extracts it on the
+// node, chowning to runUser. Returns the remote workspace dir. No build.
+func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
 	remote := workspaceDir(runUser, s.RemotePath)
 	ig := workspace.LoadIgnore(s.LocalPath)
 	data, files, err := workspace.Archive(s.LocalPath, ig)
@@ -73,13 +75,22 @@ func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned
 		return "", fmt.Errorf("archive %s: %w", s.LocalPath, err)
 	}
 	fmt.Printf("  syncing %d files -> %s ...\n", files, remote)
-	// extract as root, then hand ownership to the run user so it can build/run.
 	extract := "mkdir -p " + shellQuote(remote) + " && tar -xzf - -C " + shellQuote(remote)
 	if runUser != "" && runUser != "root" {
 		extract += " && chown -R " + shellQuote(runUser) + ":" + shellQuote(runUser) + " " + shellQuote(remote)
 	}
 	if out, err := envssh.RunWithInput(ctx, addr, "root", signer, pinned, extract, bytes.NewReader(data)); err != nil {
 		return "", fmt.Errorf("extract on node: %v\n%s", err, out)
+	}
+	return remote, nil
+}
+
+// syncWorkspace syncs files and runs the optional build on the host as runUser
+// (native engine).
+func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
+	remote, err := syncFiles(ctx, addr, signer, pinned, s, runUser)
+	if err != nil {
+		return "", err
 	}
 	if strings.TrimSpace(s.Build) != "" {
 		fmt.Printf("  building (as %s): %s\n", orRoot(runUser), s.Build)
@@ -88,6 +99,19 @@ func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned
 		}
 	}
 	return remote, nil
+}
+
+// dockerRun wraps cmd to run in a HARDENED container from image, with the
+// workspace mounted (S-D: drop all caps, no-new-privileges, read-only rootfs,
+// no docker.sock, no --privileged). --network=host so the node's overlay is
+// usable. cmd runs via sh -c for minimal-image compatibility.
+func dockerRun(image, workdir, cmd string) string {
+	flags := "--rm --cap-drop=ALL --security-opt=no-new-privileges --read-only --tmpfs /tmp:exec --network=host"
+	mount := ""
+	if strings.TrimSpace(workdir) != "" {
+		mount = " -v " + shellQuote(workdir) + ":/workspace -w /workspace"
+	}
+	return "docker run " + flags + mount + " " + shellQuote(image) + " sh -c " + shellQuote(cmd)
 }
 
 func orRoot(u string) string {

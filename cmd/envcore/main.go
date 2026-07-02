@@ -98,6 +98,8 @@ func runUp(args []string) {
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
+	engine := fs.String("engine", "native", "execution engine: native|docker")
+	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
@@ -131,6 +133,7 @@ func runUp(args []string) {
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
+			engine: *engine, containerImage: *containerImage,
 		})
 	}
 }
@@ -144,6 +147,8 @@ type hetznerUpOpts struct {
 	sync             *syncSpec
 	runUser          string
 	idleTTL          time.Duration
+	engine           string // native | docker
+	containerImage   string
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -251,8 +256,13 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		RunUser:        opt.runUser, // unprivileged workload user (S-C)
 		IdleTTL:        opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
 	}
-	if toolchain {
-		ci.Packages = harden.DefaultToolchain()
+	switch opt.engine {
+	case "docker":
+		ci.Packages = []string{"docker.io"} // the image provides the toolchain
+	default: // native
+		if toolchain {
+			ci.Packages = harden.DefaultToolchain()
+		}
 	}
 	if opt.firewall {
 		ci.Packages = append(ci.Packages, "nftables") // needed to apply the lockdown
@@ -303,18 +313,39 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 	fmt.Println("node ready (cloud-init complete).")
 
-	// 5b) sync workspace + remote build, in the egress build-window (before the
-	//     firewall lockdown) so the build can fetch dependencies (P0-1).
+	// 5b) sync workspace + build, in the egress build-window (before the firewall
+	//     lockdown) so the build can fetch dependencies (P0-1). native builds on the
+	//     host as the run user; docker builds inside the hardened container.
 	workdir := ""
+	failNode := func(err error) {
+		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
+		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+	}
 	if opt.sync != nil {
 		fmt.Println("workspace sync...")
-		wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
-			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
-			return
+		if opt.engine == "docker" {
+			wd, err := syncFiles(ctx, addr, login.Signer, host.Public, *opt.sync, "root")
+			if err != nil {
+				failNode(err)
+				return
+			}
+			workdir = wd
+			if b := strings.TrimSpace(opt.sync.Build); b != "" {
+				fmt.Printf("  building in container (%s): %s\n", opt.containerImage, b)
+				if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
+					dockerRun(opt.containerImage, workdir, b)); err != nil {
+					failNode(fmt.Errorf("container build failed: %v\n%s", err, out))
+					return
+				}
+			}
+		} else {
+			wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
+			if err != nil {
+				failNode(err)
+				return
+			}
+			workdir = wd
 		}
-		workdir = wd
 	}
 
 	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
@@ -367,11 +398,17 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
 	}
 
-	fmt.Printf("running command (as %s)...\n", orRoot(opt.runUser))
-
-	// 7) run the user command on the now-ready, locked-down node, as the
-	//    unprivileged run user (S-C), from the workspace dir if one was synced.
-	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runAs(opt.runUser, workdir, runCmd))
+	// 7) run the user command: native = as the unprivileged run user (S-C) from the
+	//    workspace; docker = in a hardened container (S-D). Both post-lockdown.
+	var runShell string
+	if opt.engine == "docker" {
+		fmt.Printf("running command in hardened container (%s)...\n", opt.containerImage)
+		runShell = dockerRun(opt.containerImage, workdir, runCmd)
+	} else {
+		fmt.Printf("running command (as %s)...\n", orRoot(opt.runUser))
+		runShell = runAs(opt.runUser, workdir, runCmd)
+	}
+	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runShell)
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
 	if runErr != nil {
 		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)
