@@ -1,6 +1,6 @@
 // Package config loads and validates cluster.yaml against the published JSON
 // Schema (draft 2020-12). Validation is pure and offline: it is the M3 foundation
-// that every orchestration slice builds on, and backs `envcore validate`.
+// that every orchestration slice builds on, and backs `pandion validate`.
 package config
 
 import (
@@ -16,7 +16,7 @@ import (
 //go:embed schema.json
 var schemaJSON []byte
 
-const schemaURL = "https://envcore.dev/schema/cluster.schema.json"
+const schemaURL = "https://pandion.dev/schema/cluster.schema.json"
 
 // Cluster is the typed view of cluster.yaml (a subset of the schema — the fields
 // the orchestrator consumes; the schema is the full source of truth for validity).

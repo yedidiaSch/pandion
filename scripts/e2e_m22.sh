@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore M2.2a end-to-end test: provision -> hardened bootstrap -> WireGuard
+# Pandion M2.2a end-to-end test: provision -> hardened bootstrap -> WireGuard
 # overlay -> operator-scoped SSH, then verify and ALWAYS tear down.
 #
 # Usage:
@@ -13,8 +13,8 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-m22"
-BIN="./bin/envcore"
-KEYDIR="$HOME/.envcore/keys/$ID"
+BIN="./bin/pandion"
+KEYDIR="$HOME/.pandion/keys/$ID"
 WGCONF="$KEYDIR/wg-$ID.conf"
 JOINED=0
 
@@ -41,15 +41,15 @@ teardown(){
 trap teardown EXIT
 
 # ---- build ----
-c_in "building envcore..."
+c_in "building pandion..."
 export PATH="$HOME/.local/go/bin:$PATH"
-go build -o "$BIN" ./cmd/envcore
+go build -o "$BIN" ./cmd/pandion
 c_ok "built $BIN"
 
 # ---- up: provision + overlay, and verify wg0 on the node ----
 c_in "provisioning (this waits for cloud-init + toolchain; ~2-4 min)..."
 OUT=$("$BIN" up --provider=hetzner --id "$ID" -- \
-  'echo "=== wg show ==="; wg show; echo "=== wg0 addr ==="; ip -brief addr show wg0; echo "=== firewall ==="; nft list chain inet envcore input 2>/dev/null | grep -E "dport (22|51820)" || true')
+  'echo "=== wg show ==="; wg show; echo "=== wg0 addr ==="; ip -brief addr show wg0; echo "=== firewall ==="; nft list chain inet pandion input 2>/dev/null | grep -E "dport (22|51820)" || true')
 echo "----------------------------------------------------------------"
 echo "$OUT"
 echo "----------------------------------------------------------------"

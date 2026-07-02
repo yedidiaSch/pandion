@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore M3.2b end-to-end: provision a 2-node hardened cluster, form the
+# Pandion M3.2b end-to-end: provision a 2-node hardened cluster, form the
 # WireGuard mesh, verify mutual reachability, then ALWAYS tear down.
 #
 # Usage:
@@ -13,7 +13,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-m32b"
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 CLYAML="$(mktemp --suffix=.yaml)"
 
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN to your project-scoped Hetzner token}"
@@ -36,7 +36,7 @@ teardown(){
 trap teardown EXIT
 
 cat > "$CLYAML" <<EOF
-apiVersion: envcore/v1
+apiVersion: pandion/v1
 name: $ID
 nodes:
   - name: broker
@@ -45,9 +45,9 @@ nodes:
     run: ./worker
 EOF
 
-c_in "building envcore..."
+c_in "building pandion..."
 export PATH="$HOME/.local/go/bin:$PATH"
-go build -o "$BIN" ./cmd/envcore
+go build -o "$BIN" ./cmd/pandion
 c_ok "built"
 
 c_in "provisioning 2-node hardened cluster + forming mesh (~3-5 min)..."

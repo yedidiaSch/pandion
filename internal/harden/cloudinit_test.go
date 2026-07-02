@@ -65,12 +65,12 @@ func TestBuild_CreatesRunUser(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
 		HostPubKey:     "ssh-ed25519 AAAA host",
-		RunUser:        "envcore-run",
+		RunUser:        "pandion-run",
 	})
 	if !strings.Contains(out, "runcmd:") {
 		t.Fatalf("expected runcmd for user creation:\n%s", out)
 	}
-	if !strings.Contains(out, "useradd -m -s /bin/bash envcore-run") {
+	if !strings.Contains(out, "useradd -m -s /bin/bash pandion-run") {
 		t.Errorf("run user not created:\n%s", out)
 	}
 }
@@ -93,11 +93,11 @@ func TestBuild_IdleDeadman(t *testing.T) {
 		IdleTTL:        30 * time.Minute,
 	})
 	for _, want := range []string{
-		"/usr/local/bin/envcore-deadman",
-		"envcore-deadman.timer",
+		"/usr/local/bin/pandion-deadman",
+		"pandion-deadman.timer",
 		"TTL=1800", // 30m in seconds
 		"systemctl poweroff",
-		"[ systemctl, enable, --now, envcore-deadman.timer ]",
+		"[ systemctl, enable, --now, pandion-deadman.timer ]",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("deadman cloud-init missing %q\n%s", want, out)
@@ -110,7 +110,7 @@ func TestBuild_NoDeadmanWhenZero(t *testing.T) {
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
 		HostPubKey:     "ssh-ed25519 AAAA host",
 	})
-	if strings.Contains(out, "envcore-deadman") {
+	if strings.Contains(out, "pandion-deadman") {
 		t.Errorf("no deadman expected when IdleTTL=0:\n%s", out)
 	}
 }

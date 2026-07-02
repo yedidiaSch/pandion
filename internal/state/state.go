@@ -30,7 +30,7 @@ type Node struct {
 	Phase    Phase  `json:"phase"`
 }
 
-// Cluster is the journaled record for one EnvCore cluster.
+// Cluster is the journaled record for one Pandion cluster.
 type Cluster struct {
 	ID       string    `json:"id"`
 	Provider string    `json:"provider"`
@@ -38,7 +38,7 @@ type Cluster struct {
 	Updated  time.Time `json:"updated"`
 }
 
-// Store persists clusters under a directory (e.g. ~/.envcore/state).
+// Store persists clusters under a directory (e.g. ~/.pandion/state).
 type Store struct{ dir string }
 
 // NewStore ensures the directory exists (0700) and returns a Store.

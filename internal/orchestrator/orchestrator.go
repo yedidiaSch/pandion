@@ -13,8 +13,8 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
 
-	"github.com/envcore/envcore/internal/provider"
-	"github.com/envcore/envcore/internal/state"
+	"github.com/yedidiaSch/pandion/internal/provider"
+	"github.com/yedidiaSch/pandion/internal/state"
 )
 
 // DefaultMaxConcurrency bounds concurrent provisioning to respect provider rate
@@ -153,7 +153,7 @@ type ReapCandidate struct {
 	OldestAge time.Duration
 }
 
-// ReapPlan lists the EnvCore clusters currently alive at the provider whose
+// ReapPlan lists the Pandion clusters currently alive at the provider whose
 // oldest server is at least olderThan (0 = all). It queries the provider
 // directly, so it works across machines and with no local state (C4).
 func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) ([]ReapCandidate, error) {

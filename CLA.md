@@ -1,6 +1,6 @@
-# EnvCore Contributor License Agreement
+# Pandion Contributor License Agreement
 
-Thank you for contributing to **EnvCore** (the "Project"), maintained by
+Thank you for contributing to **Pandion** (the "Project"), maintained by
 Yedidya Schwartz (the "Maintainer", "we", "us").
 
 This Contributor License Agreement (the "Agreement") clarifies the intellectual

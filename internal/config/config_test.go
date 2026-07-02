@@ -41,7 +41,7 @@ func TestLoad_TypedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if c.APIVersion != "envcore/v1" || c.Name != "zmq-pipeline" {
+	if c.APIVersion != "pandion/v1" || c.Name != "zmq-pipeline" {
 		t.Fatalf("header not parsed: %+v", c)
 	}
 	if c.Provider.Name != "hetzner" || c.Provider.Region != "nbg1" {

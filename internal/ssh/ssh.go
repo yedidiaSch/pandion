@@ -1,8 +1,8 @@
 // Package ssh runs commands on a node over SSH with a PINNED host key.
 //
-// Security (spike S1): the host key is one EnvCore generated and injected via
+// Security (spike S1): the host key is one Pandion generated and injected via
 // cloud-init, so we pin it with gossh.FixedHostKey. A node presenting any other
-// key — a MITM, or a not-yet-hardened boot image — is rejected. EnvCore never
+// key — a MITM, or a not-yet-hardened boot image — is rejected. Pandion never
 // uses an accept-any host-key callback.
 package ssh
 

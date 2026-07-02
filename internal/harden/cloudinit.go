@@ -13,7 +13,7 @@ import (
 const DefaultIdleTTL = 60 * time.Minute
 
 // DefaultRunUser is the unprivileged user that runs workloads (S-C).
-const DefaultRunUser = "envcore-run"
+const DefaultRunUser = "pandion-run"
 
 // CloudInit is the input to Build. It grows as later milestones add hardening
 // (egress rules, firewall, LUKS) without changing call sites.
@@ -40,7 +40,7 @@ type CloudInit struct {
 	IdleTTL time.Duration
 }
 
-// DefaultToolchain is EnvCore's C++ toolchain per the Execution Contract (§5):
+// DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
 // gcc/g++/make (build-essential), clang, cmake, gdb, plus tmux for `attach`.
 //
 // NOTE (reproducibility, H2): these are unpinned for M1. Version pinning +
@@ -103,16 +103,16 @@ func Build(ci CloudInit) string {
 	// Idle dead-man's-switch (P2b, security): a node with no active SSH for IdleTTL
 	// powers itself off — an abandoned/runaway node stops executing. NOTE: this is
 	// a SECURITY control, not cost control (a stopped Hetzner server still bills;
-	// `envcore reap` handles deletion). 0 disables.
+	// `pandion reap` handles deletion). 0 disables.
 	if ci.IdleTTL > 0 {
 		ttlSec := int(ci.IdleTTL.Seconds())
 		files = append(files,
-			wf{"/usr/local/bin/envcore-deadman", "0755", deadmanScript(ttlSec)},
-			wf{"/etc/systemd/system/envcore-deadman.service", "0644", deadmanService()},
-			wf{"/etc/systemd/system/envcore-deadman.timer", "0644", deadmanTimer()})
+			wf{"/usr/local/bin/pandion-deadman", "0755", deadmanScript(ttlSec)},
+			wf{"/etc/systemd/system/pandion-deadman.service", "0644", deadmanService()},
+			wf{"/etc/systemd/system/pandion-deadman.timer", "0644", deadmanTimer()})
 		runcmds = append(runcmds,
-			"[ bash, -c, \"mkdir -p /run/envcore && touch /run/envcore/heartbeat\" ]",
-			"[ systemctl, enable, --now, envcore-deadman.timer ]")
+			"[ bash, -c, \"mkdir -p /run/pandion && touch /run/pandion/heartbeat\" ]",
+			"[ systemctl, enable, --now, pandion-deadman.timer ]")
 	}
 
 	if ci.WGConfig != "" {
@@ -148,15 +148,15 @@ func Build(ci CloudInit) string {
 func deadmanScript(ttlSec int) string {
 	return fmt.Sprintf(`#!/bin/sh
 TTL=%d
-HB=/run/envcore/heartbeat
+HB=/run/pandion/heartbeat
 # fresh while any SSH connection is established (incl. a long streaming session)
 if ss -Htn state established '( sport = :22 )' 2>/dev/null | grep -q .; then
-  mkdir -p /run/envcore && touch "$HB"
+  mkdir -p /run/pandion && touch "$HB"
 fi
 now=$(date +%%s)
 last=$(stat -c %%Y "$HB" 2>/dev/null || echo "$now")
 if [ $((now - last)) -gt "$TTL" ]; then
-  logger "envcore dead-man: idle > ${TTL}s, powering off"
+  logger "pandion dead-man: idle > ${TTL}s, powering off"
   systemctl poweroff
 fi
 `, ttlSec)
@@ -164,16 +164,16 @@ fi
 
 func deadmanService() string {
 	return `[Unit]
-Description=EnvCore idle dead-man's-switch
+Description=Pandion idle dead-man's-switch
 [Service]
 Type=oneshot
-ExecStart=/usr/local/bin/envcore-deadman
+ExecStart=/usr/local/bin/pandion-deadman
 `
 }
 
 func deadmanTimer() string {
 	return `[Unit]
-Description=Run the EnvCore dead-man's-switch every minute
+Description=Run the Pandion dead-man's-switch every minute
 [Timer]
 OnBootSec=1min
 OnUnitActiveSec=1min
