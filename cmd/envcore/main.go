@@ -96,6 +96,8 @@ func runUp(args []string) {
 	remotePath := fs.String("remote-path", "", "where to place the workspace on the node")
 	buildCmd := fs.String("build", "", "build command to run on the node after sync")
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
+	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
+	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
@@ -121,10 +123,14 @@ func runUp(args []string) {
 		if *workspacePath != "" {
 			ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Build: *buildCmd}
 		}
+		idleTTL := *ttl
+		if *noTTL {
+			idleTTL = 0
+		}
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
-			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser,
+			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 		})
 	}
 }
@@ -137,6 +143,7 @@ type hetznerUpOpts struct {
 	egressAllow      []string
 	sync             *syncSpec
 	runUser          string
+	idleTTL          time.Duration
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -183,6 +190,22 @@ func shellQuote(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
+// parseTTL resolves a cluster.yaml ttl string to a duration: "" -> default,
+// false/none/off/0 -> disabled (0), otherwise a parsed duration.
+func parseTTL(raw string) time.Duration {
+	switch s := strings.ToLower(strings.TrimSpace(raw)); s {
+	case "":
+		return harden.DefaultIdleTTL
+	case "false", "none", "off", "0":
+		return 0
+	default:
+		if d, err := time.ParseDuration(raw); err == nil {
+			return d
+		}
+		return harden.DefaultIdleTTL
+	}
+}
+
 func itoa(n int) string { return strconv.Itoa(n) }
 
 func wgPortIf(overlayOn bool) int {
@@ -226,6 +249,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		HostPubKey:     host.PublicAuthorized,
 		LoginPubKey:    login.PublicAuthorized,
 		RunUser:        opt.runUser, // unprivileged workload user (S-C)
+		IdleTTL:        opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
 	}
 	if toolchain {
 		ci.Packages = harden.DefaultToolchain()
