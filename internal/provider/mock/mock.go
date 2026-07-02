@@ -76,6 +76,7 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		Type:      "mock-small",
 		Region:    "mock-dc",
 		IP:        fmt.Sprintf("10.0.0.%d", m.seq),
+		Created:   time.Now(),
 	}
 	m.servers[s.ID] = s
 	return s, nil
@@ -102,6 +103,17 @@ func (m *Mock) ListByTag(_ context.Context, clusterID string) ([]provider.Server
 		if s.ClusterID == clusterID {
 			out = append(out, s)
 		}
+	}
+	return out, nil
+}
+
+// ListAllTagged returns every server (the reaper source of truth).
+func (m *Mock) ListAllTagged(_ context.Context) ([]provider.Server, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]provider.Server, 0, len(m.servers))
+	for _, s := range m.servers {
+		out = append(out, s)
 	}
 	return out, nil
 }

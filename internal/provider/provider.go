@@ -10,7 +10,10 @@
 // so it already knows the fingerprint to pin — no retrieval is needed.
 package provider
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // ServerSpec describes a server to create. Type is selected by SPEC (cores/RAM)
 // plus a region preference, never by a hardcoded type name — spike S1 finding F3:
@@ -38,6 +41,7 @@ type Server struct {
 	Type      string
 	Region    string
 	IP        string
+	Created   time.Time // when the server was created (for `reap --older-than`)
 }
 
 // Provider is the cloud backend contract.
@@ -50,6 +54,10 @@ type Provider interface {
 	// ListByTag returns all servers for a cluster. This is the reconciliation
 	// SOURCE OF TRUTH (C4) — used even when local state is lost.
 	ListByTag(ctx context.Context, clusterID string) ([]Server, error)
+	// ListAllTagged returns every server EnvCore created (any cluster), for the
+	// client-side orphan reaper (`envcore reap`) — the no-backend way to prevent
+	// billing leaks when local state or the controlling laptop is gone (C4).
+	ListAllTagged(ctx context.Context) ([]Server, error)
 	// Name identifies the backend (e.g. "hetzner", "mock").
 	Name() string
 }

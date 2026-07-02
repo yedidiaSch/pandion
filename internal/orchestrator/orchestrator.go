@@ -6,7 +6,9 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"sort"
 	"sync"
+	"time"
 
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sync/semaphore"
@@ -144,6 +146,67 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 }
 
 // Down reconciles the cluster to empty. It lists by tag from the PROVIDER (the
+// ReapCandidate is a cluster the reaper would destroy.
+type ReapCandidate struct {
+	ClusterID string
+	Servers   int
+	OldestAge time.Duration
+}
+
+// ReapPlan lists the EnvCore clusters currently alive at the provider whose
+// oldest server is at least olderThan (0 = all). It queries the provider
+// directly, so it works across machines and with no local state (C4).
+func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) ([]ReapCandidate, error) {
+	all, err := o.P.ListAllTagged(ctx)
+	if err != nil {
+		return nil, err
+	}
+	type agg struct {
+		n      int
+		oldest time.Time
+	}
+	byCluster := map[string]*agg{}
+	now := time.Now()
+	for _, s := range all {
+		a := byCluster[s.ClusterID]
+		if a == nil {
+			a = &agg{oldest: s.Created}
+			byCluster[s.ClusterID] = a
+		}
+		a.n++
+		if !s.Created.IsZero() && s.Created.Before(a.oldest) {
+			a.oldest = s.Created
+		}
+	}
+	var out []ReapCandidate
+	for id, a := range byCluster {
+		age := now.Sub(a.oldest)
+		if olderThan > 0 && age < olderThan {
+			continue
+		}
+		out = append(out, ReapCandidate{ClusterID: id, Servers: a.n, OldestAge: age})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ClusterID < out[j].ClusterID })
+	return out, nil
+}
+
+// Reap destroys the given clusters (reusing Down: verified teardown + aux reap +
+// state close). Returns the number successfully reaped.
+func (o *Orchestrator) Reap(ctx context.Context, candidates []ReapCandidate) (int, error) {
+	n := 0
+	var firstErr error
+	for _, c := range candidates {
+		if err := o.Down(ctx, c.ClusterID); err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			continue
+		}
+		n++
+	}
+	return n, firstErr
+}
+
 // source of truth, C4) so it succeeds even with no local state, destroys with
 // retry (H7), then VERIFIES nothing remains before closing the state record.
 func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
