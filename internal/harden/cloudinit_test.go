@@ -3,6 +3,7 @@ package harden
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 // Encodes spike S1 finding F1 as a regression guard: host key MUST be injected
@@ -82,5 +83,34 @@ func TestBuild_RootRunUser_NoUseradd(t *testing.T) {
 	})
 	if strings.Contains(out, "useradd") {
 		t.Errorf("root run user must not create a user:\n%s", out)
+	}
+}
+
+func TestBuild_IdleDeadman(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		IdleTTL:        30 * time.Minute,
+	})
+	for _, want := range []string{
+		"/usr/local/bin/envcore-deadman",
+		"envcore-deadman.timer",
+		"TTL=1800", // 30m in seconds
+		"systemctl poweroff",
+		"[ systemctl, enable, --now, envcore-deadman.timer ]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("deadman cloud-init missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestBuild_NoDeadmanWhenZero(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+	})
+	if strings.Contains(out, "envcore-deadman") {
+		t.Errorf("no deadman expected when IdleTTL=0:\n%s", out)
 	}
 }

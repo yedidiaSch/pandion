@@ -6,7 +6,11 @@ package harden
 import (
 	"fmt"
 	"strings"
+	"time"
 )
+
+// DefaultIdleTTL is the default abandoned-node poweroff window (P2b, security).
+const DefaultIdleTTL = 60 * time.Minute
 
 // DefaultRunUser is the unprivileged user that runs workloads (S-C).
 const DefaultRunUser = "envcore-run"
@@ -31,6 +35,9 @@ type CloudInit struct {
 	// RunUser, if set and not "root", is created as an unprivileged login user
 	// (no sudo) at boot. User workloads run as this user, not root (S-C).
 	RunUser string
+	// IdleTTL, if > 0, installs an on-node dead-man's-switch: the node powers
+	// itself off after this long with no active SSH (P2b, security). 0 disables.
+	IdleTTL time.Duration
 }
 
 // DefaultToolchain is EnvCore's C++ toolchain per the Execution Contract (§5):
@@ -80,28 +87,50 @@ func Build(ci CloudInit) string {
 		b.WriteString("\n")
 	}
 
-	if ci.WGConfig != "" {
-		// write_files with a block scalar (F11): render the wg0.conf indented.
-		b.WriteString("write_files:\n")
-		b.WriteString("  - path: /etc/wireguard/wg0.conf\n")
-		b.WriteString("    permissions: '0600'\n")
-		b.WriteString("    content: |\n")
-		for _, line := range strings.Split(strings.TrimRight(ci.WGConfig, "\n"), "\n") {
-			b.WriteString("      ")
-			b.WriteString(line)
-			b.WriteString("\n")
-		}
-	}
-
-	// Accumulate runcmd entries in order: create the unprivileged run user first
-	// (workloads run as it, not root — S-C), then bring the overlay up.
+	// Accumulate write_files + runcmd entries, then emit them once.
+	type wf struct{ path, perms, content string }
+	var files []wf
 	var runcmds []string
+
+	if ci.WGConfig != "" {
+		files = append(files, wf{"/etc/wireguard/wg0.conf", "0600", ci.WGConfig})
+	}
 	if u := strings.TrimSpace(ci.RunUser); u != "" && u != "root" {
 		runcmds = append(runcmds,
 			fmt.Sprintf("[ bash, -c, \"id -u %s >/dev/null 2>&1 || useradd -m -s /bin/bash %s\" ]", u, u))
 	}
+
+	// Idle dead-man's-switch (P2b, security): a node with no active SSH for IdleTTL
+	// powers itself off — an abandoned/runaway node stops executing. NOTE: this is
+	// a SECURITY control, not cost control (a stopped Hetzner server still bills;
+	// `envcore reap` handles deletion). 0 disables.
+	if ci.IdleTTL > 0 {
+		ttlSec := int(ci.IdleTTL.Seconds())
+		files = append(files,
+			wf{"/usr/local/bin/envcore-deadman", "0755", deadmanScript(ttlSec)},
+			wf{"/etc/systemd/system/envcore-deadman.service", "0644", deadmanService()},
+			wf{"/etc/systemd/system/envcore-deadman.timer", "0644", deadmanTimer()})
+		runcmds = append(runcmds,
+			"[ bash, -c, \"mkdir -p /run/envcore && touch /run/envcore/heartbeat\" ]",
+			"[ systemctl, enable, --now, envcore-deadman.timer ]")
+	}
+
 	if ci.WGConfig != "" {
 		runcmds = append(runcmds, "[ systemctl, enable, --now, wg-quick@wg0 ]")
+	}
+
+	if len(files) > 0 {
+		b.WriteString("write_files:\n")
+		for _, f := range files {
+			b.WriteString("  - path: " + f.path + "\n")
+			b.WriteString("    permissions: '" + f.perms + "'\n")
+			b.WriteString("    content: |\n")
+			for _, line := range strings.Split(strings.TrimRight(f.content, "\n"), "\n") {
+				b.WriteString("      ")
+				b.WriteString(line)
+				b.WriteString("\n")
+			}
+		}
 	}
 	if len(runcmds) > 0 {
 		b.WriteString("runcmd:\n")
@@ -112,4 +141,43 @@ func Build(ci CloudInit) string {
 		}
 	}
 	return b.String()
+}
+
+// deadmanScript touches the heartbeat while an SSH connection is established, and
+// powers the node off once the heartbeat is older than ttlSec (idle).
+func deadmanScript(ttlSec int) string {
+	return fmt.Sprintf(`#!/bin/sh
+TTL=%d
+HB=/run/envcore/heartbeat
+# fresh while any SSH connection is established (incl. a long streaming session)
+if ss -Htn state established '( sport = :22 )' 2>/dev/null | grep -q .; then
+  mkdir -p /run/envcore && touch "$HB"
+fi
+now=$(date +%%s)
+last=$(stat -c %%Y "$HB" 2>/dev/null || echo "$now")
+if [ $((now - last)) -gt "$TTL" ]; then
+  logger "envcore dead-man: idle > ${TTL}s, powering off"
+  systemctl poweroff
+fi
+`, ttlSec)
+}
+
+func deadmanService() string {
+	return `[Unit]
+Description=EnvCore idle dead-man's-switch
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/envcore-deadman
+`
+}
+
+func deadmanTimer() string {
+	return `[Unit]
+Description=Run the EnvCore dead-man's-switch every minute
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=1min
+[Install]
+WantedBy=timers.target
+`
 }
