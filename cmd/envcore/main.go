@@ -90,6 +90,9 @@ func runUp(args []string) {
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
+	workspacePath := fs.String("workspace", "", "local dir to sync to the node before running")
+	remotePath := fs.String("remote-path", "", "where to place the workspace on the node")
+	buildCmd := fs.String("build", "", "build command to run on the node after sync")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
@@ -111,10 +114,14 @@ func runUp(args []string) {
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
 	case "hetzner":
+		var ws *syncSpec
+		if *workspacePath != "" {
+			ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Build: *buildCmd}
+		}
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
-			egressAllow: splitCSV(*egressAllow),
+			egressAllow: splitCSV(*egressAllow), sync: ws,
 		})
 	}
 }
@@ -125,6 +132,7 @@ type hetznerUpOpts struct {
 	firewall         bool
 	overlay          bool
 	egressAllow      []string
+	sync             *syncSpec
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -265,6 +273,17 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		return
 	}
 	fmt.Println("node ready (cloud-init complete).")
+
+	// 5b) sync workspace + remote build, in the egress build-window (before the
+	//     firewall lockdown) so the build can fetch dependencies (P0-1).
+	if opt.sync != nil {
+		fmt.Println("workspace sync...")
+		if err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync); err != nil {
+			fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
+			fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
+			return
+		}
+	}
 
 	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
 	//    (as the node sees our SSH connection — no external lookup needed) to use
