@@ -273,6 +273,12 @@ git tag v0.1.1 && git push origin v0.1.1
 
 ---
 
+## 🤝 Contributing
+
+PRs welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Contributions require
+agreeing to the [CLA](CLA.md) (it keeps EnvCore's dual-licensing possible while
+you retain copyright of your work).
+
 ## 📄 License
 
 EnvCore is **source-available** under the [Business Source License 1.1](LICENSE):
