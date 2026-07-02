@@ -33,7 +33,7 @@ func TestDockerRun_AddsDeclaredCaps(t *testing.T) {
 
 func TestRunAs_SetprivGrantsAmbientCaps(t *testing.T) {
 	cmd := runAs("envcore-run", "/w", "./app", []string{"NET_BIND_SERVICE"})
-	for _, want := range []string{"setpriv", "--reuid='envcore-run'", "--ambient-caps=+cap_net_bind_service"} {
+	for _, want := range []string{"setpriv", "--reuid='envcore-run'", "--ambient-caps=+net_bind_service"} {
 		if !strings.Contains(cmd, want) {
 			t.Errorf("missing %q:\n%s", want, cmd)
 		}

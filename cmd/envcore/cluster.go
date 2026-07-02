@@ -64,11 +64,12 @@ func capsFor(needsCaps, privPorts []string) []string {
 	return out
 }
 
-// ambientCapList renders caps for setpriv, e.g. "+cap_net_raw,+cap_net_bind_service".
+// ambientCapList renders caps for setpriv, e.g. "+net_raw,+net_bind_service".
+// setpriv's cap parser uses names WITHOUT the "cap_" prefix (finding F17).
 func ambientCapList(caps []string) string {
 	parts := make([]string, len(caps))
 	for i, c := range caps {
-		parts[i] = "+cap_" + strings.ToLower(c)
+		parts[i] = "+" + strings.ToLower(c)
 	}
 	return strings.Join(parts, ",")
 }
