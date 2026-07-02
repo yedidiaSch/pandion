@@ -321,9 +321,17 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
 		fmt.Printf("node is live. teardown with:  envcore down --provider=hetzner --id %s\n", id)
 	}
-	if opt.sync != nil {
-		fmt.Println("workspace sync...")
-		if opt.engine == "docker" {
+	if opt.engine == "docker" {
+		// pull the image NOW (egress is still open); the post-lockdown `docker run`
+		// then uses the cached image offline.
+		fmt.Printf("pulling image %s...\n", opt.containerImage)
+		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
+			"docker pull "+shellQuote(opt.containerImage)); err != nil {
+			failNode(fmt.Errorf("docker pull failed: %v\n%s", err, out))
+			return
+		}
+		if opt.sync != nil {
+			fmt.Println("workspace sync...")
 			wd, err := syncFiles(ctx, addr, login.Signer, host.Public, *opt.sync, "root")
 			if err != nil {
 				failNode(err)
@@ -338,14 +346,15 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 					return
 				}
 			}
-		} else {
-			wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
-			if err != nil {
-				failNode(err)
-				return
-			}
-			workdir = wd
 		}
+	} else if opt.sync != nil {
+		fmt.Println("workspace sync...")
+		wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
+		if err != nil {
+			failNode(err)
+			return
+		}
+		workdir = wd
 	}
 
 	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
