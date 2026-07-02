@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore Docker-engine e2e: run a workload in a HARDENED container on the node.
+# Pandion Docker-engine e2e: run a workload in a HARDENED container on the node.
 # Proves --engine=docker + the S-D hardening (cap-drop, no-new-privileges,
 # read-only rootfs, no --privileged, no docker.sock). Self-cleaning.
 #
@@ -11,7 +11,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-docker"
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 
 c_ok(){ printf '\033[32m[ PASS ]\033[0m %s\n' "$*"; }
@@ -29,7 +29,7 @@ teardown(){
 }
 trap teardown EXIT
 
-c_in "building envcore..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+c_in "building pandion..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
 c_in "provision + run workload in a hardened container (~3-5 min)..."
 # inside the container: print the OS (proves we're in the image), whoami, and

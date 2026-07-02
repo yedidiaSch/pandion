@@ -1,4 +1,4 @@
-// Package provider defines the single seam between EnvCore's orchestration and
+// Package provider defines the single seam between Pandion's orchestration and
 // any cloud backend. v1 implements `hetzner`; `mock` backs the tests.
 //
 // M0 deliberately exposes only the minimal lifecycle surface (create / destroy /
@@ -6,7 +6,7 @@
 // firewall, volume and overlay methods from the architecture doc land in M1–M2.
 //
 // Note (spike S1 finding F2): there is intentionally NO HostKeyFingerprint method.
-// EnvCore generates the host key locally and injects it via cloud-init ssh_keys,
+// Pandion generates the host key locally and injects it via cloud-init ssh_keys,
 // so it already knows the fingerprint to pin — no retrieval is needed.
 package provider
 
@@ -54,8 +54,8 @@ type Provider interface {
 	// ListByTag returns all servers for a cluster. This is the reconciliation
 	// SOURCE OF TRUTH (C4) — used even when local state is lost.
 	ListByTag(ctx context.Context, clusterID string) ([]Server, error)
-	// ListAllTagged returns every server EnvCore created (any cluster), for the
-	// client-side orphan reaper (`envcore reap`) — the no-backend way to prevent
+	// ListAllTagged returns every server Pandion created (any cluster), for the
+	// client-side orphan reaper (`pandion reap`) — the no-backend way to prevent
 	// billing leaks when local state or the controlling laptop is gone (C4).
 	ListAllTagged(ctx context.Context) ([]Server, error)
 	// Name identifies the backend (e.g. "hetzner", "mock").

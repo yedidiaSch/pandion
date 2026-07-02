@@ -7,9 +7,9 @@ import (
 
 func TestEnvVarName(t *testing.T) {
 	cases := map[string]string{
-		"broker":   "ENVCORE_BROKER_IP",
-		"worker-a": "ENVCORE_WORKER_A_IP",
-		"n1.node":  "ENVCORE_N1_NODE_IP",
+		"broker":   "PANDION_BROKER_IP",
+		"worker-a": "PANDION_WORKER_A_IP",
+		"n1.node":  "PANDION_N1_NODE_IP",
 	}
 	for in, want := range cases {
 		if got := EnvVarName(in); got != want {
@@ -23,10 +23,10 @@ func TestScript_SortedExportsAndSelf(t *testing.T) {
 	out := Script(ips, "worker-a")
 
 	for _, want := range []string{
-		"export ENVCORE_BROKER_IP=10.99.0.1",
-		"export ENVCORE_WORKER_A_IP=10.99.0.2",
-		"export ENVCORE_SELF_NAME=worker-a",
-		"export ENVCORE_SELF_IP=10.99.0.2",
+		"export PANDION_BROKER_IP=10.99.0.1",
+		"export PANDION_WORKER_A_IP=10.99.0.2",
+		"export PANDION_SELF_NAME=worker-a",
+		"export PANDION_SELF_IP=10.99.0.2",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("script missing %q\n%s", want, out)
@@ -40,7 +40,7 @@ func TestScript_SortedExportsAndSelf(t *testing.T) {
 
 func TestScript_NoSelf(t *testing.T) {
 	out := Script(map[string]string{"a": "10.99.0.1"}, "")
-	if strings.Contains(out, "ENVCORE_SELF") {
+	if strings.Contains(out, "PANDION_SELF") {
 		t.Errorf("should omit SELF when unset:\n%s", out)
 	}
 }

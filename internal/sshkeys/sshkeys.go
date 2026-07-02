@@ -1,7 +1,7 @@
-// Package sshkeys generates ed25519 SSH key pairs for EnvCore.
+// Package sshkeys generates ed25519 SSH key pairs for Pandion.
 //
 // Two pairs are used per node (spike S1):
-//   - a HOST key, injected via cloud-init ssh_keys so EnvCore already knows the
+//   - a HOST key, injected via cloud-init ssh_keys so Pandion already knows the
 //     node's identity and can PIN it (defeating MITM/TOFU); and
 //   - a LOGIN key, whose public half is added to authorized_keys.
 package sshkeys
@@ -18,7 +18,7 @@ import (
 	gossh "golang.org/x/crypto/ssh"
 )
 
-// KeyPair holds both encodings EnvCore needs.
+// KeyPair holds both encodings Pandion needs.
 type KeyPair struct {
 	// PrivatePEM is the OpenSSH-format private key (for cloud-init / on-disk).
 	PrivatePEM string

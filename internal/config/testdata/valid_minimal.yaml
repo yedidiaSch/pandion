@@ -1,4 +1,4 @@
-apiVersion: envcore/v1
+apiVersion: pandion/v1
 name: minimal
 nodes:
   - name: dev

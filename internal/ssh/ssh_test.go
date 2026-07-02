@@ -3,7 +3,7 @@ package ssh
 import (
 	"testing"
 
-	"github.com/envcore/envcore/internal/sshkeys"
+	"github.com/yedidiaSch/pandion/internal/sshkeys"
 )
 
 // Offline encoding of spike S1: the pinned-host-key callback accepts the exact

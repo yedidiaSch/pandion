@@ -1,10 +1,10 @@
 # build output
-/envcore
-/cmd/envcore/envcore
+/pandion
+/cmd/pandion/pandion
 *.exe
 
 # local state written by the demo
-.envcore/
+.pandion/
 
 # editor / OS
 .DS_Store

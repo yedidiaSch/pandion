@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/envcore/envcore/internal/provider"
 	"github.com/hetznercloud/hcloud-go/v2/hcloud"
+	"github.com/yedidiaSch/pandion/internal/provider"
 )
 
 var nonDNS = regexp.MustCompile(`[^a-z0-9-]+`)
@@ -23,7 +23,7 @@ var nonDNS = regexp.MustCompile(`[^a-z0-9-]+`)
 // per project (Hetzner requirement) and never collide across clusters or retries
 // (finding F9). Reconciliation still keys off the cluster-id LABEL, not the name.
 func serverName(clusterID, node string) string {
-	s := strings.ToLower(fmt.Sprintf("envcore-%s-%s", clusterID, node))
+	s := strings.ToLower(fmt.Sprintf("pandion-%s-%s", clusterID, node))
 	s = nonDNS.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
 	if len(s) > 63 {
@@ -34,7 +34,7 @@ func serverName(clusterID, node string) string {
 
 // LabelClusterID tags every resource so ListByTag can reconcile from provider
 // truth even if local state is lost (C4).
-const LabelClusterID = "envcore-cluster-id"
+const LabelClusterID = "pandion-cluster-id"
 
 // Hetzner is a provider.Provider backed by Hetzner Cloud.
 type Hetzner struct {
@@ -248,7 +248,7 @@ func (h *Hetzner) ListByTag(ctx context.Context, clusterID string) ([]provider.S
 	return out, nil
 }
 
-// ListAllTagged returns every EnvCore-tagged server (any cluster) — the reaper's
+// ListAllTagged returns every Pandion-tagged server (any cluster) — the reaper's
 // source of truth. Selects on the presence of the cluster-id label.
 func (h *Hetzner) ListAllTagged(ctx context.Context) ([]provider.Server, error) {
 	srvs, err := h.c.Server.AllWithOpts(ctx, hcloud.ServerListOpts{
@@ -267,7 +267,7 @@ func (h *Hetzner) ListAllTagged(ctx context.Context) ([]provider.Server, error) 
 // ensureLoginKey get-or-creates the cluster's shared login SSH key by a
 // deterministic name, tolerating concurrent callers and duplicate-key errors.
 func (h *Hetzner) ensureLoginKey(ctx context.Context, clusterID, pubKey string, labels map[string]string) (*hcloud.SSHKey, error) {
-	name := "envcore-login-" + clusterID
+	name := "pandion-login-" + clusterID
 	h.keyMu.Lock()
 	defer h.keyMu.Unlock()
 

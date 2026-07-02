@@ -1,15 +1,15 @@
-# Contributing to EnvCore
+# Contributing to Pandion
 
-Thanks for your interest in improving EnvCore! Bug reports, ideas, and pull
+Thanks for your interest in improving Pandion! Bug reports, ideas, and pull
 requests are welcome.
 
 ## Contributor License Agreement (required)
 
-EnvCore is offered under multiple licenses — the [Business Source License 1.1](LICENSE)
+Pandion is offered under multiple licenses — the [Business Source License 1.1](LICENSE)
 and paid [commercial licenses](COMMERCIAL.md). To keep that possible, every
 contributor must agree to the [Contributor License Agreement (CLA)](CLA.md)
 before their contribution can be merged. The CLA lets the Maintainer include your
-contribution in all editions of EnvCore, including commercial ones, while you keep
+contribution in all editions of Pandion, including commercial ones, while you keep
 copyright ownership of your work.
 
 **How to agree:** on your first pull request, add a comment with exactly:
@@ -25,14 +25,14 @@ at the bottom.)*
 > **Why a CLA and not just a DCO?** A Developer Certificate of Origin
 > (`Signed-off-by:`) only certifies you had the right to submit under the current
 > license — it does **not** grant the right to relicense your code commercially.
-> Because EnvCore is dual-licensed, a CLA is required; a DCO alone is not enough.
+> Because Pandion is dual-licensed, a CLA is required; a DCO alone is not enough.
 
 ## Development
 
 ```bash
 export PATH="$HOME/.local/go/bin:$PATH"
 make ci                     # gofmt + go vet + go test -race + build (offline)
-go run ./cmd/envcore demo   # exercise the full lifecycle on the mock provider
+go run ./cmd/pandion demo   # exercise the full lifecycle on the mock provider
 ```
 
 Please make sure `make ci` is green before opening a PR. New behavior should come

@@ -47,7 +47,7 @@ func TestArchive_IncludesAndExcludes(t *testing.T) {
 	must(os.WriteFile(filepath.Join(root, "build", "app"), []byte("bin"), 0o755))
 	must(os.MkdirAll(filepath.Join(root, ".git"), 0o755))
 	must(os.WriteFile(filepath.Join(root, ".git", "HEAD"), []byte("ref"), 0o644))
-	must(os.WriteFile(filepath.Join(root, ".envcoreignore"), []byte("build/\n"), 0o644))
+	must(os.WriteFile(filepath.Join(root, ".pandionignore"), []byte("build/\n"), 0o644))
 
 	ig := LoadIgnore(root)
 	data, n, err := Archive(root, ig)

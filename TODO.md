@@ -16,15 +16,15 @@ reachable for `apt`/`dnf`/badges to work.
 
 ---
 
-## 2. Turn on Homebrew  →  `brew install yedidiaSch/tap/envcore`
+## 2. Turn on Homebrew  →  `brew install yedidiaSch/tap/pandion`
 The `homebrew-tap` repo already exists and is wired; it just needs a push token.
 
 1. Create a **fine-grained PAT**: https://github.com/settings/tokens?type=beta
    - Repository access: **only** `yedidiaSch/homebrew-tap`
    - Permissions: **Contents → Read and write**
-2. Add it as a secret on the `envcore` repo:
+2. Add it as a secret on the `pandion` repo:
    ```bash
-   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo yedidiaSch/envcore   # paste the PAT
+   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo yedidiaSch/pandion   # paste the PAT
    ```
 3. Publish the cask for the current release (or wait for the next tag):
    ```bash
@@ -34,11 +34,11 @@ The `homebrew-tap` repo already exists and is wired; it just needs a push token.
 - [ ] PAT created (scoped to `homebrew-tap`, contents:write)
 - [ ] `HOMEBREW_TAP_GITHUB_TOKEN` secret set
 - [ ] Tagged a release; cask appears in `yedidiaSch/homebrew-tap`
-- [ ] `brew install yedidiaSch/tap/envcore` works
+- [ ] `brew install yedidiaSch/tap/pandion` works
 
 ---
 
-## 3. Turn on APT/YUM  →  `apt install envcore` / `dnf install envcore`
+## 3. Turn on APT/YUM  →  `apt install pandion` / `dnf install pandion`
 The signing key + publish workflow are already in place (`GPG_PRIVATE_KEY` secret
 is set; public key in `packaging/`).
 
@@ -50,20 +50,20 @@ is set; public key in `packaging/`).
    Actions ▸ **Publish package repo** ▸ *Run workflow* ▸ tag `v0.1.0`.
 3. Verify the repo is live:
    ```bash
-   curl -fsSL https://yedidiaSch.github.io/envcore/gpg.key | head -1   # PGP PUBLIC KEY
+   curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | head -1   # PGP PUBLIC KEY
    ```
 4. Smoke-test on a Debian/Ubuntu box (or container):
    ```bash
-   curl -fsSL https://yedidiaSch.github.io/envcore/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/envcore.gpg
-   echo "deb [signed-by=/usr/share/keyrings/envcore.gpg] https://yedidiaSch.github.io/envcore/deb stable main" | sudo tee /etc/apt/sources.list.d/envcore.list
-   sudo apt update && sudo apt install envcore && envcore version
+   curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/pandion.gpg
+   echo "deb [signed-by=/usr/share/keyrings/pandion.gpg] https://yedidiaSch.github.io/pandion/deb stable main" | sudo tee /etc/apt/sources.list.d/pandion.list
+   sudo apt update && sudo apt install pandion && pandion version
    ```
 
 - [ ] Publish workflow ran green for `v0.1.0`
 - [ ] Pages source set to `gh-pages`
 - [ ] `gpg.key` reachable over HTTPS
-- [ ] `apt install envcore` works on a clean box
-- [ ] `dnf install envcore` works on a clean box
+- [ ] `apt install pandion` works on a clean box
+- [ ] `dnf install pandion` works on a clean box
 
 > First real run of the repo-assembly step is this workflow dispatch (reprepro /
 > createrepo_c only run on the GitHub runner). If it errors, paste the log — it's
@@ -73,10 +73,10 @@ is set; public key in `packaging/`).
 
 ## Notes / caveats
 - **Signing key:** fingerprint `8A19045A2466ED368AA23868988E9FA033620E2F`
-  (`EnvCore Packages`). Private half is the `GPG_PRIVATE_KEY` secret; rotate per
+  (`Pandion Packages`). Private half is the `GPG_PRIVATE_KEY` secret; rotate per
   `packaging/README.md`.
 - **macOS/Windows CLI** is built + released but **unvalidated** — that's roadmap
-  **M7** (`../plan/envcore-roadmap.md` in the design set), not part of this checklist.
+  **M7** (`../plan/pandion-roadmap.md` in the design set), not part of this checklist.
 - After all three are green, every channel is live: `brew` · `apt` · `dnf` ·
   direct download · `go install`. Then delete this section.
 
@@ -89,7 +89,7 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 
 > **Read this first — the one gap that blocks real use:**
 > **Workspace sync is not implemented (P0).** Nodes run your `run:` command, but
-> EnvCore never copies your source/binaries to them. Today only commands that need
+> Pandion never copies your source/binaries to them. Today only commands that need
 > no local code work (the e2e used `echo`/`ping`). A real C++ workload needs the
 > workspace synced (and built) on the node first. Until P0-1 lands, `run:
 > ./build/app` assumes `./build/app` already exists on the node — it won't.
@@ -97,7 +97,7 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 ## P0 — makes it usable for real C++/IPC workloads
 - [ ] **Workspace synchronization** (design §4, H3, L5) — rsync-over-SSH of the
       local workspace to each node before running; `--sync=source` (build remotely)
-      vs `--sync=binaries` (validate target arch/libc, H3); `.envcoreignore`
+      vs `--sync=binaries` (validate target arch/libc, H3); `.pandionignore`
       (fallback `.gitignore`). *Without this the tool can't run user code.*
 - [ ] **Apply `cluster.yaml` fields that are currently parsed-but-ignored** — the
       config layer reads them, but `upClusterHetzner` only uses `name` + `run`.
@@ -112,7 +112,7 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 
 ## P1 — security hardening the design promises (M1.x + security architecture)
 - [ ] **Least-privilege run user** (S-C) — commands currently run as **root**. Add a
-      dedicated `envcore-run` user, dropped caps, `NoNewPrivileges`, add-back only
+      dedicated `pandion-run` user, dropped caps, `NoNewPrivileges`, add-back only
       declared `needs_caps`/`privileged_ports`.
 - [ ] **Encrypted volumes at rest** (LUKS, S-E).
 - [ ] **Cloud metadata block** (`169.254.169.254`, S-F) post-provision.
@@ -125,7 +125,7 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - [ ] **fail2ban** as secondary defense (M7-review), `unattended-upgrades` on
       longer-lived nodes.
 - [ ] **Reproducibility** (H2) — pin toolchain versions + record a per-cluster
-      lockfile (`~/.envcore/lock/<id>.json`). Toolchain is currently unpinned.
+      lockfile (`~/.pandion/lock/<id>.json`). Toolchain is currently unpinned.
 - [ ] **Signed releases** — add cosign signing to goreleaser (checksums + SBOM exist;
       artifact signatures don't).
 
@@ -133,11 +133,11 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - [ ] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that
       self-destroys a node with no heartbeat; the real leak-prevention when the
       laptop dies. `--ttl`, `--no-ttl`.
-- [ ] **`envcore ls` / `status`** (L1) — list active clusters, nodes, uptime, and
+- [ ] **`pandion ls` / `status`** (L1) — list active clusters, nodes, uptime, and
       **live cost**.
-- [ ] **`envcore reap`** (C4) — sweep orphaned tagged resources across all clusters
+- [ ] **`pandion reap`** (C4) — sweep orphaned tagged resources across all clusters
       (today `down --id` reconciles one cluster).
-- [ ] **`envcore attach`** (L6) — reconnect to a running cluster's multiplexed
+- [ ] **`pandion attach`** (L6) — reconnect to a running cluster's multiplexed
       streams. *Foundation exists:* the manifest persisted for `lockdown`.
 - [ ] **Budget controls** (L2) — `--max-cost`, idle auto-stop (built on the TTL).
 
@@ -147,17 +147,17 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.
 - [ ] **`--dry-run`** (L4) — preview the plan without creating anything.
-- [ ] **Structured logging / audit trail** (L3) — `log/slog` for EnvCore's own infra
+- [ ] **Structured logging / audit trail** (L3) — `log/slog` for Pandion's own infra
       actions (today it's plain `fmt` prints).
 - [ ] **Config precedence + profiles** (CLI spec) — `flags > env > cluster.yaml >
-      ~/.envcore/config.yaml > defaults`; named credential/config profiles.
-- [ ] **Shell completion** (`envcore completion …`), richer `--help` examples.
+      ~/.pandion/config.yaml > defaults`; named credential/config profiles.
+- [ ] **Shell completion** (`pandion completion …`), richer `--help` examples.
 
 ## Explicitly NOT planned (don't "implement" these)
 - **Auto-restart of crashed processes** — fail-fast is a deliberate design choice
   (§5): freeze, alert, leave the node up for GDB. Do not add a supervisor.
 - **AWS / GCP providers** — deferred until there's a concrete need (see
-  `envcore-provider-comparison.md`); the `Provider` seam is ready if so.
+  `pandion-provider-comparison.md`); the `Provider` seam is ready if so.
 - **Non-Ubuntu / non-Linux nodes** — provisioned environments are Ubuntu-by-design.
 
 ---

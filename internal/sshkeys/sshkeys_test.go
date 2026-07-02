@@ -8,7 +8,7 @@ import (
 )
 
 func TestGenerate_RoundTripAndFormat(t *testing.T) {
-	kp, err := Generate("envcore-host")
+	kp, err := Generate("pandion-host")
 	if err != nil {
 		t.Fatalf("generate: %v", err)
 	}
@@ -29,7 +29,7 @@ func TestGenerate_RoundTripAndFormat(t *testing.T) {
 	if !strings.HasPrefix(kp.PublicAuthorized, "ssh-ed25519 ") {
 		t.Fatalf("authorized line malformed: %q", kp.PublicAuthorized)
 	}
-	if !strings.HasSuffix(kp.PublicAuthorized, " envcore-host") {
+	if !strings.HasSuffix(kp.PublicAuthorized, " pandion-host") {
 		t.Fatalf("comment missing from authorized line: %q", kp.PublicAuthorized)
 	}
 	if !strings.HasPrefix(kp.Fingerprint(), "SHA256:") {

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================================
-# EnvCore workspace-sync e2e: sync a local C++ project to a node, build it
-# remotely, and run it — proving EnvCore can run YOUR code. Self-cleaning.
+# Pandion workspace-sync e2e: sync a local C++ project to a node, build it
+# remotely, and run it — proving Pandion can run YOUR code. Self-cleaning.
 #
 #   export HCLOUD_TOKEN=your-token
 #   ./scripts/e2e_sync.sh
@@ -10,7 +10,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 ID="e2e-sync"
-BIN="./bin/envcore"
+BIN="./bin/pandion"
 SRC="$(mktemp -d)"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 
@@ -37,12 +37,12 @@ cat > "$SRC/hello.cpp" <<'CPP'
 int main(){ std::puts("HELLO_FROM_SYNCED_SOURCE"); return 0; }
 CPP
 echo "this must NOT be uploaded" > "$SRC/build/stale.o"
-printf 'build/\n' > "$SRC/.envcoreignore"
+printf 'build/\n' > "$SRC/.pandionignore"
 
-c_in "building envcore..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
+c_in "building pandion..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
-c_in "provision + sync $SRC + remote build + run as envcore-run (~2-4 min)..."
-# workspace becomes the cwd; the command runs as the unprivileged envcore-run user.
+c_in "provision + sync $SRC + remote build + run as pandion-run (~2-4 min)..."
+# workspace becomes the cwd; the command runs as the unprivileged pandion-run user.
 OUT=$("$BIN" up --provider=hetzner --id "$ID" \
   --workspace "$SRC" \
   --build 'g++ -O2 hello.cpp -o hello' \
@@ -55,8 +55,8 @@ PASS=1
 echo "$OUT" | grep -q "syncing .* files ->" && c_ok "workspace archived + streamed to node" || { c_no "sync step"; PASS=0; }
 echo "$OUT" | grep -q "HELLO_FROM_SYNCED_SOURCE" && c_ok "remote build + run of MY source succeeded" || { c_no "build/run"; PASS=0; }
 echo "$OUT" | grep -q "hello.cpp" && c_ok "source file present on node" || { c_no "source missing"; PASS=0; }
-echo "$OUT" | grep -q "stale.o" && { c_no ".envcoreignore not honored (build/ leaked)"; PASS=0; } || c_ok ".envcoreignore honored (build/ excluded)"
-echo "$OUT" | grep -q "RUNUSER=envcore-run" && c_ok "least privilege: workload ran as envcore-run (NOT root)" || { c_no "workload did not run as envcore-run"; PASS=0; }
+echo "$OUT" | grep -q "stale.o" && { c_no ".pandionignore not honored (build/ leaked)"; PASS=0; } || c_ok ".pandionignore honored (build/ excluded)"
+echo "$OUT" | grep -q "RUNUSER=pandion-run" && c_ok "least privilege: workload ran as pandion-run (NOT root)" || { c_no "workload did not run as pandion-run"; PASS=0; }
 
 echo "================================================================"
 [ "$PASS" = 1 ] && c_ok "WORKSPACE SYNC + LEAST-PRIV: verified" || c_no "see failures above"
