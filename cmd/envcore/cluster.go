@@ -251,6 +251,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			Packages:       pkgs,
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 			RunUser:        runUser,
+			IdleTTL:        parseTTL(eff.TTLRaw),
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,

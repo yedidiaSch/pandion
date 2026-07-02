@@ -99,6 +99,7 @@ type Effective struct {
 	Packages []string
 	Region   string
 	RunUser  string // security.run_as; empty means "use the default"
+	TTLRaw   string // ttl string ("60m" | "false" | ""); "" means "use the default"
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -113,6 +114,7 @@ func (c *Cluster) Effective(n Node) Effective {
 		Size:   pick(n.Size, c.Defaults.Size),
 		Image:  pick(n.Image, c.Defaults.Image),
 		Region: c.Provider.Region,
+		TTLRaw: pick(n.TTL, c.Defaults.TTL),
 	}
 	switch {
 	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
