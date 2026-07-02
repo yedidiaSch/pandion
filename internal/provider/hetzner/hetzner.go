@@ -248,6 +248,22 @@ func (h *Hetzner) ListByTag(ctx context.Context, clusterID string) ([]provider.S
 	return out, nil
 }
 
+// ListAllTagged returns every EnvCore-tagged server (any cluster) — the reaper's
+// source of truth. Selects on the presence of the cluster-id label.
+func (h *Hetzner) ListAllTagged(ctx context.Context) ([]provider.Server, error) {
+	srvs, err := h.c.Server.AllWithOpts(ctx, hcloud.ServerListOpts{
+		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID}, // key exists
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]provider.Server, 0, len(srvs))
+	for _, s := range srvs {
+		out = append(out, toServer(s, s.Labels[LabelClusterID]))
+	}
+	return out, nil
+}
+
 // ensureLoginKey get-or-creates the cluster's shared login SSH key by a
 // deterministic name, tolerating concurrent callers and duplicate-key errors.
 func (h *Hetzner) ensureLoginKey(ctx context.Context, clusterID, pubKey string, labels map[string]string) (*hcloud.SSHKey, error) {
@@ -316,6 +332,7 @@ func toServer(s *hcloud.Server, clusterID string) provider.Server {
 		ID:        strconv.FormatInt(s.ID, 10),
 		Name:      s.Name,
 		ClusterID: clusterID,
+		Created:   s.Created,
 	}
 	if s.ServerType != nil {
 		ps.Type = s.ServerType.Name
