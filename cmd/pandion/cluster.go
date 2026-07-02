@@ -223,13 +223,19 @@ func manifestPath(id string) string {
 }
 
 func saveManifest(id string, plans []*nodePlan) error {
-	m := clusterManifest{ID: id}
+	nodes := make([]nodeManifest, 0, len(plans))
 	for _, p := range plans {
-		m.Nodes = append(m.Nodes, nodeManifest{
+		nodes = append(nodes, nodeManifest{
 			Name: p.name, IP: p.ip, OverlayIP: p.overlayIP, HostPub: p.host.PublicAuthorized,
 		})
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
+	return writeManifest(id, nodes)
+}
+
+// writeManifest persists the reconnect-time view (nodes to SSH-pin) so `attach`
+// and `lockdown` work for both the single-node and cluster flows.
+func writeManifest(id string, nodes []nodeManifest) error {
+	b, err := json.MarshalIndent(clusterManifest{ID: id, Nodes: nodes}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -590,7 +596,7 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 func attachCluster(id string) error {
 	man, err := loadManifest(id)
 	if err != nil {
-		return fmt.Errorf("no manifest for %q (was it created with `up -f`?): %w", id, err)
+		return fmt.Errorf("no manifest for %q (is the id correct? manifest lives in ~/.pandion/keys/%s/): %w", id, id, err)
 	}
 	pemPath := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
 	pem, err := os.ReadFile(pemPath)
