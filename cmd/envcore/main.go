@@ -49,6 +49,8 @@ func main() {
 		runValidate(os.Args[2:])
 	case "lockdown":
 		runLockdown(os.Args[2:])
+	case "reap":
+		runReap(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -364,6 +366,49 @@ func runValidate(args []string) {
 	fmt.Printf("%s: valid\n", *file)
 }
 
+// runReap finds every EnvCore-tagged server at the provider and destroys orphans
+// — the no-backend way to prevent billing leaks when local state or the
+// controlling laptop is gone (C4). Confirms in a TTY unless --yes.
+func runReap(args []string) {
+	fs := flag.NewFlagSet("reap", flag.ExitOnError)
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
+	olderThan := fs.Duration("older-than", 0, "only reap clusters whose oldest node is at least this age (e.g. 2h)")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	_ = fs.Parse(args)
+
+	p, err := newProvider(*prov)
+	must(err)
+	o := orchestrator.New(p, mustStore())
+
+	plan, err := o.ReapPlan(context.Background(), *olderThan)
+	must(err)
+	if len(plan) == 0 {
+		fmt.Println("reap: no EnvCore clusters to remove.")
+		return
+	}
+	fmt.Printf("reap: %d cluster(s) at %s:\n", len(plan), p.Name())
+	total := 0
+	for _, c := range plan {
+		fmt.Printf("  %-24s %d node(s)  oldest %s\n", c.ClusterID, c.Servers, c.OldestAge.Round(time.Second))
+		total += c.Servers
+	}
+	if !*yes {
+		fmt.Printf("destroy all %d node(s)? this is irreversible. [y/N]: ", total)
+		var ans string
+		_, _ = fmt.Scanln(&ans)
+		if ans != "y" && ans != "Y" {
+			fmt.Println("aborted; nothing changed.")
+			return
+		}
+	}
+	n, err := o.Reap(context.Background(), plan)
+	fmt.Printf("reaped %d/%d cluster(s).\n", n, len(plan))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "reap: %v\n", err)
+		os.Exit(8)
+	}
+}
+
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	prov := fs.String("provider", "mock", "provider: mock|hetzner")
@@ -404,6 +449,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  envcore down [--provider mock|hetzner] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  envcore validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  envcore lockdown --id ID   (public deny-all; SSH over overlay only)")
+	fmt.Fprintln(os.Stderr, "  envcore reap [--older-than DUR] [--yes]   (destroy orphaned EnvCore nodes)")
 	fmt.Fprintln(os.Stderr, "  envcore demo | version")
 }
 

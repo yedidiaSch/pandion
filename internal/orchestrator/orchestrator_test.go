@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/envcore/envcore/internal/provider/mock"
 	"github.com/envcore/envcore/internal/state"
@@ -146,5 +147,50 @@ func TestUpCluster_PartialFailure_ThenRollback(t *testing.T) {
 	}
 	if m.Count() != 0 {
 		t.Fatalf("rollback left %d servers", m.Count())
+	}
+}
+
+func TestReap_DestroysAllTaggedClusters(t *testing.T) {
+	o, m := newOrch(t)
+	ctx := context.Background()
+	// two separate clusters provisioned
+	if _, err := o.UpCluster(ctx, "cl-a", specs("a1", "a2"), 5); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := o.Up(ctx, "cl-b", "b1", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	if m.Count() != 3 {
+		t.Fatalf("want 3 servers, got %d", m.Count())
+	}
+	plan, err := o.ReapPlan(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 2 {
+		t.Fatalf("want 2 reap candidates, got %d", len(plan))
+	}
+	n, err := o.Reap(ctx, plan)
+	if err != nil || n != 2 {
+		t.Fatalf("reap n=%d err=%v", n, err)
+	}
+	if m.Count() != 0 {
+		t.Fatalf("reap left %d servers", m.Count())
+	}
+}
+
+func TestReapPlan_OlderThanFiltersOutYoungClusters(t *testing.T) {
+	o, _ := newOrch(t)
+	ctx := context.Background()
+	if _, err := o.Up(ctx, "fresh", "n", "", ""); err != nil {
+		t.Fatal(err)
+	}
+	// just-created cluster is younger than 1h -> excluded
+	plan, err := o.ReapPlan(ctx, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) != 0 {
+		t.Fatalf("young cluster should be filtered out, got %d", len(plan))
 	}
 }
