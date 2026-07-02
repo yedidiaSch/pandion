@@ -24,6 +24,9 @@ type NodeSpec struct {
 	Name        string
 	UserData    string
 	LoginPubKey string
+	Type        string // exact provider type (from cluster.yaml `size`); empty = auto
+	Image       string
+	RegionPref  []string
 }
 
 // Orchestrator drives clusters through their lifecycle.
@@ -114,6 +117,9 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 				ClusterID:   clusterID,
 				UserData:    specs[i].UserData,
 				LoginPubKey: specs[i].LoginPubKey,
+				Type:        specs[i].Type,
+				Image:       specs[i].Image,
+				RegionPref:  specs[i].RegionPref,
 			})
 			if err != nil {
 				setPhase(i, state.Failed)
