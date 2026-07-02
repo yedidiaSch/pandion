@@ -89,7 +89,7 @@ homebrew_casks:
       owner: yedidiaSch
       name: homebrew-tap
       branch: master
-      token: '{{ index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}'
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     homepage: "https://github.com/yedidiaSch/envcore"
     description: "Provision, harden & orchestrate C++/IPC dev environments"
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_GITHUB_TOKEN" }}false{{ else }}true{{ end }}'
