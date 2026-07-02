@@ -13,3 +13,6 @@
 
 # goreleaser build output
 /dist/
+
+# internal strategy notes (do not publish)
+/docs/monetization-strategy.md

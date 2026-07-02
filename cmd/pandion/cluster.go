@@ -223,13 +223,19 @@ func manifestPath(id string) string {
 }
 
 func saveManifest(id string, plans []*nodePlan) error {
-	m := clusterManifest{ID: id}
+	nodes := make([]nodeManifest, 0, len(plans))
 	for _, p := range plans {
-		m.Nodes = append(m.Nodes, nodeManifest{
+		nodes = append(nodes, nodeManifest{
 			Name: p.name, IP: p.ip, OverlayIP: p.overlayIP, HostPub: p.host.PublicAuthorized,
 		})
 	}
-	b, err := json.MarshalIndent(m, "", "  ")
+	return writeManifest(id, nodes)
+}
+
+// writeManifest persists the reconnect-time view (nodes to SSH-pin) so `attach`
+// and `lockdown` work for both the single-node and cluster flows.
+func writeManifest(id string, nodes []nodeManifest) error {
+	b, err := json.MarshalIndent(clusterManifest{ID: id, Nodes: nodes}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -305,7 +311,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if len(pkgs) == 0 {
 			pkgs = harden.DefaultToolchain() // C++ default when none specified
 		}
-		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard") // always needed
+		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard", "tmux") // always needed (tmux: durable run + attach)
 		var region []string
 		if eff.Region != "" {
 			region = []string{eff.Region}
@@ -495,6 +501,58 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 // streamCluster runs each node's command concurrently and multiplexes output.
 // ctx is cancelled by the caller's Ctrl+C handler to detach.
+// runLogPath is where each node's run output is captured (so `attach` can
+// reconnect and tail it); runExitMarker is the sentinel appended when the
+// workload exits, carrying its exit code so a crash is still visible after
+// detach (fail-fast survives the tmux hand-off).
+const runLogPath = "/var/log/pandion/run.log"
+const runTmuxSession = "pandion"
+const runExitMarker = "__pandion_exit__"
+
+// launchRun starts cmd in a DETACHED tmux session, so the workload survives
+// detach (Ctrl+C) — "detach != destroy" (C3). Idempotent. Output is redirected
+// to runLogPath (tailLog streams it live), and the workload's exit code is
+// appended as runExitMarker so crashes remain observable through the log.
+func launchRun(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, cmd string) error {
+	// no pipe: $? is the workload's own exit code (no PIPESTATUS/bash needed).
+	// $? is double-quoted (not shellQuote'd) so the innermost tmux shell expands
+	// it — the outer shellQuote(inner) delivers this verbatim to tmux.
+	inner := cmd + " > " + runLogPath + " 2>&1; echo \"" + runExitMarker + " $?\" >> " + runLogPath
+	launch := "mkdir -p /var/log/pandion; tmux kill-session -t " + runTmuxSession + " 2>/dev/null; " +
+		"tmux new-session -d -s " + runTmuxSession + " " + shellQuote(inner)
+	out, err := envssh.Run(ctx, addr, "root", signer, pinned, launch)
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, out)
+	}
+	return nil
+}
+
+// tailLog streams a node's run log (multiplexed) until ctx is cancelled (detach)
+// or the workload exits. On exit it reports the code — a non-zero code is a
+// crash, and the node is left up for GDB/SSH (§5) — then stops tailing this node.
+func tailLog(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, node string, printer *stream.Printer) {
+	nctx, ncancel := context.WithCancel(ctx)
+	defer ncancel()
+	var exited bool
+	err := envssh.Stream(nctx, addr, "root", signer, pinned, "tail -n +1 -F "+runLogPath,
+		func(s, line string) {
+			if code, ok := strings.CutPrefix(line, runExitMarker); ok {
+				exited = true
+				if code = strings.TrimSpace(code); code == "0" {
+					printer.Print(node, "out", "process exited cleanly (code 0)")
+				} else {
+					printer.Print(node, "err", "process exited (code "+code+") — node left up for GDB/SSH")
+				}
+				ncancel() // workload is done; unwind this node's stream
+				return
+			}
+			printer.Print(node, "out", line)
+		})
+	if err != nil && ctx.Err() == nil && !exited {
+		printer.Print(node, "err", "log stream ended: "+err.Error())
+	}
+}
+
 func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *sshkeys.KeyPair) {
 	var runnable []*nodePlan
 	for _, p := range plans {
@@ -506,11 +564,19 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		return
 	}
 
+	// launch each command in a detached tmux session (survives Ctrl+C) teeing to
+	// the node's run log, THEN multiplex by tailing those logs.
+	for _, p := range runnable {
+		if err := launchRun(ctx, p.ip+":22", login.Signer, p.host.Public, runAs(p.runUser, p.workdir, p.run, p.caps)); err != nil {
+			fmt.Fprintf(os.Stderr, "launch on %s failed: %v\n", p.name, err)
+			return
+		}
+	}
+
 	logDir := filepath.Join(envHome(), ".pandion", "logs", id)
 	printer := stream.NewPrinter(os.Stdout, logDir, colorEnabled())
 	defer printer.Close()
-
-	fmt.Printf("streaming %d node command(s) (Ctrl+C detaches; logs: %s)\n", len(runnable), logDir)
+	fmt.Printf("streaming %d node command(s) (Ctrl+C detaches; reattach: pandion attach --id %s)\n", len(runnable), id)
 	fmt.Println("----------------------------------------------------------------")
 
 	var wg sync.WaitGroup
@@ -518,16 +584,57 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		wg.Add(1)
 		go func(p *nodePlan) {
 			defer wg.Done()
-			err := envssh.Stream(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-				runAs(p.runUser, p.workdir, p.run, p.caps),
-				func(s, line string) { printer.Print(p.name, s, line) })
-			if err != nil && ctx.Err() == nil {
-				// fail-fast: report the crash, leave the node up for debugging (§5).
-				printer.Print(p.name, "err", "process exited: "+err.Error()+" (node left up for GDB/SSH)")
-			}
+			tailLog(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, printer)
 		}(p)
 	}
 	wg.Wait()
+}
+
+// attachCluster reconnects to a running cluster's streams from its persisted
+// manifest (node IPs + pinned host keys) — the multiplexed view, again. Ctrl+C
+// detaches; the workloads (in tmux) keep running.
+func attachCluster(id string) error {
+	man, err := loadManifest(id)
+	if err != nil {
+		return fmt.Errorf("no manifest for %q (is the id correct? manifest lives in ~/.pandion/keys/%s/): %w", id, id, err)
+	}
+	pemPath := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
+	pem, err := os.ReadFile(pemPath)
+	if err != nil {
+		return fmt.Errorf("read login key %s: %w", pemPath, err)
+	}
+	signer, err := gossh.ParsePrivateKey(pem)
+	if err != nil {
+		return fmt.Errorf("bad login key: %w", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt)
+	go func() { <-sig; fmt.Println("\n^C — detaching; cluster left running."); cancel() }()
+	defer signal.Stop(sig)
+
+	printer := stream.NewPrinter(os.Stdout, filepath.Join(envHome(), ".pandion", "logs", id), colorEnabled())
+	defer printer.Close()
+	fmt.Printf("attaching to %d node(s) of cluster %q (Ctrl+C detaches)...\n", len(man.Nodes), id)
+	fmt.Println("----------------------------------------------------------------")
+
+	var wg sync.WaitGroup
+	for _, n := range man.Nodes {
+		pinned, perr := parsePinned(n.HostPub)
+		if perr != nil {
+			fmt.Fprintf(os.Stderr, "bad host key for %s: %v\n", n.Name, perr)
+			continue
+		}
+		wg.Add(1)
+		go func(name, ip string, pk gossh.PublicKey) {
+			defer wg.Done()
+			tailLog(ctx, ip+":22", signer, pk, name, printer)
+		}(n.Name, n.IP, pinned)
+	}
+	wg.Wait()
+	return nil
 }
 
 // colorEnabled reports whether to colorize output (respects NO_COLOR).
