@@ -106,9 +106,18 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 			Arch: string(st.Architecture), Deprecated: st.IsDeprecated(),
 		})
 	}
-	candidates := selectCandidates(infos, minCores, minRAM, h.arch)
-	if len(candidates) == 0 {
-		return provider.Server{}, fmt.Errorf("no server type matches spec (>=%dc/%dGB, %s)", minCores, minRAM, h.arch)
+	var candidates []string
+	if spec.Type != "" {
+		// exact type requested (e.g. cluster.yaml `size: cpx21`)
+		if _, ok := byName[spec.Type]; !ok {
+			return provider.Server{}, fmt.Errorf("server type %q not found", spec.Type)
+		}
+		candidates = []string{spec.Type}
+	} else {
+		candidates = selectCandidates(infos, minCores, minRAM, h.arch)
+		if len(candidates) == 0 {
+			return provider.Server{}, fmt.Errorf("no server type matches spec (>=%dc/%dGB, %s)", minCores, minRAM, h.arch)
+		}
 	}
 
 	// 2) discover + order locations

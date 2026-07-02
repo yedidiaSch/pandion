@@ -191,15 +191,28 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
 			sync: resolveSync(n, cl.Defaults)}
 
+		// apply cluster.yaml per-node settings (P0-2), with defaults inheritance.
+		eff := cl.Effective(n)
+		pkgs := eff.Packages
+		if len(pkgs) == 0 {
+			pkgs = harden.DefaultToolchain() // C++ default when none specified
+		}
+		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard") // always needed
+		var region []string
+		if eff.Region != "" {
+			region = []string{eff.Region}
+		}
+
 		ci := harden.CloudInit{
 			HostPrivKeyPEM: host.PrivatePEM,
 			HostPubKey:     host.PublicAuthorized,
 			LoginPubKey:    login.PublicAuthorized,
-			Packages:       append(harden.DefaultToolchain(), "nftables", "wireguard"),
+			Packages:       pkgs,
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
+			Type: eff.Size, Image: eff.Image, RegionPref: region,
 		}
 	}
 

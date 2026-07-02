@@ -38,13 +38,19 @@ type Provider struct {
 
 // NodeCommon holds fields valid at both defaults and per-node level.
 type NodeCommon struct {
-	Target string    `yaml:"target"`
-	Engine string    `yaml:"engine"`
-	Size   string    `yaml:"size"`
-	Image  string    `yaml:"image"`
-	TTL    string    `yaml:"ttl"`
-	Sync   *Sync     `yaml:"sync"`
-	Sec    *Security `yaml:"security"`
+	Target    string     `yaml:"target"`
+	Engine    string     `yaml:"engine"`
+	Size      string     `yaml:"size"`
+	Image     string     `yaml:"image"`
+	TTL       string     `yaml:"ttl"`
+	Toolchain *Toolchain `yaml:"toolchain"`
+	Sync      *Sync      `yaml:"sync"`
+	Sec       *Security  `yaml:"security"`
+}
+
+// Toolchain is the set of packages installed on a node.
+type Toolchain struct {
+	Packages []string `yaml:"packages"`
 }
 
 // Node is one host in the topology.
@@ -83,6 +89,37 @@ type Lifecycle struct {
 	DestroyOnExit   *bool `yaml:"destroy_on_exit"`
 	ConfirmTeardown *bool `yaml:"confirm_teardown"`
 	KeepOnFailure   *bool `yaml:"keep_on_failure"`
+}
+
+// Effective is a node's settings after merging cluster defaults with its own
+// overrides (node wins). It's what the orchestrator should consume.
+type Effective struct {
+	Size     string
+	Image    string
+	Packages []string
+	Region   string
+}
+
+// Effective resolves a node's effective settings against the cluster defaults.
+func (c *Cluster) Effective(n Node) Effective {
+	pick := func(node, def string) string {
+		if node != "" {
+			return node
+		}
+		return def
+	}
+	e := Effective{
+		Size:   pick(n.Size, c.Defaults.Size),
+		Image:  pick(n.Image, c.Defaults.Image),
+		Region: c.Provider.Region,
+	}
+	switch {
+	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
+		e.Packages = n.Toolchain.Packages
+	case c.Defaults.Toolchain != nil:
+		e.Packages = c.Defaults.Toolchain.Packages
+	}
+	return e
 }
 
 // Validate checks raw YAML bytes against the schema without unmarshalling into

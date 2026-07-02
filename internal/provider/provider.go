@@ -18,6 +18,7 @@ import "context"
 type ServerSpec struct {
 	Name       string
 	ClusterID  string
+	Type       string // exact provider type (e.g. "cpx21"); empty = discover by spec
 	MinCores   int
 	MinRAMGB   int
 	RegionPref []string
