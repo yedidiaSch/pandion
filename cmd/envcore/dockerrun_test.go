@@ -6,7 +6,7 @@ import (
 )
 
 func TestDockerRun_HardenedFlagsAndMount(t *testing.T) {
-	cmd := dockerRun("ubuntu:24.04", "/root/workspace", "./app")
+	cmd := dockerRun("ubuntu:24.04", "/root/workspace", "./app", nil)
 	for _, want := range []string{
 		"docker run",
 		"--cap-drop=ALL",
@@ -30,7 +30,7 @@ func TestDockerRun_HardenedFlagsAndMount(t *testing.T) {
 }
 
 func TestDockerRun_NoWorkspaceNoMount(t *testing.T) {
-	cmd := dockerRun("alpine", "", "echo hi")
+	cmd := dockerRun("alpine", "", "echo hi", nil)
 	if strings.Contains(cmd, "-v ") || strings.Contains(cmd, "-w ") {
 		t.Errorf("no workspace should mean no mount:\n%s", cmd)
 	}

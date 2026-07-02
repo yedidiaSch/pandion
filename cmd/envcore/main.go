@@ -100,6 +100,7 @@ func runUp(args []string) {
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
+	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
@@ -133,7 +134,7 @@ func runUp(args []string) {
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
-			engine: *engine, containerImage: *containerImage,
+			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 		})
 	}
 }
@@ -149,6 +150,7 @@ type hetznerUpOpts struct {
 	idleTTL          time.Duration
 	engine           string // native | docker
 	containerImage   string
+	caps             []string
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -341,7 +343,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			if b := strings.TrimSpace(opt.sync.Build); b != "" {
 				fmt.Printf("  building in container (%s): %s\n", opt.containerImage, b)
 				if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
-					dockerRun(opt.containerImage, workdir, b)); err != nil {
+					dockerRun(opt.containerImage, workdir, b, nil)); err != nil {
 					failNode(fmt.Errorf("container build failed: %v\n%s", err, out))
 					return
 				}
@@ -412,10 +414,10 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	var runShell string
 	if opt.engine == "docker" {
 		fmt.Printf("running command in hardened container (%s)...\n", opt.containerImage)
-		runShell = dockerRun(opt.containerImage, workdir, runCmd)
+		runShell = dockerRun(opt.containerImage, workdir, runCmd, opt.caps)
 	} else {
 		fmt.Printf("running command (as %s)...\n", orRoot(opt.runUser))
-		runShell = runAs(opt.runUser, workdir, runCmd)
+		runShell = runAs(opt.runUser, workdir, runCmd, opt.caps)
 	}
 	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runShell)
 	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
