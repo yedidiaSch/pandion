@@ -34,33 +34,67 @@ type syncSpec struct {
 	Build      string
 }
 
+// runAs wraps a command to run as `user` (login shell, so /etc/profile.d
+// discovery is sourced), optionally from workdir. root runs directly; a non-root
+// user is dropped into via runuser (least privilege, S-C).
+func runAs(user, workdir, cmd string) string {
+	inner := cmd
+	if strings.TrimSpace(workdir) != "" {
+		inner = "cd " + shellQuote(workdir) + " && " + cmd
+	}
+	loginShell := "bash -lc " + shellQuote(inner)
+	if user == "" || user == "root" {
+		return loginShell
+	}
+	return "runuser -u " + shellQuote(user) + " -- " + loginShell
+}
+
+// workspaceDir is where a synced workspace lands: the run user's home (so a
+// non-root user can read/build/run it), unless overridden.
+func workspaceDir(runUser, override string) string {
+	if strings.TrimSpace(override) != "" {
+		return override
+	}
+	if runUser == "" || runUser == "root" {
+		return "/root/workspace"
+	}
+	return "/home/" + runUser + "/workspace"
+}
+
 // syncWorkspace archives LocalPath (honoring .envcoreignore/.gitignore), streams
 // it to the node over the pinned SSH connection, extracts it, and runs the
 // optional Build command. Must run inside the egress build-window (before the
 // firewall lockdown) so the build can fetch dependencies.
-func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec) error {
-	remote := s.RemotePath
-	if remote == "" {
-		remote = workspace.DefaultRemotePath
-	}
+func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
+	remote := workspaceDir(runUser, s.RemotePath)
 	ig := workspace.LoadIgnore(s.LocalPath)
 	data, files, err := workspace.Archive(s.LocalPath, ig)
 	if err != nil {
-		return fmt.Errorf("archive %s: %w", s.LocalPath, err)
+		return "", fmt.Errorf("archive %s: %w", s.LocalPath, err)
 	}
 	fmt.Printf("  syncing %d files -> %s ...\n", files, remote)
+	// extract as root, then hand ownership to the run user so it can build/run.
 	extract := "mkdir -p " + shellQuote(remote) + " && tar -xzf - -C " + shellQuote(remote)
+	if runUser != "" && runUser != "root" {
+		extract += " && chown -R " + shellQuote(runUser) + ":" + shellQuote(runUser) + " " + shellQuote(remote)
+	}
 	if out, err := envssh.RunWithInput(ctx, addr, "root", signer, pinned, extract, bytes.NewReader(data)); err != nil {
-		return fmt.Errorf("extract on node: %v\n%s", err, out)
+		return "", fmt.Errorf("extract on node: %v\n%s", err, out)
 	}
 	if strings.TrimSpace(s.Build) != "" {
-		fmt.Printf("  building: %s\n", s.Build)
-		build := "cd " + shellQuote(remote) + " && bash -lc " + shellQuote(s.Build)
-		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, build); err != nil {
-			return fmt.Errorf("remote build failed: %v\n%s", err, out)
+		fmt.Printf("  building (as %s): %s\n", orRoot(runUser), s.Build)
+		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, runAs(runUser, remote, s.Build)); err != nil {
+			return "", fmt.Errorf("remote build failed: %v\n%s", err, out)
 		}
 	}
-	return nil
+	return remote, nil
+}
+
+func orRoot(u string) string {
+	if u == "" {
+		return "root"
+	}
+	return u
 }
 
 // nodePlan holds the locally-generated identity for one cluster node.
@@ -72,6 +106,8 @@ type nodePlan struct {
 	run       string
 	ip        string    // public IP, filled after provisioning
 	sync      *syncSpec // workspace to push + optional remote build
+	runUser   string    // unprivileged user the workload runs as (S-C)
+	workdir   string    // remote workspace dir (cwd for run), if synced
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -188,8 +224,6 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		wg, e := overlay.GenerateKeypair()
 		must(e)
 		oip := fmt.Sprintf("10.99.0.%d", i+1)
-		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
-			sync: resolveSync(n, cl.Defaults)}
 
 		// apply cluster.yaml per-node settings (P0-2), with defaults inheritance.
 		eff := cl.Effective(n)
@@ -202,6 +236,13 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if eff.Region != "" {
 			region = []string{eff.Region}
 		}
+		runUser := eff.RunUser
+		if runUser == "" {
+			runUser = harden.DefaultRunUser // least-privilege by default (S-C)
+		}
+
+		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
+			sync: resolveSync(n, cl.Defaults), runUser: runUser}
 
 		ci := harden.CloudInit{
 			HostPrivKeyPEM: host.PrivatePEM,
@@ -209,6 +250,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			LoginPubKey:    login.PublicAuthorized,
 			Packages:       pkgs,
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
+			RunUser:        runUser,
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
@@ -256,11 +298,13 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			continue
 		}
 		fmt.Printf("[%s] workspace sync...\n", p.name)
-		if err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync); err != nil {
+		wd, err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, p.runUser)
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
 			fmt.Printf("teardown: envcore down --provider=hetzner --id %s\n", id)
 			return
 		}
+		p.workdir = wd
 	}
 
 	// detect operator public IP (as node 0 sees our SSH source)
@@ -399,7 +443,7 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		go func(p *nodePlan) {
 			defer wg.Done()
 			err := envssh.Stream(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-				"bash -lc "+shellQuote(p.run),
+				runAs(p.runUser, p.workdir, p.run),
 				func(s, line string) { printer.Print(p.name, s, line) })
 			if err != nil && ctx.Err() == nil {
 				// fail-fast: report the crash, leave the node up for debugging (§5).
