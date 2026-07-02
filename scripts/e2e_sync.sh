@@ -41,20 +41,22 @@ printf 'build/\n' > "$SRC/.envcoreignore"
 
 c_in "building envcore..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/envcore; c_ok "built"
 
-c_in "provision + sync $SRC + remote build + run (~2-4 min)..."
+c_in "provision + sync $SRC + remote build + run as envcore-run (~2-4 min)..."
+# workspace becomes the cwd; the command runs as the unprivileged envcore-run user.
 OUT=$("$BIN" up --provider=hetzner --id "$ID" \
-  --workspace "$SRC" --remote-path /root/proj \
+  --workspace "$SRC" \
   --build 'g++ -O2 hello.cpp -o hello' \
-  -- 'cd /root/proj && ls && ./hello')
+  -- 'echo "RUNUSER=$(whoami)"; ls; ./hello')
 echo "----------------------------------------------------------------"
 echo "$OUT"
 echo "----------------------------------------------------------------"
 
 PASS=1
-echo "$OUT" | grep -q "syncing .* files -> /root/proj" && c_ok "workspace archived + streamed to node" || { c_no "sync step"; PASS=0; }
+echo "$OUT" | grep -q "syncing .* files ->" && c_ok "workspace archived + streamed to node" || { c_no "sync step"; PASS=0; }
 echo "$OUT" | grep -q "HELLO_FROM_SYNCED_SOURCE" && c_ok "remote build + run of MY source succeeded" || { c_no "build/run"; PASS=0; }
 echo "$OUT" | grep -q "hello.cpp" && c_ok "source file present on node" || { c_no "source missing"; PASS=0; }
 echo "$OUT" | grep -q "stale.o" && { c_no ".envcoreignore not honored (build/ leaked)"; PASS=0; } || c_ok ".envcoreignore honored (build/ excluded)"
+echo "$OUT" | grep -q "RUNUSER=envcore-run" && c_ok "least privilege: workload ran as envcore-run (NOT root)" || { c_no "workload did not run as envcore-run"; PASS=0; }
 
 echo "================================================================"
-[ "$PASS" = 1 ] && c_ok "WORKSPACE SYNC: verified" || c_no "workspace sync: see failures above"
+[ "$PASS" = 1 ] && c_ok "WORKSPACE SYNC + LEAST-PRIV: verified" || c_no "see failures above"
