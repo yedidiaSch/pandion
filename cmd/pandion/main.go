@@ -51,6 +51,8 @@ func main() {
 		runLockdown(os.Args[2:])
 	case "reap":
 		runReap(os.Args[2:])
+	case "attach":
+		runAttach(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -441,6 +443,21 @@ func runValidate(args []string) {
 // runReap finds every Pandion-tagged server at the provider and destroys orphans
 // — the no-backend way to prevent billing leaks when local state or the
 // controlling laptop is gone (C4). Confirms in a TTY unless --yes.
+// runAttach reconnects to a running cluster's multiplexed streams.
+func runAttach(args []string) {
+	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	id := fs.String("id", "", "cluster id (required)")
+	_ = fs.Parse(args)
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "attach: --id is required")
+		os.Exit(2)
+	}
+	if err := attachCluster(*id); err != nil {
+		fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+		os.Exit(3)
+	}
+}
+
 func runReap(args []string) {
 	fs := flag.NewFlagSet("reap", flag.ExitOnError)
 	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
@@ -522,6 +539,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
+	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
