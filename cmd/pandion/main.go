@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	"github.com/yedidiaSch/pandion/internal/sshkeys"
 	"github.com/yedidiaSch/pandion/internal/state"
+	"github.com/yedidiaSch/pandion/internal/stream"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". Defaults to
@@ -51,6 +53,8 @@ func main() {
 		runLockdown(os.Args[2:])
 	case "reap":
 		runReap(os.Args[2:])
+	case "attach":
+		runAttach(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -409,8 +413,19 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
 	}
 
-	// 7) run the user command: native = as the unprivileged run user (S-C) from the
-	//    workspace; docker = in a hardened container (S-D). Both post-lockdown.
+	// 8) persist a manifest (node IP + pinned host key) so `attach` can reconnect,
+	//    then run the user command: native = as the unprivileged run user (S-C) from
+	//    the workspace; docker = in a hardened container (S-D). Both post-lockdown.
+	overlayIP := ""
+	if opt.overlay {
+		overlayIP = nodeOverlayIP
+	}
+	if err := writeManifest(id, []nodeManifest{{
+		Name: node, IP: ip, OverlayIP: overlayIP, HostPub: host.PublicAuthorized,
+	}}); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not save manifest (attach won't work): %v\n", err)
+	}
+
 	var runShell string
 	if opt.engine == "docker" {
 		fmt.Printf("running command in hardened container (%s)...\n", opt.containerImage)
@@ -419,11 +434,26 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		fmt.Printf("running command (as %s)...\n", orRoot(opt.runUser))
 		runShell = runAs(opt.runUser, workdir, runCmd, opt.caps)
 	}
-	out, runErr := envssh.Run(ctx, addr, "root", login.Signer, host.Public, runShell)
-	fmt.Printf("---- run output ----\n%s\n--------------------\n", strings.TrimRight(out, "\n"))
-	if runErr != nil {
-		fmt.Printf("run finished with error: %v (node left running for debugging)\n", runErr)
+	// launch in a DETACHED tmux session teeing to the run log (survives detach, C3),
+	// then stream that log. Ctrl+C detaches; the workload keeps running in tmux and
+	// is reachable again with `pandion attach --id ID`.
+	if err := launchRun(ctx, addr, login.Signer, host.Public, runShell); err != nil {
+		failNode(fmt.Errorf("launch failed: %v", err))
+		return
 	}
+	streamCtx, streamCancel := context.WithCancel(context.Background())
+	defer streamCancel()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt)
+	defer signal.Stop(sigCh)
+	go func() { <-sigCh; fmt.Println("\n^C — detaching from stream; node left running."); streamCancel() }()
+
+	printer := stream.NewPrinter(os.Stdout, filepath.Join(envHome(), ".pandion", "logs", id), colorEnabled())
+	defer printer.Close()
+	fmt.Printf("streaming (Ctrl+C detaches; reattach: pandion attach --id %s)\n", id)
+	fmt.Println("----------------------------------------------------------------")
+	tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
+
 	fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
 }
 
@@ -441,6 +471,21 @@ func runValidate(args []string) {
 // runReap finds every Pandion-tagged server at the provider and destroys orphans
 // — the no-backend way to prevent billing leaks when local state or the
 // controlling laptop is gone (C4). Confirms in a TTY unless --yes.
+// runAttach reconnects to a running cluster's multiplexed streams.
+func runAttach(args []string) {
+	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	id := fs.String("id", "", "cluster id (required)")
+	_ = fs.Parse(args)
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "attach: --id is required")
+		os.Exit(2)
+	}
+	if err := attachCluster(*id); err != nil {
+		fmt.Fprintf(os.Stderr, "attach: %v\n", err)
+		os.Exit(3)
+	}
+}
+
 func runReap(args []string) {
 	fs := flag.NewFlagSet("reap", flag.ExitOnError)
 	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
@@ -522,6 +567,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
+	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
