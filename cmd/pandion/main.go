@@ -6,6 +6,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
@@ -593,6 +594,7 @@ func runReap(args []string) {
 func runLs(args []string) {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean")
+	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
 	_ = fs.Parse(args)
 
 	p, err := newProvider(*prov)
@@ -601,11 +603,61 @@ func runLs(args []string) {
 
 	clusters, currency, err := o.Status(context.Background())
 	must(err)
+	if *jsonOut {
+		must(renderStatusJSON(os.Stdout, clusters, currency))
+		return
+	}
 	if len(clusters) == 0 {
 		fmt.Printf("no active Pandion clusters at %s.\n", p.Name())
 		return
 	}
 	renderStatus(os.Stdout, clusters, currency)
+}
+
+// renderStatusJSON emits the fleet status as stable JSON (durations in seconds,
+// prices as numbers) — for scripting, CI, and automation. Always renders, even
+// when empty (`{"clusters":[],...}`), so consumers can rely on the shape.
+func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, currency string) error {
+	type jsonNode struct {
+		Name          string  `json:"name"`
+		Type          string  `json:"type"`
+		Region        string  `json:"region"`
+		IP            string  `json:"ip"`
+		UptimeSeconds int64   `json:"uptime_seconds"`
+		Hourly        float64 `json:"hourly"`
+		Accrued       float64 `json:"accrued"`
+	}
+	type jsonCluster struct {
+		ID      string     `json:"id"`
+		Nodes   []jsonNode `json:"nodes"`
+		Hourly  float64    `json:"hourly_total"`
+		Accrued float64    `json:"accrued_total"`
+	}
+	out := struct {
+		Currency     string        `json:"currency"`
+		NodeCount    int           `json:"node_count"`
+		TotalHourly  float64       `json:"total_hourly"`
+		TotalAccrued float64       `json:"total_accrued"`
+		Clusters     []jsonCluster `json:"clusters"`
+	}{Currency: currency, Clusters: []jsonCluster{}}
+	for _, c := range clusters {
+		jc := jsonCluster{ID: c.ClusterID, Nodes: []jsonNode{}, Hourly: c.Hourly, Accrued: c.Accrued}
+		for _, n := range c.Nodes {
+			jc.Nodes = append(jc.Nodes, jsonNode{
+				Name: n.Name, Type: n.Type, Region: n.Region, IP: n.IP,
+				UptimeSeconds: int64(n.Age.Seconds()),
+				Hourly:        n.Hourly.Amount,
+				Accrued:       n.Hourly.Amount * n.Age.Hours(),
+			})
+		}
+		out.NodeCount += len(c.Nodes)
+		out.TotalHourly += c.Hourly
+		out.TotalAccrued += c.Accrued
+		out.Clusters = append(out.Clusters, jc)
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 // renderStatus writes the `ls`/`status` table + totals. Separated from runLs so
@@ -785,7 +837,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
-	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …]   (list live clusters + cost)")
+	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
