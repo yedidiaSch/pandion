@@ -43,6 +43,21 @@ func (m *Mock) ReapAux(_ context.Context, _ string) error {
 	return nil
 }
 
+// HourlyPrice implements provider.Pricer with a fixed, nonzero fake price so the
+// `ls`/`status` cost path and the `--max-cost` preflight are exercised offline.
+func (m *Mock) HourlyPrice(_ context.Context, serverType, _ string) (provider.Money, error) {
+	if serverType == "" {
+		return provider.Money{}, nil
+	}
+	return provider.Money{Amount: 0.01, Currency: "EUR"}, nil
+}
+
+// EstimateHourly implements provider.Pricer: the mock always resolves to a priced
+// type, so the `--max-cost` preflight is exercised offline.
+func (m *Mock) EstimateHourly(_ context.Context, _ provider.ServerSpec) (provider.Money, error) {
+	return provider.Money{Amount: 0.01, Currency: "EUR"}, nil
+}
+
 // New returns an empty mock provider.
 func New() *Mock { return &Mock{servers: map[string]provider.Server{}} }
 

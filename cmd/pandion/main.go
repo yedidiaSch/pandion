@@ -8,11 +8,13 @@ import (
 	"encoding/base64"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/yedidiaSch/pandion/internal/config"
@@ -55,6 +57,8 @@ func main() {
 		runReap(os.Args[2:])
 	case "attach":
 		runAttach(os.Args[2:])
+	case "ls", "status":
+		runLs(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -102,6 +106,7 @@ func runUp(args []string) {
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
+	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
@@ -115,7 +120,7 @@ func runUp(args []string) {
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id)
+		upCluster(o, p.Name(), *file, *id, *maxCost)
 		return
 	}
 
@@ -139,6 +144,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
+			maxCost: *maxCost,
 		})
 	}
 }
@@ -155,12 +161,13 @@ type hetznerUpOpts struct {
 	engine           string // native | docker
 	containerImage   string
 	caps             []string
+	maxCost          float64 // budget cap (projected spend); 0 = off
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
@@ -168,7 +175,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string) {
 	}
 
 	if providerName == "hetzner" {
-		upClusterHetzner(o, cl, id)
+		upClusterHetzner(o, cl, id, maxCost)
 		return
 	}
 
@@ -290,6 +297,13 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		})
 	}
 	userData := harden.Build(ci)
+
+	// --max-cost preflight (before spending a cent): the single node auto-discovers
+	// its type; project its hourly × TTL and refuse if it exceeds the cap.
+	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(6)
+	}
 
 	// 3) provision (tagged; journaled state machine). The login key is registered
 	//    with the provider so it lands on root (validated path, S1).
@@ -526,6 +540,99 @@ func runReap(args []string) {
 	}
 }
 
+// runLs (aka `status`) lists every Pandion cluster alive at the provider with
+// uptime and live cost — the fleet-wide view over the reconcile source of truth
+// (works with no local state). Cost is shown when the provider prices its types.
+func runLs(args []string) {
+	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
+	_ = fs.Parse(args)
+
+	p, err := newProvider(*prov)
+	must(err)
+	o := orchestrator.New(p, mustStore())
+
+	clusters, currency, err := o.Status(context.Background())
+	must(err)
+	if len(clusters) == 0 {
+		fmt.Printf("no active Pandion clusters at %s.\n", p.Name())
+		return
+	}
+	renderStatus(os.Stdout, clusters, currency)
+}
+
+// renderStatus writes the `ls`/`status` table + totals. Separated from runLs so
+// the output format is unit-testable without a live provider.
+func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency string) {
+	if currency == "" {
+		currency = "?"
+	}
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tREGION\tUPTIME\t%s/hr\t~%s spent\n", currency, currency)
+	var totHourly, totAccrued float64
+	totNodes := 0
+	for _, c := range clusters {
+		for i, n := range c.Nodes {
+			cid := c.ClusterID
+			if i > 0 {
+				cid = "" // label the cluster only on its first row
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				cid, n.Name, dashIfEmpty(n.Type), dashIfEmpty(n.Region),
+				shortDur(n.Age), money(n.Hourly), estMoney(n.Hourly, n.Age))
+		}
+		totHourly += c.Hourly
+		totAccrued += c.Accrued
+		totNodes += len(c.Nodes)
+	}
+	tw.Flush()
+	fmt.Fprintf(w, "\n%d cluster(s), %d node(s) — ~%.4f %s/hr, est. %.4f %s spent so far.\n",
+		len(clusters), totNodes, totHourly, currency, totAccrued, currency)
+	fmt.Fprintln(w, "(cost is an estimate: server age × hourly rate — your provider invoice is authoritative.)")
+}
+
+// shortDur renders an uptime compactly: "8m", "3h07m", "2d5h".
+func shortDur(d time.Duration) string {
+	if d <= 0 {
+		return "0m"
+	}
+	d = d.Round(time.Minute)
+	days := d / (24 * time.Hour)
+	d -= days * 24 * time.Hour
+	h := d / time.Hour
+	d -= h * time.Hour
+	m := d / time.Minute
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd%dh", days, h)
+	case h > 0:
+		return fmt.Sprintf("%dh%02dm", h, m)
+	default:
+		return fmt.Sprintf("%dm", m)
+	}
+}
+
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "—"
+	}
+	return s
+}
+
+func money(m provider.Money) string {
+	if !m.Known() {
+		return "—"
+	}
+	return fmt.Sprintf("%.4f", m.Amount)
+}
+
+func estMoney(m provider.Money, age time.Duration) string {
+	if !m.Known() {
+		return "—"
+	}
+	return fmt.Sprintf("%.4f", m.Amount*age.Hours())
+}
+
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	prov := fs.String("provider", "mock", "provider: mock|hetzner")
@@ -568,6 +675,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
+	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
