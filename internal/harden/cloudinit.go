@@ -38,6 +38,10 @@ type CloudInit struct {
 	// IdleTTL, if > 0, installs an on-node dead-man's-switch: the node powers
 	// itself off after this long with no active SSH (P2b, security). 0 disables.
 	IdleTTL time.Duration
+	// Fail2ban, if set, installs fail2ban and enables the sshd jail (systemd
+	// backend) — defense-in-depth against SSH brute-force/scanning (P1). Bans on
+	// FAILED auth only, so the key-holding operator is never affected.
+	Fail2ban bool
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
@@ -59,10 +63,15 @@ func Build(ci CloudInit) string {
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 
-	if len(ci.Packages) > 0 {
+	// effective package list: the requested toolchain, plus fail2ban when enabled.
+	pkgs := ci.Packages
+	if ci.Fail2ban {
+		pkgs = append(append([]string{}, pkgs...), "fail2ban")
+	}
+	if len(pkgs) > 0 {
 		b.WriteString("package_update: true\n")
 		b.WriteString("packages:\n")
-		for _, p := range ci.Packages {
+		for _, p := range pkgs {
 			b.WriteString("  - ")
 			b.WriteString(strings.TrimSpace(p))
 			b.WriteString("\n")
@@ -94,6 +103,13 @@ func Build(ci CloudInit) string {
 
 	if ci.WGConfig != "" {
 		files = append(files, wf{"/etc/wireguard/wg0.conf", "0600", ci.WGConfig})
+	}
+
+	// fail2ban: enable the sshd jail using the systemd journal backend (Ubuntu 24.04
+	// has no /var/log/auth.log by default), then enable the service (P1, defense-in-depth).
+	if ci.Fail2ban {
+		files = append(files, wf{"/etc/fail2ban/jail.local", "0644", fail2banJail()})
+		runcmds = append(runcmds, "[ systemctl, enable, --now, fail2ban ]")
 	}
 	if u := strings.TrimSpace(ci.RunUser); u != "" && u != "root" {
 		runcmds = append(runcmds,
@@ -141,6 +157,18 @@ func Build(ci CloudInit) string {
 		}
 	}
 	return b.String()
+}
+
+// fail2banJail enables the sshd jail on the systemd journal backend (no
+// /var/log/auth.log on modern Ubuntu) with conservative ban settings.
+func fail2banJail() string {
+	return `[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+`
 }
 
 // deadmanScript touches the heartbeat while an SSH connection is established, and

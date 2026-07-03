@@ -105,6 +105,36 @@ func TestBuild_IdleDeadman(t *testing.T) {
 	}
 }
 
+func TestBuild_Fail2ban(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		Packages:       []string{"cmake"},
+		Fail2ban:       true,
+	})
+	for _, want := range []string{
+		"- fail2ban",                             // added to the package list
+		"/etc/fail2ban/jail.local",               // jail config written
+		"backend = systemd",                      // journal backend (no auth.log)
+		"[sshd]",                                 // sshd jail enabled
+		"[ systemctl, enable, --now, fail2ban ]", // service enabled
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("fail2ban cloud-init missing %q\n%s", want, out)
+		}
+	}
+}
+
+func TestBuild_NoFail2banByDefault(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+	})
+	if strings.Contains(out, "fail2ban") {
+		t.Errorf("fail2ban must be absent unless enabled\n%s", out)
+	}
+}
+
 func TestBuild_NoDeadmanWhenZero(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
