@@ -20,6 +20,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/firewall"
 	"github.com/yedidiaSch/pandion/internal/harden"
+	"github.com/yedidiaSch/pandion/internal/lockfile"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	"github.com/yedidiaSch/pandion/internal/overlay"
 	"github.com/yedidiaSch/pandion/internal/provider"
@@ -115,6 +116,7 @@ func runUp(args []string) {
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
 	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
+	lock := fs.String("lock", "", "reproducibility: pin toolchain versions from this lockfile (H2)")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
@@ -128,7 +130,7 @@ func runUp(args []string) {
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock)
 		return
 	}
 
@@ -160,7 +162,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
-			maxCost: *maxCost,
+			maxCost: *maxCost, lockPath: *lock,
 		})
 	}
 }
@@ -178,12 +180,13 @@ type hetznerUpOpts struct {
 	containerImage   string
 	caps             []string
 	maxCost          float64 // budget cap (projected spend); 0 = off
+	lockPath         string  // reproducibility: pin toolchain from this lockfile (H2)
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
@@ -197,7 +200,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 	}
 
 	if providerName == "hetzner" || providerName == "digitalocean" || providerName == "do" {
-		upClusterHetzner(o, cl, id, maxCost)
+		upClusterHetzner(o, cl, id, maxCost, lockPath)
 		return
 	}
 
@@ -319,6 +322,15 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			PeerPubKey: opWG.Public, PeerAllowedIP: opOverlayIP + "/32",
 		})
 	}
+	// reproducibility (H2): pin toolchain versions from a prior lockfile if asked,
+	// then remember the package list to record what actually resolved.
+	if opt.lockPath != "" {
+		lk, lerr := lockfile.Load(opt.lockPath)
+		must(lerr)
+		ci.Packages = lk.PinnedPackages(node, ci.Packages)
+		fmt.Printf("pinning packages from lockfile %s\n", opt.lockPath)
+	}
+	lockPkgs := append([]string(nil), ci.Packages...)
 	userData := harden.Build(ci)
 
 	// --max-cost preflight (before spending a cent): the single node auto-discovers
@@ -355,6 +367,17 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		return
 	}
 	fmt.Println("node ready (cloud-init complete).")
+
+	// reproducibility (H2): record the resolved toolchain versions so a later
+	// `up --lock ~/.pandion/lock/<id>.json` reproduces this environment.
+	if len(lockPkgs) > 0 {
+		nl := queryNodeLock(ctx, addr, login.Signer, host.Public, node, "", lockPkgs)
+		if err := writeLock(id, prov, []lockfile.NodeLock{nl}); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not write lockfile: %v\n", err)
+		} else {
+			fmt.Printf("wrote reproducibility lockfile: %s\n", lockfile.Path(envHome(), id))
+		}
+	}
 
 	// 5b) sync workspace + build, in the egress build-window (before the firewall
 	//     lockdown) so the build can fetch dependencies (P0-1). native builds on the
@@ -756,7 +779,7 @@ func envHome() string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--lock FILE] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
