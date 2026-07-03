@@ -262,6 +262,27 @@ func loadManifest(id string) (*clusterManifest, error) {
 //
 // Discovery-IP injection, IPC firewall, and running the per-node commands land
 // in M3.3/M3.4.
+// dryRunCluster previews a cluster `up` — per-node size/region/TTL and projected
+// cost from cluster.yaml — creating nothing (no keys, no cloud-init, no cloud).
+func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
+	windows := make([]time.Duration, len(cl.Nodes))
+	for i, n := range cl.Nodes {
+		eff := cl.Effective(n)
+		var region []string
+		if eff.Region != "" {
+			region = []string{eff.Region}
+		}
+		specs[i] = orchestrator.NodeSpec{Name: n.Name, Type: eff.Size, RegionPref: region}
+		windows[i] = parseTTL(eff.TTLRaw)
+	}
+	nodes, est, err := o.PlanUp(ctx, specs, windows)
+	must(err)
+	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
+}
+
 func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64) {
 	prov := o.P.Name() // hetzner | digitalocean — used in teardown hints
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)

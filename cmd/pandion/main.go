@@ -114,6 +114,7 @@ func runUp(args []string) {
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
+	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
@@ -127,7 +128,13 @@ func runUp(args []string) {
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun)
+		return
+	}
+
+	// dry-run works for any pricing provider, incl. mock (offline preview).
+	if *dryRun {
+		dryRunSingle(o, *id, *node, ttlOrZero(*ttl, *noTTL))
 		return
 	}
 
@@ -176,11 +183,17 @@ type hetznerUpOpts struct {
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
 		id = cl.Name // default the cluster id to the topology name
+	}
+
+	// dry-run works for any pricing provider, incl. mock (offline preview).
+	if dryRun {
+		dryRunCluster(o, cl, id)
+		return
 	}
 
 	if providerName == "hetzner" || providerName == "digitalocean" || providerName == "do" {
@@ -636,6 +649,69 @@ func money(m provider.Money) string {
 	return fmt.Sprintf("%.4f", m.Amount)
 }
 
+// ttlOrZero resolves the effective idle-TTL: 0 when --no-ttl.
+func ttlOrZero(ttl time.Duration, noTTL bool) time.Duration {
+	if noTTL {
+		return 0
+	}
+	return ttl
+}
+
+// dryRunSingle previews the single-node `up` (spec-discovered type) and exits.
+func dryRunSingle(o *orchestrator.Orchestrator, id, node string, window time.Duration) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node}}, []time.Duration{window})
+	must(err)
+	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
+}
+
+// renderDryRun writes the `--dry-run` plan + projected cost. Separated so the
+// format is unit-testable without a live provider.
+func renderDryRun(w io.Writer, providerName, clusterID string, nodes []orchestrator.DryRunNode, est orchestrator.CostEstimate) {
+	cur := est.Currency
+	if cur == "" {
+		cur = "?"
+	}
+	fmt.Fprintf(w, "DRY RUN — pandion up (provider=%s): nothing will be created.\n", providerName)
+	fmt.Fprintf(w, "cluster: %s\n", clusterID)
+	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
+	fmt.Fprintf(tw, "NODE\tSIZE\tREGION\tTTL\t%s/hr\t~%s (over TTL)\n", cur, cur)
+	for _, n := range nodes {
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+			n.Name, autoIf(n.Size), autoIf(n.Region), ttlLabel(n.Window),
+			money(n.Hourly), projMoney(n.Hourly, n.Window))
+	}
+	tw.Flush()
+	proj := fmt.Sprintf("%.4f %s", est.Projected, cur)
+	if est.Unbounded {
+		proj = "unbounded (a node has no TTL)"
+	}
+	fmt.Fprintf(w, "\n%d node(s): ~%.4f %s/hr; projected ~%s over TTL.\n", len(nodes), est.Hourly, cur, proj)
+	fmt.Fprintln(w, "(estimate — an auto-selected size may vary with live availability; no resources created.)")
+}
+
+func autoIf(s string) string {
+	if s == "" {
+		return "auto"
+	}
+	return s
+}
+
+func ttlLabel(d time.Duration) string {
+	if d <= 0 {
+		return "none"
+	}
+	return shortDur(d)
+}
+
+func projMoney(m provider.Money, window time.Duration) string {
+	if !m.Known() || window <= 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%.4f", m.Amount*window.Hours())
+}
+
 func estMoney(m provider.Money, age time.Duration) string {
 	if !m.Known() {
 		return "—"
@@ -679,7 +755,7 @@ func envHome() string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
