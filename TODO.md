@@ -111,11 +111,13 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       the `local+native` guardrail (`--allow-local-native`, Linux-only, H4).
 
 ## P1 — security hardening the design promises (M1.x + security architecture)
-- [ ] **Least-privilege run user** (S-C) — commands currently run as **root**. Add a
-      dedicated `pandion-run` user, dropped caps, `NoNewPrivileges`, add-back only
-      declared `needs_caps`/`privileged_ports`.
+- [x] **Least-privilege run user** (S-C) — dedicated `pandion-run` user, dropped
+      caps, add-back only declared `needs_caps`/`privileged_ports`. *(done: #21, #25)*
 - [ ] **Encrypted volumes at rest** (LUKS, S-E).
-- [ ] **Cloud metadata block** (`169.254.169.254`, S-F) post-provision.
+- [x] **Cloud metadata block** (`169.254.169.254`, S-F) — unconditional egress drop
+      of the metadata endpoint, placed BEFORE any egress-allow, so a compromised
+      workload can't read instance credentials even if the operator opens a broad
+      allowlist. In `up` (single + cluster) and `lockdown`. *(done: this branch)*
 - [ ] **auditd** with off-node, tamper-evident log shipping (S-F).
 - [ ] **Secret keychain** (H6) — token/keys via OS keychain (macOS Keychain /
       libsecret / Windows Credential Manager); today the token is env-only and keys

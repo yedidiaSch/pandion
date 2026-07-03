@@ -5,6 +5,25 @@ import (
 	"testing"
 )
 
+func TestNFTables_BlockMetadata(t *testing.T) {
+	// off by default
+	if strings.Contains(NFTables(Spec{}), "169.254.169.254") {
+		t.Fatal("metadata drop should be absent unless BlockMetadata is set")
+	}
+
+	// on: the drop is present and UNCONDITIONAL — it must come BEFORE the
+	// egress-allow accept, so even a wide-open allowlist can't reach metadata.
+	out := NFTables(Spec{BlockMetadata: true, EgressAllowIPs: []string{"0.0.0.0/0"}})
+	drop := strings.Index(out, "ip daddr 169.254.169.254 drop")
+	allow := strings.Index(out, "ip daddr @egress_ok accept")
+	if drop < 0 {
+		t.Fatalf("metadata drop missing:\n%s", out)
+	}
+	if allow < 0 || drop > allow {
+		t.Fatalf("metadata drop must precede egress-allow accept (drop=%d allow=%d):\n%s", drop, allow, out)
+	}
+}
+
 func TestNFTables_DefaultDenyBothChains_SSHOpen(t *testing.T) {
 	out := NFTables(Spec{AllowDNS: true})
 

@@ -80,6 +80,7 @@ func runLockdown(args []string) {
 	rules := firewall.NFTables(firewall.Spec{
 		AllowDNS: true, NoPublicSSH: true,
 		WGPort: overlay.DefaultPort, AllowOverlayInput: true,
+		BlockMetadata: true, // S-F: no workload may read cloud metadata
 	})
 	cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 	for _, n := range man.Nodes {
