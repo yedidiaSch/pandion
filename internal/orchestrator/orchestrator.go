@@ -314,6 +314,49 @@ func (o *Orchestrator) CheckBudget(ctx context.Context, specs []NodeSpec, window
 	return nil
 }
 
+// DryRunNode is one node's `--dry-run` preview line: what would be provisioned
+// and its price, without creating anything. Size/Region are "" when auto-selected.
+type DryRunNode struct {
+	Name, Size, Region string
+	Hourly             provider.Money
+	Window             time.Duration // idle-TTL; 0 = none
+}
+
+// PlanUp previews an `up`: the per-node plan and the rolled-up projected cost,
+// creating nothing. Lenient (unlike CheckBudget): a node that can't be priced is
+// shown unpriced rather than erroring, so the preview always renders.
+func (o *Orchestrator) PlanUp(ctx context.Context, specs []NodeSpec, windows []time.Duration) ([]DryRunNode, CostEstimate, error) {
+	pricer, ok := o.P.(provider.Pricer)
+	if !ok {
+		return nil, CostEstimate{}, fmt.Errorf("provider %q does not support pricing (cannot preview cost)", o.P.Name())
+	}
+	nodes := make([]DryRunNode, 0, len(specs))
+	var est CostEstimate
+	for i, s := range specs {
+		m, err := pricer.EstimateHourly(ctx, provider.ServerSpec{
+			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref,
+		})
+		if err != nil {
+			return nil, CostEstimate{}, err
+		}
+		region := ""
+		if len(s.RegionPref) > 0 {
+			region = s.RegionPref[0]
+		}
+		nodes = append(nodes, DryRunNode{Name: s.Name, Size: s.Type, Region: region, Hourly: m, Window: windows[i]})
+		if m.Known() {
+			est.Currency = m.Currency
+			est.Hourly += m.Amount
+			if windows[i] <= 0 {
+				est.Unbounded = true
+			} else {
+				est.Projected += m.Amount * windows[i].Hours()
+			}
+		}
+	}
+	return nodes, est, nil
+}
+
 // Reap destroys the given clusters (reusing Down: verified teardown + aux reap +
 // state close). Returns the number successfully reaped.
 func (o *Orchestrator) Reap(ctx context.Context, candidates []ReapCandidate) (int, error) {

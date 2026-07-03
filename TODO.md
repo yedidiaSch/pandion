@@ -155,7 +155,9 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.
-- [ ] **`--dry-run`** (L4) — preview the plan without creating anything.
+- [x] **`--dry-run`** (L4) — preview the plan **+ projected cost** (per-node size/region/
+      TTL, rolled-up hourly & over-TTL spend) and exit; creates nothing. Works on any
+      pricing provider incl. mock (offline). *(done: this branch)*
 - [ ] **Structured logging / audit trail** (L3) — `log/slog` for Pandion's own infra
       actions (today it's plain `fmt` prints).
 - [ ] **Config precedence + profiles** (CLI spec) — `flags > env > cluster.yaml >

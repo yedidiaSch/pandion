@@ -55,6 +55,20 @@ expect_reject(){
 c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
 # ---------------------------------------------------------------------------
+# Phase 0 (FREE): --dry-run previews plan + cost from LIVE pricing, creates nothing.
+# ---------------------------------------------------------------------------
+c_in "[0] --dry-run previews cost without provisioning (exercises live pricing)..."
+NO_COLOR=1 "$BIN" up --provider=hetzner --id "$ID" --node worker --ttl 30m --dry-run >/tmp/lc_dry.log 2>&1 || true
+echo "---- dry-run ----"; cat /tmp/lc_dry.log; echo "-----------------"
+grep -qi "DRY RUN" /tmp/lc_dry.log && grep -qi "nothing will be created" /tmp/lc_dry.log \
+  && c_ok "dry-run previewed the plan" || c_no "dry-run banner missing"
+grep -qE "0\.[0-9]{3,4}" /tmp/lc_dry.log && c_ok "dry-run shows a live hourly rate" || c_no "dry-run shows no live price"
+if command -v hcloud >/dev/null 2>&1; then
+  n=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)
+  [ "${n:-0}" = 0 ] && c_ok "dry-run created no server" || c_no "dry-run leaked $n server(s)"
+fi
+
+# ---------------------------------------------------------------------------
 # Phase 1 (FREE): a tiny --max-cost must abort BEFORE provisioning.
 # ---------------------------------------------------------------------------
 c_in "[1] --max-cost too low → reject before provisioning (exercises live pricing)..."
