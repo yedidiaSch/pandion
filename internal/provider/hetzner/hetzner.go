@@ -426,11 +426,48 @@ func (h *Hetzner) ReapAux(ctx context.Context, clusterID string) error {
 		firstErr = ferr
 	}
 	for _, fw := range fws {
-		if _, derr := h.c.Firewall.Delete(ctx, fw); derr != nil && firstErr == nil {
+		if derr := h.deleteFirewall(ctx, fw); derr != nil && firstErr == nil {
 			firstErr = derr
 		}
 	}
 	return firstErr
+}
+
+// deleteFirewall detaches the firewall's applied resources (Hetzner refuses to
+// delete a firewall that is still applied to anything — the label-selector entry
+// persists even after the servers are gone) and then deletes it, retrying to
+// absorb the async detach/propagation.
+func (h *Hetzner) deleteFirewall(ctx context.Context, fw *hcloud.Firewall) error {
+	var rm []hcloud.FirewallResource
+	for _, r := range fw.AppliedTo {
+		switch r.Type {
+		case hcloud.FirewallResourceTypeLabelSelector:
+			if r.LabelSelector != nil {
+				rm = append(rm, hcloud.FirewallResource{Type: r.Type, LabelSelector: r.LabelSelector})
+			}
+		case hcloud.FirewallResourceTypeServer:
+			if r.Server != nil {
+				rm = append(rm, hcloud.FirewallResource{Type: r.Type, Server: r.Server})
+			}
+		}
+	}
+	if len(rm) > 0 {
+		_, _, _ = h.c.Firewall.RemoveResources(ctx, fw, rm) // detach; delete retries below
+	}
+	// retry: even after detach, the firewall's applied-server view can lag the
+	// (already-completed) server deletion by a few seconds.
+	var derr error
+	for i := 0; i < 10; i++ {
+		if _, derr = h.c.Firewall.Delete(ctx, fw); derr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return derr
 }
 
 // EnsureClusterFirewall implements provider.ClusterFirewaller: a cloud-edge
