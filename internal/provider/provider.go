@@ -69,6 +69,16 @@ type AuxReaper interface {
 	ReapAux(ctx context.Context, clusterID string) error
 }
 
+// ClusterFirewaller is an optional Provider capability: a provider-level ("cloud
+// edge") firewall in front of the host nftables — defense-in-depth (M8). It is
+// created during `up` and MUST be torn down by ReapAux so nothing leaks.
+type ClusterFirewaller interface {
+	// EnsureClusterFirewall create-or-confirms a firewall scoped to the cluster's
+	// servers, allowing only SSH + the WireGuard port (wgPort) + ICMP inbound
+	// (egress stays with the host). Idempotent.
+	EnsureClusterFirewall(ctx context.Context, clusterID string, wgPort int) error
+}
+
 // Money is an amount in a provider's billing currency. A zero Money (Amount == 0
 // or empty Currency) means "price unknown" — callers should render it as such
 // rather than as free.

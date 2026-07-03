@@ -292,13 +292,14 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// 2) build hardened cloud-init: inject host key (race-free, S1/F1) + install
 	//    the C++ toolchain per the Execution Contract (§5)
 	ci := harden.CloudInit{
-		HostPrivKeyPEM: host.PrivatePEM,
-		HostPubKey:     host.PublicAuthorized,
-		LoginPubKey:    login.PublicAuthorized,
-		RunUser:        opt.runUser, // unprivileged workload user (S-C)
-		IdleTTL:        opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
-		Fail2ban:       true,        // SSH brute-force protection (P1)
-		AuditLog:       true,        // on-node audit trail (S-F)
+		HostPrivKeyPEM:  host.PrivatePEM,
+		HostPubKey:      host.PublicAuthorized,
+		LoginPubKey:     login.PublicAuthorized,
+		RunUser:         opt.runUser, // unprivileged workload user (S-C)
+		IdleTTL:         opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
+		Fail2ban:        true,        // SSH brute-force protection (P1)
+		AuditLog:        true,        // on-node audit trail (S-F)
+		SysctlHardening: true,        // CIS-lite kernel network baseline (P1)
 	}
 	switch opt.engine {
 	case "docker":
@@ -352,6 +353,11 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	ip := c.Nodes[0].IP
 	fmt.Printf("UP (hetzner): cluster %q node %q running at %s (host fp %s)\n",
 		c.ID, node, ip, host.Fingerprint())
+
+	// cloud-edge firewall (defense-in-depth, M8) — tied to the firewall posture.
+	if opt.firewall {
+		ensureCloudFirewall(ctx, o, id)
+	}
 
 	// 4) persist keys for later attach/down (0600)
 	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)
