@@ -113,3 +113,44 @@ func TestEffective_DefaultsInheritanceAndOverride(t *testing.T) {
 		t.Fatalf("db toolchain override not applied: %v", got)
 	}
 }
+
+func TestEffective_EgressAllowUnionAndSecurityDefaults(t *testing.T) {
+	no := false
+	c := &Cluster{
+		Defaults: NodeCommon{Sec: &Security{EgressAllow: []string{"10.0.0.0/8"}}},
+		Nodes: []Node{
+			// node-level + security-level egress, unioned with the default
+			{Name: "a", EgressAllow: []string{"1.1.1.1/32"},
+				NodeCommon: NodeCommon{Sec: &Security{EgressAllow: []string{"1.1.1.1/32", "8.8.8.8/32"}}}},
+			// opts OUT of the metadata block + audit log
+			{Name: "b", NodeCommon: NodeCommon{Sec: &Security{
+				BlockMetadataService: &no, AuditLog: &no}}},
+			{Name: "c"}, // pure defaults
+		},
+	}
+
+	a := c.Effective(c.Nodes[0])
+	// union deduped: 1.1.1.1/32, 8.8.8.8/32, 10.0.0.0/8 (default)
+	want := map[string]bool{"1.1.1.1/32": true, "8.8.8.8/32": true, "10.0.0.0/8": true}
+	if len(a.EgressAllow) != 3 {
+		t.Fatalf("egress union wrong: %v", a.EgressAllow)
+	}
+	for _, e := range a.EgressAllow {
+		if !want[e] {
+			t.Fatalf("unexpected egress entry %q in %v", e, a.EgressAllow)
+		}
+	}
+
+	// secure-by-default: on unless explicitly disabled
+	if !a.BlockMetadata || !a.AuditLog {
+		t.Fatalf("node a should default to on: %+v", a)
+	}
+	b := c.Effective(c.Nodes[1])
+	if b.BlockMetadata || b.AuditLog {
+		t.Fatalf("node b opted out but overrides ignored: %+v", b)
+	}
+	cc := c.Effective(c.Nodes[2])
+	if !cc.BlockMetadata || !cc.AuditLog {
+		t.Fatalf("node c (defaults) should be on: %+v", cc)
+	}
+}

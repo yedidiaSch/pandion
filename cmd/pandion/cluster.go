@@ -173,18 +173,20 @@ func orRoot(u string) string {
 
 // nodePlan holds the locally-generated identity for one cluster node.
 type nodePlan struct {
-	name      string
-	host      *sshkeys.KeyPair // per-node SSH host key (pinned)
-	wg        overlay.Keypair  // per-node WireGuard key
-	overlayIP string           // e.g. 10.99.0.1
-	run       string
-	ip        string    // public IP, filled after provisioning
-	sync      *syncSpec // workspace to push + optional remote build
-	runUser   string    // unprivileged user the workload runs as (S-C)
-	workdir   string    // remote workspace dir (cwd for run), if synced
-	caps      []string  // capabilities to grant back (needs_caps/priv ports, P1b)
-	pkgs      []string  // resolved package list (for the reproducibility lockfile, H2)
-	image     string    // node image (recorded in the lockfile)
+	name        string
+	host        *sshkeys.KeyPair // per-node SSH host key (pinned)
+	wg          overlay.Keypair  // per-node WireGuard key
+	overlayIP   string           // e.g. 10.99.0.1
+	run         string
+	ip          string    // public IP, filled after provisioning
+	sync        *syncSpec // workspace to push + optional remote build
+	runUser     string    // unprivileged user the workload runs as (S-C)
+	workdir     string    // remote workspace dir (cwd for run), if synced
+	caps        []string  // capabilities to grant back (needs_caps/priv ports, P1b)
+	pkgs        []string  // resolved package list (for the reproducibility lockfile, H2)
+	image       string    // node image (recorded in the lockfile)
+	egressAllow []string  // per-node outbound allowlist (cluster.yaml egress_allow / security)
+	blockMeta   bool      // block the cloud metadata endpoint (security.block_metadata_service)
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -379,7 +381,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
-			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image}
+			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image,
+			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata}
 
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
@@ -390,7 +393,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 			RunUser:        runUser,
 			IdleTTL:        windows[i],
-			Fail2ban:       true, // SSH brute-force protection (P1)
+			Fail2ban:       true,         // SSH brute-force protection (P1)
+			AuditLog:       eff.AuditLog, // on-node audit trail (S-F; security.audit_log)
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
@@ -518,7 +522,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
 			WGPort: overlay.DefaultPort, AllowOverlayInput: true,
-			BlockMetadata: true, // S-F: no workload may read cloud metadata
+			EgressAllowIPs: p.egressAllow, // cluster.yaml egress_allow / security (P0-2)
+			BlockMetadata:  p.blockMeta,   // S-F (honors security.block_metadata_service)
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {

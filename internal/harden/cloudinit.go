@@ -42,6 +42,10 @@ type CloudInit struct {
 	// backend) — defense-in-depth against SSH brute-force/scanning (P1). Bans on
 	// FAILED auth only, so the key-holding operator is never affected.
 	Fail2ban bool
+	// AuditLog, if set, installs auditd with a baseline ruleset (identity files,
+	// sshd config, privilege-escalation binaries) — a tamper-evident on-node
+	// forensic trail for nodes left up after a crash for debugging (S-F).
+	AuditLog bool
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
@@ -63,10 +67,13 @@ func Build(ci CloudInit) string {
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 
-	// effective package list: the requested toolchain, plus fail2ban when enabled.
-	pkgs := ci.Packages
+	// effective package list: the requested toolchain, plus the hardening daemons.
+	pkgs := append([]string{}, ci.Packages...)
 	if ci.Fail2ban {
-		pkgs = append(append([]string{}, pkgs...), "fail2ban")
+		pkgs = append(pkgs, "fail2ban")
+	}
+	if ci.AuditLog {
+		pkgs = append(pkgs, "auditd")
 	}
 	if len(pkgs) > 0 {
 		b.WriteString("package_update: true\n")
@@ -110,6 +117,14 @@ func Build(ci CloudInit) string {
 	if ci.Fail2ban {
 		files = append(files, wf{"/etc/fail2ban/jail.local", "0644", fail2banJail()})
 		runcmds = append(runcmds, "[ systemctl, enable, --now, fail2ban ]")
+	}
+
+	// auditd: install a baseline ruleset, enable the service, and load the rules
+	// without a reboot (S-F). Best-effort — augenrules failure never blocks boot.
+	if ci.AuditLog {
+		files = append(files, wf{"/etc/audit/rules.d/pandion.rules", "0640", auditRules()})
+		runcmds = append(runcmds,
+			"[ bash, -c, \"systemctl enable --now auditd 2>/dev/null; augenrules --load 2>/dev/null || true\" ]")
 	}
 	if u := strings.TrimSpace(ci.RunUser); u != "" && u != "root" {
 		runcmds = append(runcmds,
@@ -168,6 +183,21 @@ backend = systemd
 maxretry = 5
 findtime = 10m
 bantime = 1h
+`
+}
+
+// auditRules is a conservative baseline: watch the identity files, the sshd
+// config, and privilege-escalation binaries. Deliberately NOT logging every
+// execve (too noisy) — this is a targeted, low-overhead forensic trail (S-F).
+func auditRules() string {
+	return `## Pandion baseline audit policy (S-F)
+-D
+-b 8192
+-w /etc/passwd -p wa -k pandion_identity
+-w /etc/shadow -p wa -k pandion_identity
+-w /etc/ssh/sshd_config -p wa -k pandion_sshd
+-w /usr/bin/sudo -p x -k pandion_priv
+-w /usr/bin/su -p x -k pandion_priv
 `
 }
 
