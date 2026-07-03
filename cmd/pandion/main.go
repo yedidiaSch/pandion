@@ -298,6 +298,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		RunUser:        opt.runUser, // unprivileged workload user (S-C)
 		IdleTTL:        opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
 		Fail2ban:       true,        // SSH brute-force protection (P1)
+		AuditLog:       true,        // on-node audit trail (S-F)
 	}
 	switch opt.engine {
 	case "docker":

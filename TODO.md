@@ -99,11 +99,15 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       local workspace to each node before running; `--sync=source` (build remotely)
       vs `--sync=binaries` (validate target arch/libc, H3); `.pandionignore`
       (fallback `.gitignore`). *Without this the tool can't run user code.*
-- [ ] **Apply `cluster.yaml` fields that are currently parsed-but-ignored** — the
-      config layer reads them, but `upClusterHetzner` only uses `name` + `run`.
-      Wire up per-node: `size`, `image`, `region`, `engine`, `sync`, `ttl`,
-      `ipc_ports` (→ firewall), `needs_caps`/`privileged_ports` (→ least-priv),
-      `egress_allow`, and the `security:` overrides. Plus `defaults:` inheritance.
+- [~] **Apply `cluster.yaml` fields that are currently parsed-but-ignored** —
+      wired: `size`/`image`/`region`/`ttl`/`sync`/`toolchain`/`needs_caps`/
+      `privileged_ports` (earlier), and now **`egress_allow`** (node + `security:` +
+      defaults union → per-node firewall) and the **`security:` overrides**
+      (`block_metadata_service`, `audit_log`, `run_as`) with `defaults:` inheritance
+      via `config.Effective`. `ipc_ports` intentionally NOT opened publicly — IPC
+      rides the encrypted overlay (all wg0 traffic is already accepted); public
+      exposure would be a security regression. Remaining: per-node `engine`
+      (docker-in-cluster). *(this branch)*
 - [ ] **Docker engine** (`--engine=docker`, spec §2) — run the toolchain/workload
       in a hardened container (non-root, seccomp/AppArmor, no docker.sock, read-only
       rootfs). Only the native/host path exists today.
@@ -118,7 +122,10 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       of the metadata endpoint, placed BEFORE any egress-allow, so a compromised
       workload can't read instance credentials even if the operator opens a broad
       allowlist. In `up` (single + cluster) and `lockdown`. *(done: this branch)*
-- [ ] **auditd** with off-node, tamper-evident log shipping (S-F).
+- [~] **auditd** (S-F) — installed with a baseline ruleset (identity files, sshd
+      config, priv-esc binaries) + enabled on every node by default; honors
+      `security.audit_log`. Off-node, tamper-evident log SHIPPING still TODO (the
+      on-node trail lands now). *(done: this branch)*
 - [ ] **Secret keychain** (H6) — token/keys via OS keychain (macOS Keychain /
       libsecret / Windows Credential Manager); today the token is env-only and keys
       are `0600` files.
