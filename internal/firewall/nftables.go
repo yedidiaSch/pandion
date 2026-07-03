@@ -41,7 +41,16 @@ type Spec struct {
 	// the overlay (via AllowOverlayInput). This is the full deny-all posture; only
 	// apply it once overlay SSH is confirmed working (see `pandion lockdown`).
 	NoPublicSSH bool
+	// BlockMetadata drops egress to the cloud metadata endpoint (169.254.169.254),
+	// UNCONDITIONALLY — before any egress-allow. The metadata service exposes the
+	// instance's cloud credentials and user-data, so a compromised workload must
+	// never reach it, even if the operator opens a broad egress allowlist (S-F).
+	BlockMetadata bool
 }
+
+// metadataIP is the cloud instance metadata endpoint (same on Hetzner, DO, AWS,
+// GCP, …). It holds instance credentials/user-data — a classic SSRF exfil target.
+const metadataIP = "169.254.169.254"
 
 func (s Spec) normalize() Spec {
 	if s.SSHPort == 0 {
@@ -97,6 +106,10 @@ func NFTables(in Spec) string {
 	b.WriteString("  chain output {\n")
 	b.WriteString("    type filter hook output priority 0; policy drop;\n")
 	b.WriteString("    oif \"lo\" accept\n")
+	if s.BlockMetadata {
+		// unconditional, BEFORE any allow — defense-in-depth vs. metadata SSRF (S-F).
+		b.WriteString("    ip daddr " + metadataIP + " drop\n")
+	}
 	b.WriteString("    ct state established,related accept\n")
 	if s.AllowOverlayInput {
 		// let the node INITIATE traffic over the overlay (inner IPC) — finding

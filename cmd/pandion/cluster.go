@@ -472,6 +472,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
 			WGPort: overlay.DefaultPort, AllowOverlayInput: true,
+			BlockMetadata: true, // S-F: no workload may read cloud metadata
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
