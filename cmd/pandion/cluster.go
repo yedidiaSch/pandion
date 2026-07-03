@@ -23,6 +23,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/lockfile"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	"github.com/yedidiaSch/pandion/internal/overlay"
+	"github.com/yedidiaSch/pandion/internal/provider"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	"github.com/yedidiaSch/pandion/internal/sshkeys"
 	"github.com/yedidiaSch/pandion/internal/stream"
@@ -280,6 +281,21 @@ func queryNodeLock(ctx context.Context, addr string, signer gossh.Signer, pinned
 	return nl
 }
 
+// ensureCloudFirewall applies the provider-level edge firewall if the provider
+// supports it (M8). Best-effort: a failure warns but never blocks the run (the
+// host nftables is the primary control).
+func ensureCloudFirewall(ctx context.Context, o *orchestrator.Orchestrator, id string) {
+	fw, ok := o.P.(provider.ClusterFirewaller)
+	if !ok {
+		return
+	}
+	if err := fw.EnsureClusterFirewall(ctx, id, overlay.DefaultPort); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: cloud firewall not applied: %v\n", err)
+		return
+	}
+	fmt.Println("cloud-edge firewall applied (SSH + WireGuard + ICMP inbound only).")
+}
+
 // writeLock persists the per-cluster reproducibility lockfile (~/.pandion/lock/<id>.json).
 func writeLock(id, prov string, nodes []lockfile.NodeLock) error {
 	return lockfile.Save(envHome(), &lockfile.Lock{
@@ -386,15 +402,16 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
-			HostPrivKeyPEM: host.PrivatePEM,
-			HostPubKey:     host.PublicAuthorized,
-			LoginPubKey:    login.PublicAuthorized,
-			Packages:       pkgs,
-			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
-			RunUser:        runUser,
-			IdleTTL:        windows[i],
-			Fail2ban:       true,         // SSH brute-force protection (P1)
-			AuditLog:       eff.AuditLog, // on-node audit trail (S-F; security.audit_log)
+			HostPrivKeyPEM:  host.PrivatePEM,
+			HostPubKey:      host.PublicAuthorized,
+			LoginPubKey:     login.PublicAuthorized,
+			Packages:        pkgs,
+			WGConfig:        overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
+			RunUser:         runUser,
+			IdleTTL:         windows[i],
+			Fail2ban:        true,         // SSH brute-force protection (P1)
+			AuditLog:        eff.AuditLog, // on-node audit trail (S-F; security.audit_log)
+			SysctlHardening: true,         // CIS-lite kernel network baseline (P1)
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
@@ -425,6 +442,9 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		p.ip = ipByName[p.name]
 		fmt.Printf("  %-12s ip=%-15s overlay=%s\n", p.name, p.ip, p.overlayIP)
 	}
+
+	// cloud-edge firewall (defense-in-depth in front of host nftables, M8).
+	ensureCloudFirewall(ctx, o, id)
 
 	// persist keys for later attach/debug
 	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)

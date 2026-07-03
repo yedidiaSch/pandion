@@ -157,6 +157,35 @@ func TestBuild_AuditLog(t *testing.T) {
 	}
 }
 
+func TestBuild_SysctlHardening(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM:  "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:      "ssh-ed25519 AAAA host",
+		SysctlHardening: true,
+	})
+	for _, want := range []string{
+		"/etc/sysctl.d/99-pandion-hardening.conf",
+		"net.ipv4.tcp_syncookies = 1",
+		"net.ipv4.conf.all.accept_redirects = 0",
+		"[ sysctl, --system ]",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sysctl cloud-init missing %q\n%s", want, out)
+		}
+	}
+	// CRITICAL: rp_filter must be LOOSE (2), never strict (1) — strict breaks WireGuard.
+	if strings.Contains(out, "rp_filter = 1") {
+		t.Error("rp_filter must be LOOSE (2); strict (1) breaks the WireGuard overlay")
+	}
+	if !strings.Contains(out, "rp_filter = 2") {
+		t.Error("expected loose rp_filter (2)")
+	}
+	// must not touch ip_forward (nodes are WG endpoints, not routers)
+	if strings.Contains(out, "ip_forward") {
+		t.Error("must not set ip_forward (would affect WG routing)")
+	}
+}
+
 func TestBuild_NoAuditByDefault(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
