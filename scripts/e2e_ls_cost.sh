@@ -88,6 +88,14 @@ grep -q "worker"  /tmp/lc_ls.log && c_ok "ls lists node 'worker'"               
 grep -qE "[A-Z]{3}/hr" /tmp/lc_ls.log && c_ok "ls shows the cost columns"        || c_no "ls missing cost header"
 grep -qE "0\.[0-9]{3,4}" /tmp/lc_ls.log && c_ok "ls shows a nonzero hourly rate (LIVE pricing works)" \
                                         || c_no "ls shows no live price"
+# region must be populated (not "—"): regression guard for the Location field
+# (Hetzner dropped the deprecated datacenter object from API responses 2026-07-01).
+region=$(awk '/pandion-'"$ID"'-worker/{print $4; exit}' /tmp/lc_ls.log)
+if [ -n "$region" ] && [ "$region" != "—" ] && [ "$region" != "-" ]; then
+  c_ok "ls shows region '$region' (Location field populated)"
+else
+  c_no "ls region empty/— (Location not mapped): '$region'"
+fi
 
 echo "================================================================"
 [ "$PASS" = 1 ] && c_ok "LS + BUDGET CAP (M4): verified" || c_no "see failures above"
