@@ -46,6 +46,11 @@ type CloudInit struct {
 	// sshd config, privilege-escalation binaries) — a tamper-evident on-node
 	// forensic trail for nodes left up after a crash for debugging (S-F).
 	AuditLog bool
+	// SysctlHardening, if set, applies a CIS-lite kernel network baseline (ignore
+	// ICMP redirects / source-routed packets, SYN-cookies, log martians). Uses
+	// LOOSE reverse-path filtering (rp_filter=2) — strict (1) breaks WireGuard's
+	// policy routing.
+	SysctlHardening bool
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
@@ -126,6 +131,12 @@ func Build(ci CloudInit) string {
 		runcmds = append(runcmds,
 			"[ bash, -c, \"systemctl enable --now auditd 2>/dev/null; augenrules --load 2>/dev/null || true\" ]")
 	}
+
+	// sysctl network hardening: write the baseline and apply it now (no reboot).
+	if ci.SysctlHardening {
+		files = append(files, wf{"/etc/sysctl.d/99-pandion-hardening.conf", "0644", sysctlHardening()})
+		runcmds = append(runcmds, "[ sysctl, --system ]")
+	}
 	if u := strings.TrimSpace(ci.RunUser); u != "" && u != "root" {
 		runcmds = append(runcmds,
 			fmt.Sprintf("[ bash, -c, \"id -u %s >/dev/null 2>&1 || useradd -m -s /bin/bash %s\" ]", u, u))
@@ -198,6 +209,25 @@ func auditRules() string {
 -w /etc/ssh/sshd_config -p wa -k pandion_sshd
 -w /usr/bin/sudo -p x -k pandion_priv
 -w /usr/bin/su -p x -k pandion_priv
+`
+}
+
+// sysctlHardening is a CIS-lite kernel network baseline. rp_filter is LOOSE (2),
+// NOT strict (1): strict reverse-path filtering drops WireGuard's asymmetrically
+// routed packets and breaks the overlay. Nothing here touches ip_forward (the
+// nodes are WG endpoints, not routers), so the mesh is unaffected.
+func sysctlHardening() string {
+	return `# Pandion network hardening baseline
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+net.ipv4.conf.all.accept_redirects = 0
+net.ipv4.conf.default.accept_redirects = 0
+net.ipv4.conf.all.send_redirects = 0
+net.ipv6.conf.all.accept_redirects = 0
+net.ipv4.conf.all.accept_source_route = 0
+net.ipv6.conf.all.accept_source_route = 0
+net.ipv4.tcp_syncookies = 1
+net.ipv4.conf.all.log_martians = 1
 `
 }
 

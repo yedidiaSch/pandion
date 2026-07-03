@@ -7,6 +7,7 @@ package hetzner
 import (
 	"context"
 	"fmt"
+	"net"
 	"regexp"
 	"strconv"
 	"strings"
@@ -401,22 +402,121 @@ func keyMaterial(pub string) string {
 	return strings.TrimSpace(pub)
 }
 
-// ReapAux deletes cluster-scoped SSH keys we registered (implements
-// provider.AuxReaper) so teardown leaves nothing behind.
+// ReapAux deletes cluster-scoped SSH keys AND the cloud firewall we registered
+// (implements provider.AuxReaper) so teardown leaves nothing behind (C4). Called
+// after servers are destroyed, so the firewall applies to nothing and deletes
+// cleanly.
 func (h *Hetzner) ReapAux(ctx context.Context, clusterID string) error {
+	var firstErr error
 	keys, err := h.c.SSHKey.AllWithOpts(ctx, hcloud.SSHKeyListOpts{
 		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID + "=" + clusterID},
 	})
 	if err != nil {
-		return err
+		firstErr = err
 	}
-	var firstErr error
 	for _, k := range keys {
 		if _, derr := h.c.SSHKey.Delete(ctx, k); derr != nil && firstErr == nil {
 			firstErr = derr
 		}
 	}
+	fws, ferr := h.c.Firewall.AllWithOpts(ctx, hcloud.FirewallListOpts{
+		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID + "=" + clusterID},
+	})
+	if ferr != nil && firstErr == nil {
+		firstErr = ferr
+	}
+	for _, fw := range fws {
+		if derr := h.deleteFirewall(ctx, fw); derr != nil && firstErr == nil {
+			firstErr = derr
+		}
+	}
 	return firstErr
+}
+
+// deleteFirewall detaches the firewall's applied resources (Hetzner refuses to
+// delete a firewall that is still applied to anything — the label-selector entry
+// persists even after the servers are gone) and then deletes it, retrying to
+// absorb the async detach/propagation.
+func (h *Hetzner) deleteFirewall(ctx context.Context, fw *hcloud.Firewall) error {
+	var rm []hcloud.FirewallResource
+	for _, r := range fw.AppliedTo {
+		switch r.Type {
+		case hcloud.FirewallResourceTypeLabelSelector:
+			if r.LabelSelector != nil {
+				rm = append(rm, hcloud.FirewallResource{Type: r.Type, LabelSelector: r.LabelSelector})
+			}
+		case hcloud.FirewallResourceTypeServer:
+			if r.Server != nil {
+				rm = append(rm, hcloud.FirewallResource{Type: r.Type, Server: r.Server})
+			}
+		}
+	}
+	if len(rm) > 0 {
+		_, _, _ = h.c.Firewall.RemoveResources(ctx, fw, rm) // detach; delete retries below
+	}
+	// retry: even after detach, the firewall's applied-server view can lag the
+	// (already-completed) server deletion by a few seconds.
+	var derr error
+	for i := 0; i < 10; i++ {
+		if _, derr = h.c.Firewall.Delete(ctx, fw); derr == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
+	return derr
+}
+
+// EnsureClusterFirewall implements provider.ClusterFirewaller: a cloud-edge
+// firewall (defense-in-depth in front of host nftables, M8) scoped to the
+// cluster's servers via label selector — so it auto-applies to every node.
+// Inbound: SSH + WireGuard + ICMP only. Egress is left to the host. Idempotent.
+func (h *Hetzner) EnsureClusterFirewall(ctx context.Context, clusterID string, wgPort int) error {
+	existing, err := h.c.Firewall.AllWithOpts(ctx, hcloud.FirewallListOpts{
+		ListOpts: hcloud.ListOpts{LabelSelector: LabelClusterID + "=" + clusterID},
+	})
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return nil // already provisioned for this cluster
+	}
+	selector := LabelClusterID + "=" + clusterID
+	_, _, err = h.c.Firewall.Create(ctx, hcloud.FirewallCreateOpts{
+		Name:   "pandion-fw-" + clusterID,
+		Labels: map[string]string{LabelClusterID: clusterID},
+		Rules:  clusterFirewallRules(wgPort),
+		ApplyTo: []hcloud.FirewallResource{{
+			Type:          hcloud.FirewallResourceTypeLabelSelector,
+			LabelSelector: &hcloud.FirewallResourceLabelSelector{Selector: selector},
+		}},
+	})
+	return err
+}
+
+// clusterFirewallRules is the inbound allowlist for the cloud firewall: SSH (the
+// host nftables scopes it to the operator), the WireGuard underlay, and ICMP.
+// Everything else inbound is denied by the firewall's implicit default. No
+// outbound rules -> egress unrestricted at the edge (the host enforces egress-deny).
+func clusterFirewallRules(wgPort int) []hcloud.FirewallRule {
+	anyIP := []net.IPNet{mustCIDR("0.0.0.0/0"), mustCIDR("::/0")}
+	ssh, wg := "22", strconv.Itoa(wgPort)
+	return []hcloud.FirewallRule{
+		{Direction: hcloud.FirewallRuleDirectionIn, Protocol: hcloud.FirewallRuleProtocolTCP, Port: &ssh, SourceIPs: anyIP, Description: hcloud.Ptr("SSH (host nftables scopes to operator)")},
+		{Direction: hcloud.FirewallRuleDirectionIn, Protocol: hcloud.FirewallRuleProtocolUDP, Port: &wg, SourceIPs: anyIP, Description: hcloud.Ptr("WireGuard overlay")},
+		{Direction: hcloud.FirewallRuleDirectionIn, Protocol: hcloud.FirewallRuleProtocolICMP, SourceIPs: anyIP, Description: hcloud.Ptr("ICMP (diagnostics)")},
+	}
+}
+
+func mustCIDR(s string) net.IPNet {
+	_, n, err := net.ParseCIDR(s)
+	if err != nil {
+		panic(err)
+	}
+	return *n
 }
 
 func toServer(s *hcloud.Server, clusterID string) provider.Server {

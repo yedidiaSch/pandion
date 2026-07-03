@@ -129,8 +129,13 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - [ ] **Secret keychain** (H6) — token/keys via OS keychain (macOS Keychain /
       libsecret / Windows Credential Manager); today the token is env-only and keys
       are `0600` files.
-- [ ] **Provider-level Cloud Firewall** (M8) — Hetzner network firewall in front of
-      host nftables (defense in depth).
+- [x] **Provider-level Cloud Firewall** (M8) — per-cluster Hetzner firewall (label
+      selector → auto-applies to every node) allowing only SSH + WireGuard + ICMP
+      inbound, in front of host nftables; created on `up`, deleted on teardown via
+      ReapAux (no leak). Provider seam `ClusterFirewaller`. *(done: this branch)*
+- [x] **Kernel/sysctl network hardening** — CIS-lite baseline (loose rp_filter for
+      WireGuard-safety, ignore ICMP redirects / source routing, SYN-cookies, log
+      martians), applied at boot. *(done: this branch)*
 - [~] **fail2ban** as secondary defense (M7-review) — installed + sshd jail
       enabled (systemd backend) on every node by default. *(done: this branch)*
       `unattended-upgrades` on longer-lived nodes still TODO (skipped to avoid
