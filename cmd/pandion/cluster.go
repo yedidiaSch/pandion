@@ -263,6 +263,7 @@ func loadManifest(id string) (*clusterManifest, error) {
 // Discovery-IP injection, IPC firewall, and running the per-node commands land
 // in M3.3/M3.4.
 func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64) {
+	prov := o.P.Name() // hetzner | digitalocean — used in teardown hints
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -377,7 +378,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if _, err := envssh.RunWithRetry(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
 			"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
 			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, err)
-			fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
+			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 			return
 		}
 	}
@@ -392,7 +393,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		wd, err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, p.runUser)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
-			fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
+			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 			return
 		}
 		p.workdir = wd
@@ -505,7 +506,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	streaming.Store(true)
 	streamCluster(streamCtx, id, plans, login)
 
-	fmt.Printf("teardown: pandion down --provider=hetzner --id %s\n", id)
+	fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 }
 
 // streamCluster runs each node's command concurrently and multiplexes output.

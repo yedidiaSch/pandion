@@ -146,7 +146,12 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       *(done: this branch)* → **P2 complete.**
 
 ## P3 — providers, portability, polish
-- [ ] **DigitalOcean provider** (M6) — prove the `Provider` seam with a 2nd backend.
+- [~] **DigitalOcean provider** (M6) — prove the `Provider` seam with a 2nd backend.
+      *Implemented (this branch):* full `Provider` + `Pricer` + `AuxReaper` via `godo`
+      (tag-based reconcile, size discovery by spec, exact per-size pricing); wired into
+      `up`/`down`/`ls`/`reap`/`validate` and the hardened `up` flow (now provider-agnostic).
+      Unit-tested; `scripts/e2e_digitalocean.sh` added. **Pending live e2e** (the DO
+      hardened-provision path is unverified without a `DIGITALOCEAN_TOKEN`).
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.
