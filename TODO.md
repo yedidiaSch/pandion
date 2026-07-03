@@ -130,16 +130,20 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       artifact signatures don't).
 
 ## P2 — lifecycle & cost (roadmap M4)
-- [ ] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that
+- [x] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that
       self-destroys a node with no heartbeat; the real leak-prevention when the
-      laptop dies. `--ttl`, `--no-ttl`.
-- [ ] **`pandion ls` / `status`** (L1) — list active clusters, nodes, uptime, and
-      **live cost**.
-- [ ] **`pandion reap`** (C4) — sweep orphaned tagged resources across all clusters
-      (today `down --id` reconciles one cluster).
-- [ ] **`pandion attach`** (L6) — reconnect to a running cluster's multiplexed
-      streams. *Foundation exists:* the manifest persisted for `lockdown`.
-- [ ] **Budget controls** (L2) — `--max-cost`, idle auto-stop (built on the TTL).
+      laptop dies. `--ttl`, `--no-ttl`. *(done: #23)*
+- [x] **`pandion ls` / `status`** (L1) — list active clusters, nodes, uptime, and
+      **live cost** (provider.Pricer seam; grouped over the reconcile source of
+      truth). *(done: this branch)*
+- [x] **`pandion reap`** (C4) — sweep orphaned tagged resources across all clusters
+      (today `down --id` reconciles one cluster). *(done: #22)*
+- [x] **`pandion attach`** (L6) — reconnect to a running cluster's multiplexed
+      streams; workloads run in tmux so detach != destroy, and crashes stay visible
+      across reattach. Covers both single-node and cluster paths. *(done: #27)*
+- [x] **Budget controls** (L2) — `--max-cost` projected-total preflight (Σ hourly ×
+      TTL; fail-closed; `--no-ttl` ⇒ unbounded ⇒ error) + idle auto-stop on the TTL.
+      *(done: this branch)* → **P2 complete.**
 
 ## P3 — providers, portability, polish
 - [ ] **DigitalOcean provider** (M6) — prove the `Provider` seam with a 2nd backend.
@@ -163,6 +167,17 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 ---
 
 ### Suggested order
-P0-1 (workspace sync) and P0-2 (apply cluster.yaml) first — they unblock real
-usage. Then P1 least-privilege run user (biggest security delta: root → scoped).
-Then P2 TTL (closes the last real leak vector). Everything else as needed.
+Done so far: P0-1 workspace sync (#19), P0-2 cluster.yaml fields — partial (#20),
+Docker engine (#24), P1 least-privilege run user + capability add-back (#21, #25),
+**all of P2 (M4)**: reap (#22) / TTL (#23) / attach (#27) / ls-status + `--max-cost`
+(this branch). The pre-MVP lifecycle+cost story is complete.
+
+Next up (the live frontier):
+1. **DigitalOcean provider (M6, P3)** — proves the `Provider` seam with a 2nd
+   backend and (see internal strategy notes) unlocks a recurring affiliate channel.
+   Also the natural home for a provider-specific Pricer alongside Hetzner's.
+2. **Finish P0-2** (remaining cluster.yaml fields: `ipc_ports`, `needs_caps`,
+   `egress_allow`, `security:` overrides, `defaults:` inheritance) — completeness.
+3. Remaining **P1 security hardening** (LUKS-at-rest, metadata block, auditd,
+   secret keychain, signed releases) as the security story demands.
+Then M7 cross-platform validation before a 1.0.

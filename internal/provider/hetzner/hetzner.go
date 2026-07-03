@@ -43,6 +43,9 @@ type Hetzner struct {
 	regionPref []string
 	mode       SearchMode
 	keyMu      sync.Mutex // serializes get-or-create of the shared login SSH key
+
+	priceMu    sync.Mutex      // guards the pricing cache
+	priceCache *hcloud.Pricing // fetched once, reused for every HourlyPrice lookup
 }
 
 // Option configures a Hetzner provider.
@@ -262,6 +265,95 @@ func (h *Hetzner) ListAllTagged(ctx context.Context) ([]provider.Server, error) 
 		out = append(out, toServer(s, s.Labels[LabelClusterID]))
 	}
 	return out, nil
+}
+
+// HourlyPrice implements provider.Pricer: the gross hourly price for a server
+// type in a region. Pricing is fetched once and cached. A type/region we can't
+// price returns a zero Money (nil error) so `ls` degrades to "—" rather than
+// failing the whole listing.
+func (h *Hetzner) HourlyPrice(ctx context.Context, serverType, region string) (provider.Money, error) {
+	pr, err := h.pricing(ctx)
+	if err != nil {
+		return provider.Money{}, err
+	}
+	for _, st := range pr.ServerTypes {
+		if st.ServerType == nil || st.ServerType.Name != serverType {
+			continue
+		}
+		// exact region match, else fall back to any location (base rate is ~equal).
+		var gross string
+		for _, lp := range st.Pricings {
+			if lp.Location != nil && lp.Location.Name == region {
+				gross = lp.Hourly.Gross
+				break
+			}
+			if gross == "" {
+				gross = lp.Hourly.Gross // fallback: first available
+			}
+		}
+		amt, perr := strconv.ParseFloat(strings.TrimSpace(gross), 64)
+		if perr != nil || amt <= 0 {
+			return provider.Money{}, nil // unknown, don't error the listing
+		}
+		return provider.Money{Amount: amt, Currency: pr.Currency}, nil
+	}
+	return provider.Money{}, nil // unknown type
+}
+
+// EstimateHourly implements provider.Pricer: resolve the type a spec would
+// provision (explicit `size`, else the first spec-matched candidate — mirroring
+// CreateServer's selection) and price it, without creating anything.
+func (h *Hetzner) EstimateHourly(ctx context.Context, spec provider.ServerSpec) (provider.Money, error) {
+	serverType := spec.Type
+	if serverType == "" {
+		minCores, minRAM := spec.MinCores, spec.MinRAMGB
+		if minCores == 0 {
+			minCores = 2
+		}
+		if minRAM == 0 {
+			minRAM = 2
+		}
+		sts, err := h.c.ServerType.All(ctx)
+		if err != nil {
+			return provider.Money{}, fmt.Errorf("list server types: %w", err)
+		}
+		infos := make([]typeInfo, 0, len(sts))
+		for _, st := range sts {
+			infos = append(infos, typeInfo{
+				Name: st.Name, Cores: st.Cores, MemGB: float64(st.Memory),
+				Arch: string(st.Architecture), Deprecated: st.IsDeprecated(),
+			})
+		}
+		cands := selectCandidates(infos, minCores, minRAM, h.arch)
+		if len(cands) == 0 {
+			return provider.Money{}, fmt.Errorf("no server type matches spec (>=%dc/%dGB, %s)", minCores, minRAM, h.arch)
+		}
+		serverType = cands[0] // the type CreateServer would try first
+	}
+	region := ""
+	switch {
+	case len(spec.RegionPref) > 0:
+		region = spec.RegionPref[0]
+	case len(h.regionPref) > 0:
+		region = h.regionPref[0]
+	}
+	return h.HourlyPrice(ctx, serverType, region)
+}
+
+// pricing returns the cached provider pricing, fetching it on first use. A failed
+// fetch is not cached, so a transient error is retried on the next call.
+func (h *Hetzner) pricing(ctx context.Context) (*hcloud.Pricing, error) {
+	h.priceMu.Lock()
+	defer h.priceMu.Unlock()
+	if h.priceCache != nil {
+		return h.priceCache, nil
+	}
+	p, _, err := h.c.Pricing.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	h.priceCache = &p
+	return h.priceCache, nil
 }
 
 // ensureLoginKey get-or-creates the cluster's shared login SSH key by a

@@ -262,7 +262,7 @@ func loadManifest(id string) (*clusterManifest, error) {
 //
 // Discovery-IP injection, IPC firewall, and running the per-node commands land
 // in M3.3/M3.4.
-func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
+func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64) {
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -298,6 +298,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	// build per-node plans + hardened cloud-init (host key, toolchain, wg iface)
 	plans := make([]*nodePlan, len(cl.Nodes))
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
+	windows := make([]time.Duration, len(cl.Nodes)) // per-node idle-TTL, for --max-cost
 	for i, n := range cl.Nodes {
 		host, e := sshkeys.Generate("pandion-host-" + n.Name)
 		must(e)
@@ -325,6 +326,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
 			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts)}
 
+		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
 			HostPrivKeyPEM: host.PrivatePEM,
 			HostPubKey:     host.PublicAuthorized,
@@ -332,12 +334,19 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			Packages:       pkgs,
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 			RunUser:        runUser,
-			IdleTTL:        parseTTL(eff.TTLRaw),
+			IdleTTL:        windows[i],
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
 			Type: eff.Size, Image: eff.Image, RegionPref: region,
 		}
+	}
+
+	// --max-cost preflight (before spending a cent): refuse if projected spend
+	// (Σ hourly × each node's TTL) exceeds the cap.
+	if err := o.CheckBudget(ctx, specs, windows, maxCost); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(6)
 	}
 
 	// provision concurrently; BARRIER: returns only when all are RUNNING

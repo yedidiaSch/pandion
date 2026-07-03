@@ -68,3 +68,29 @@ type Provider interface {
 type AuxReaper interface {
 	ReapAux(ctx context.Context, clusterID string) error
 }
+
+// Money is an amount in a provider's billing currency. A zero Money (Amount == 0
+// or empty Currency) means "price unknown" — callers should render it as such
+// rather than as free.
+type Money struct {
+	Amount   float64
+	Currency string // ISO code, e.g. "EUR"
+}
+
+// Known reports whether the price is populated (vs. "unknown").
+func (m Money) Known() bool { return m.Currency != "" && m.Amount > 0 }
+
+// Pricer is an optional Provider capability: the gross hourly price of a server
+// type in a region. It powers `ls`/`status` live cost (L1) and the `--max-cost`
+// preflight (L2). Optional so the core Provider seam stays minimal — callers must
+// degrade gracefully (omit cost) when a backend does not implement it.
+type Pricer interface {
+	// HourlyPrice returns the gross hourly price for serverType in region. An
+	// unknown price is returned as a zero Money with a nil error (not an error),
+	// so a missing entry never breaks a listing.
+	HourlyPrice(ctx context.Context, serverType, region string) (Money, error)
+	// EstimateHourly prices the server a spec WOULD provision, without creating
+	// it — resolving an auto-selected type the same way CreateServer does — for
+	// the `--max-cost` preflight. A zero Money (nil error) means "couldn't price".
+	EstimateHourly(ctx context.Context, spec ServerSpec) (Money, error)
+}
