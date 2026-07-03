@@ -124,8 +124,10 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       are `0600` files.
 - [ ] **Provider-level Cloud Firewall** (M8) — Hetzner network firewall in front of
       host nftables (defense in depth).
-- [ ] **fail2ban** as secondary defense (M7-review), `unattended-upgrades` on
-      longer-lived nodes.
+- [~] **fail2ban** as secondary defense (M7-review) — installed + sshd jail
+      enabled (systemd backend) on every node by default. *(done: this branch)*
+      `unattended-upgrades` on longer-lived nodes still TODO (skipped to avoid
+      apt-lock contention during the provisioning window).
 - [x] **Reproducibility** (H2) — `up` records the resolved toolchain versions
       (per node: package versions + OS/kernel) to `~/.pandion/lock/<id>.json`;
       `up --lock <file>` pins them so a re-provision reproduces the environment.

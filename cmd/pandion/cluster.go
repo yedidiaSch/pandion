@@ -390,6 +390,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			WGConfig:       overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 			RunUser:        runUser,
 			IdleTTL:        windows[i],
+			Fail2ban:       true, // SSH brute-force protection (P1)
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
