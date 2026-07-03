@@ -429,15 +429,17 @@ func toServer(s *hcloud.Server, clusterID string) provider.Server {
 	if s.ServerType != nil {
 		ps.Type = s.ServerType.Name
 	}
-	// Prefer the location name (e.g. "fsn1"); fall back to the datacenter name
-	// (e.g. "fsn1-dc14") since list responses don't always hydrate the nested
-	// location — so `ls` shows a region rather than "—".
-	if s.Datacenter != nil {
-		if s.Datacenter.Location != nil && s.Datacenter.Location.Name != "" {
-			ps.Region = s.Datacenter.Location.Name
-		} else if s.Datacenter.Name != "" {
-			ps.Region = s.Datacenter.Name
-		}
+	// Region from the top-level Location (e.g. "fsn1"). The nested Datacenter was
+	// DEPRECATED and dropped from API responses after 2026-07-01 (Hetzner changelog
+	// 2025-12-16) — it returns nil now, which is why `ls` showed "—". Location is
+	// the replacement; the Datacenter fallback covers older API responses.
+	switch {
+	case s.Location != nil && s.Location.Name != "":
+		ps.Region = s.Location.Name
+	case s.Datacenter != nil && s.Datacenter.Location != nil:
+		ps.Region = s.Datacenter.Location.Name
+	case s.Datacenter != nil:
+		ps.Region = s.Datacenter.Name
 	}
 	if ip := s.PublicNet.IPv4.IP; ip != nil {
 		ps.IP = ip.String()
