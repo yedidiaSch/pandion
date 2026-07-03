@@ -109,6 +109,18 @@ Or grab a single `.deb`/`.rpm` from the [latest release](https://github.com/yedi
 tar -xzf pandion_<version>_<os>_<arch>.tar.gz && ./pandion version
 ```
 
+**Verify the release** (keyless [Sigstore/cosign](https://docs.sigstore.dev/) signature — no key to trust, identity is pinned to this repo's release workflow):
+```bash
+# checksums.txt is cosign-signed; verify it, then let it vouch for every artifact.
+cosign verify-blob \
+  --certificate checksums.txt.pem \
+  --signature   checksums.txt.sig \
+  --certificate-identity-regexp '^https://github.com/yedidiaSch/pandion/' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  checksums.txt
+sha256sum -c checksums.txt --ignore-missing   # verifies the file you downloaded
+```
+
 **From source** (Go 1.22+):
 ```bash
 go install github.com/pandion/pandion/cmd/pandion@latest
