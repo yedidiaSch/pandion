@@ -1,6 +1,6 @@
-// Command pandion is the M1 CLI: a single-node provision/run/teardown flow over
-// either the in-memory mock provider (default, free, offline) or the real
-// Hetzner provider (--provider=hetzner), with security-hardened bootstrap.
+// Command pandion is the CLI: a provision/run/teardown flow over the in-memory
+// mock provider (default, free, offline) or a real cloud backend
+// (--provider=hetzner | digitalocean), with security-hardened bootstrap.
 package main
 
 import (
@@ -23,6 +23,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	"github.com/yedidiaSch/pandion/internal/overlay"
 	"github.com/yedidiaSch/pandion/internal/provider"
+	"github.com/yedidiaSch/pandion/internal/provider/digitalocean"
 	"github.com/yedidiaSch/pandion/internal/provider/hetzner"
 	"github.com/yedidiaSch/pandion/internal/provider/mock"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
@@ -85,15 +86,21 @@ func newProvider(name string) (provider.Provider, error) {
 			return nil, fmt.Errorf("HCLOUD_TOKEN not set (required for --provider=hetzner)")
 		}
 		return hetzner.New(token), nil
+	case "digitalocean", "do":
+		token := os.Getenv("DIGITALOCEAN_TOKEN")
+		if token == "" {
+			return nil, fmt.Errorf("DIGITALOCEAN_TOKEN not set (required for --provider=digitalocean)")
+		}
+		return digitalocean.New(token), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner)", name)
+		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean)", name)
 	}
 }
 
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner")
+	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
@@ -130,7 +137,9 @@ func runUp(args []string) {
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
-	case "hetzner":
+	case "hetzner", "digitalocean", "do":
+		// the hardened single-node flow is provider-agnostic (it drives the
+		// orchestrator + SSH); the provider is injected via `o`.
 		var ws *syncSpec
 		if *workspacePath != "" {
 			ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Build: *buildCmd}
@@ -174,7 +183,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 		id = cl.Name // default the cluster id to the topology name
 	}
 
-	if providerName == "hetzner" {
+	if providerName == "hetzner" || providerName == "digitalocean" || providerName == "do" {
 		upClusterHetzner(o, cl, id, maxCost)
 		return
 	}
@@ -248,6 +257,7 @@ func splitCSV(s string) []string {
 
 func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	id, node, runCmd, toolchain := opt.id, opt.node, opt.runCmd, opt.toolchain
+	prov := o.P.Name() // hetzner | digitalocean — used in teardown hints
 	if runCmd == "" {
 		runCmd = "echo PANDION_READY && uname -a"
 	}
@@ -328,7 +338,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if _, err := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
 		"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
 		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", err)
-		fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
+		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
 		return
 	}
 	fmt.Println("node ready (cloud-init complete).")
@@ -339,7 +349,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	workdir := ""
 	failNode := func(err error) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
-		fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
+		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
 	}
 	if opt.engine == "docker" {
 		// pull the image NOW (egress is still open); the post-lockdown `docker run`
@@ -417,7 +427,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
 			fmt.Printf("firewall apply failed: %v\n%s(node left running)\n", err, out)
-			fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
+			fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
 			return
 		}
 		sshScope := "any source"
@@ -468,7 +478,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	fmt.Println("----------------------------------------------------------------")
 	tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
 
-	fmt.Printf("node is live. teardown with:  pandion down --provider=hetzner --id %s\n", id)
+	fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
 }
 
 func runValidate(args []string) {
@@ -502,7 +512,7 @@ func runAttach(args []string) {
 
 func runReap(args []string) {
 	fs := flag.NewFlagSet("reap", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean")
 	olderThan := fs.Duration("older-than", 0, "only reap clusters whose oldest node is at least this age (e.g. 2h)")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
@@ -545,7 +555,7 @@ func runReap(args []string) {
 // (works with no local state). Cost is shown when the provider prices its types.
 func runLs(args []string) {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner")
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean")
 	_ = fs.Parse(args)
 
 	p, err := newProvider(*prov)
@@ -635,7 +645,7 @@ func estMoney(m provider.Money, age time.Duration) string {
 
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner")
+	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean")
 	id := fs.String("id", "demo", "cluster id")
 	_ = fs.Parse(args)
 
@@ -669,8 +679,8 @@ func envHome() string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner] [--id ID] [--node NAME] -- <run cmd>")
-	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner] [--id ID]")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
