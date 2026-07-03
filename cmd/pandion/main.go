@@ -435,6 +435,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			SSHFromCIDR:       operatorCIDR,
 			WGPort:            wgPortIf(opt.overlay),
 			AllowOverlayInput: opt.overlay,
+			BlockMetadata:     true, // S-F: no workload may read cloud metadata
 		})
 		b64 := base64.StdEncoding.EncodeToString([]byte(rules))
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
