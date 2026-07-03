@@ -33,18 +33,21 @@ trap teardown EXIT
 
 c_in "building..."; export PATH="$HOME/.local/go/bin:$PATH"; go build -o "$BIN" ./cmd/pandion; c_ok "built"
 
-# Probe (runs as the workload user): report fail2ban state + our uid name.
-PROBE='echo "F2B=$(systemctl is-active fail2ban 2>/dev/null)"; echo "WHOAMI=$(id -un)"'
+# Probe (runs as the workload user): report fail2ban + auditd state + our uid name.
+PROBE='echo "F2B=$(systemctl is-active fail2ban 2>/dev/null)"; echo "AUD=$(systemctl is-active auditd 2>/dev/null)"; echo "WHOAMI=$(id -un)"'
 
 c_in "provision one node, then probe hardening (~3-5 min)..."
 if timeout 600 env NO_COLOR=1 "$BIN" up --provider=hetzner --id "$ID" --node probe \
      --ttl 30m -- "$PROBE" >/tmp/hd_up.log 2>&1; then :; fi
-echo "---- probe output ----"; grep -E "F2B=|WHOAMI=|node is live" /tmp/hd_up.log || tail -20 /tmp/hd_up.log
+echo "---- probe output ----"; grep -E "F2B=|AUD=|WHOAMI=|node is live" /tmp/hd_up.log || tail -20 /tmp/hd_up.log
 echo "----------------------"
 
 grep -q "F2B=active" /tmp/hd_up.log \
   && c_ok "fail2ban is ACTIVE on the node (SSH brute-force protection)" \
   || c_no "fail2ban not active"
+grep -q "AUD=active" /tmp/hd_up.log \
+  && c_ok "auditd is ACTIVE on the node (on-node audit trail, S-F)" \
+  || c_no "auditd not active"
 grep -q "WHOAMI=pandion-run" /tmp/hd_up.log \
   && c_ok "workload runs as the unprivileged 'pandion-run' user (S-C)" \
   || c_no "workload not running as the least-privilege user"

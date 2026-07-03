@@ -135,6 +135,38 @@ func TestBuild_NoFail2banByDefault(t *testing.T) {
 	}
 }
 
+func TestBuild_AuditLog(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		AuditLog:       true,
+	})
+	for _, want := range []string{
+		"- auditd",                         // package
+		"/etc/audit/rules.d/pandion.rules", // rules file
+		"-w /etc/shadow -p wa",             // a baseline watch
+		"pandion_identity",                 // rule key
+		"augenrules --load",                // loaded without reboot
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("auditd cloud-init missing %q\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "-S execve") {
+		t.Error("baseline must NOT log every execve (too noisy)")
+	}
+}
+
+func TestBuild_NoAuditByDefault(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+	})
+	if strings.Contains(out, "auditd") {
+		t.Errorf("auditd must be absent unless enabled\n%s", out)
+	}
+}
+
 func TestBuild_NoDeadmanWhenZero(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",

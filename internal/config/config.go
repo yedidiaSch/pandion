@@ -94,12 +94,17 @@ type Lifecycle struct {
 // Effective is a node's settings after merging cluster defaults with its own
 // overrides (node wins). It's what the orchestrator should consume.
 type Effective struct {
-	Size     string
-	Image    string
-	Packages []string
-	Region   string
-	RunUser  string // security.run_as; empty means "use the default"
-	TTLRaw   string // ttl string ("60m" | "false" | ""); "" means "use the default"
+	Size        string
+	Image       string
+	Packages    []string
+	Region      string
+	RunUser     string   // security.run_as; empty means "use the default"
+	TTLRaw      string   // ttl string ("60m" | "false" | ""); "" means "use the default"
+	EgressAllow []string // union of node + security + defaults egress allowlists
+	// Security defaults are ON (secure by default); a cluster.yaml `security:`
+	// false explicitly opts out.
+	BlockMetadata bool // block the cloud metadata endpoint (S-F)
+	AuditLog      bool // install auditd baseline logging (S-F)
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -111,10 +116,13 @@ func (c *Cluster) Effective(n Node) Effective {
 		return def
 	}
 	e := Effective{
-		Size:   pick(n.Size, c.Defaults.Size),
-		Image:  pick(n.Image, c.Defaults.Image),
-		Region: c.Provider.Region,
-		TTLRaw: pick(n.TTL, c.Defaults.TTL),
+		Size:          pick(n.Size, c.Defaults.Size),
+		Image:         pick(n.Image, c.Defaults.Image),
+		Region:        c.Provider.Region,
+		TTLRaw:        pick(n.TTL, c.Defaults.TTL),
+		EgressAllow:   c.egressAllow(n),
+		BlockMetadata: c.secBool(n, func(s *Security) *bool { return s.BlockMetadataService }, true),
+		AuditLog:      c.secBool(n, func(s *Security) *bool { return s.AuditLog }, true),
 	}
 	switch {
 	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
@@ -129,6 +137,45 @@ func (c *Cluster) Effective(n Node) Effective {
 		e.RunUser = c.Defaults.Sec.RunAs
 	}
 	return e
+}
+
+// egressAllow unions the node-level and security-level allowlists with the
+// cluster defaults' security allowlist (egress rules are additive), deduped.
+func (c *Cluster) egressAllow(n Node) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(xs []string) {
+		for _, x := range xs {
+			if x != "" && !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	add(n.EgressAllow)
+	if n.Sec != nil {
+		add(n.Sec.EgressAllow)
+	}
+	if c.Defaults.Sec != nil {
+		add(c.Defaults.Sec.EgressAllow)
+	}
+	return out
+}
+
+// secBool resolves a *bool security toggle: node override, else defaults, else
+// the secure-by-default fallback.
+func (c *Cluster) secBool(n Node, get func(*Security) *bool, fallback bool) bool {
+	if n.Sec != nil {
+		if v := get(n.Sec); v != nil {
+			return *v
+		}
+	}
+	if c.Defaults.Sec != nil {
+		if v := get(c.Defaults.Sec); v != nil {
+			return *v
+		}
+	}
+	return fallback
 }
 
 // Validate checks raw YAML bytes against the schema without unmarshalling into
