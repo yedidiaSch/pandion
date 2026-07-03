@@ -126,8 +126,10 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       longer-lived nodes.
 - [ ] **Reproducibility** (H2) — pin toolchain versions + record a per-cluster
       lockfile (`~/.pandion/lock/<id>.json`). Toolchain is currently unpinned.
-- [ ] **Signed releases** — add cosign signing to goreleaser (checksums + SBOM exist;
-      artifact signatures don't).
+- [x] **Signed releases** — keyless cosign (Sigstore OIDC) signs `checksums.txt`
+      → `checksums.txt.sig` + `.pem` on each release; `id-token: write` + cosign
+      installed in the release workflow; verify snippet in the README. *(done: this
+      branch; takes effect on the next `vX.Y.Z` tag.)*
 
 ## P2 — lifecycle & cost (roadmap M4)
 - [x] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that

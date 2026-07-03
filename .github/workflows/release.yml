@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write # create the GitHub Release + upload assets
+  id-token: write # keyless cosign signing (Sigstore OIDC — no key to store)
 
 jobs:
   goreleaser:
@@ -25,6 +26,9 @@ jobs:
 
       - name: Install syft (for SBOMs)
         uses: anchore/sbom-action/download-syft@v0
+
+      - name: Install cosign (for keyless signing)
+        uses: sigstore/cosign-installer@v3
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@v6

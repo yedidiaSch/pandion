@@ -59,6 +59,32 @@ checksum:
 sboms:
   - artifacts: archive
 
+# Keyless artifact signing via Sigstore / cosign — OIDC-based, NO private key to
+# manage or leak. We sign checksums.txt (which already covers every artifact by
+# SHA-256), so the release gains checksums.txt.sig + checksums.txt.pem. Requires
+# `cosign` on the runner and `id-token: write` in the release workflow.
+#
+# Verify a downloaded release:
+#   cosign verify-blob \
+#     --certificate checksums.txt.pem \
+#     --signature   checksums.txt.sig \
+#     --certificate-identity-regexp '^https://github.com/yedidiaSch/pandion/' \
+#     --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+#     checksums.txt
+#   sha256sum -c checksums.txt        # then the checksums vouch for each artifact
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-signature=${signature}"
+      - "--output-certificate=${certificate}"
+      - "${artifact}"
+      - "--yes" # non-interactive; keyless is the cosign v2 default
+    artifacts: checksum
+    output: true # upload the .sig + .pem as release assets
+
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
 
