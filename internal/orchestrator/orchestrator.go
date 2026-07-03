@@ -190,6 +190,130 @@ func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) ([
 	return out, nil
 }
 
+// NodeStatus is the live view of one running node for `ls`/`status`.
+type NodeStatus struct {
+	Name, Type, Region, IP string
+	Age                    time.Duration
+	Hourly                 provider.Money // zero = price unknown
+}
+
+// ClusterStatus aggregates a cluster's running nodes and its rolled-up cost.
+type ClusterStatus struct {
+	ClusterID string
+	Nodes     []NodeStatus
+	Hourly    float64       // sum of per-node hourly (in Currency); 0 if unpriced
+	Accrued   float64       // Σ hourly × age — an ESTIMATE of spend so far
+	Oldest    time.Duration // age of the oldest node
+}
+
+// Status lists every Pandion cluster alive at the provider, grouped, with uptime
+// and (if the provider implements provider.Pricer) live cost. Queries the
+// provider directly, so it works with no local state and across machines (C4).
+// Returns the clusters and the billing currency ("" if unpriced/unknown).
+func (o *Orchestrator) Status(ctx context.Context) ([]ClusterStatus, string, error) {
+	all, err := o.P.ListAllTagged(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	pricer, _ := o.P.(provider.Pricer)
+	now := time.Now()
+	byCluster := map[string]*ClusterStatus{}
+	var currency string
+	for _, s := range all {
+		cs := byCluster[s.ClusterID]
+		if cs == nil {
+			cs = &ClusterStatus{ClusterID: s.ClusterID}
+			byCluster[s.ClusterID] = cs
+		}
+		age := now.Sub(s.Created)
+		if s.Created.IsZero() {
+			age = 0
+		}
+		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age}
+		if pricer != nil {
+			// a per-node pricing error is non-fatal: leave that node unpriced.
+			if m, perr := pricer.HourlyPrice(ctx, s.Type, s.Region); perr == nil && m.Known() {
+				n.Hourly = m
+				currency = m.Currency
+				cs.Hourly += m.Amount
+				cs.Accrued += m.Amount * age.Hours()
+			}
+		}
+		if age > cs.Oldest {
+			cs.Oldest = age
+		}
+		cs.Nodes = append(cs.Nodes, n)
+	}
+	out := make([]ClusterStatus, 0, len(byCluster))
+	for _, cs := range byCluster {
+		sort.Slice(cs.Nodes, func(i, j int) bool { return cs.Nodes[i].Name < cs.Nodes[j].Name })
+		out = append(out, *cs)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ClusterID < out[j].ClusterID })
+	return out, currency, nil
+}
+
+// CostEstimate is the `--max-cost` preflight projection.
+type CostEstimate struct {
+	Hourly    float64 // Σ per-node gross hourly (in Currency)
+	Projected float64 // Σ per-node hourly × its idle-TTL window (spend before self-stop)
+	Currency  string
+	Unbounded bool // a node has no TTL ⇒ projected spend is infinite
+}
+
+// EstimateSpend prices each spec (without provisioning) and projects total spend
+// over each node's idle-TTL window (windows[i]; 0 = no TTL ⇒ unbounded). It fails
+// CLOSED: an unpriceable node or a provider without pricing is an error, so a
+// budget guard is never silently skipped.
+func (o *Orchestrator) EstimateSpend(ctx context.Context, specs []NodeSpec, windows []time.Duration) (CostEstimate, error) {
+	pricer, ok := o.P.(provider.Pricer)
+	if !ok {
+		return CostEstimate{}, fmt.Errorf("provider %q does not support pricing (cannot honor --max-cost)", o.P.Name())
+	}
+	var est CostEstimate
+	for i, s := range specs {
+		m, err := pricer.EstimateHourly(ctx, provider.ServerSpec{
+			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref,
+		})
+		if err != nil {
+			return CostEstimate{}, err
+		}
+		if !m.Known() {
+			return CostEstimate{}, fmt.Errorf("could not price node %q (cannot honor --max-cost)", s.Name)
+		}
+		est.Currency = m.Currency
+		est.Hourly += m.Amount
+		if windows[i] <= 0 {
+			est.Unbounded = true
+		} else {
+			est.Projected += m.Amount * windows[i].Hours()
+		}
+	}
+	return est, nil
+}
+
+// CheckBudget enforces a projected-total `--max-cost` (in the provider's
+// currency) before any server is created. maxCost <= 0 disables the check. A node
+// with no TTL makes the projection unbounded, which is an error under a cap.
+// Returns nil (pass) or a descriptive, actionable error.
+func (o *Orchestrator) CheckBudget(ctx context.Context, specs []NodeSpec, windows []time.Duration, maxCost float64) error {
+	if maxCost <= 0 {
+		return nil // disabled
+	}
+	est, err := o.EstimateSpend(ctx, specs, windows)
+	if err != nil {
+		return err
+	}
+	if est.Unbounded {
+		return fmt.Errorf("--max-cost %.2f %s needs a bounded run, but a node has no TTL (--no-ttl) — projected spend is unbounded; set --ttl", maxCost, est.Currency)
+	}
+	if est.Projected > maxCost {
+		return fmt.Errorf("--max-cost exceeded: projected %.2f %s (%.4f %s/hr × TTL) > cap %.2f %s — pin a smaller size, shorten --ttl, or raise --max-cost",
+			est.Projected, est.Currency, est.Hourly, est.Currency, maxCost, est.Currency)
+	}
+	return nil
+}
+
 // Reap destroys the given clusters (reusing Down: verified teardown + aux reap +
 // state close). Returns the number successfully reaped.
 func (o *Orchestrator) Reap(ctx context.Context, candidates []ReapCandidate) (int, error) {
