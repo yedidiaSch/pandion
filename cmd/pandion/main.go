@@ -62,6 +62,8 @@ func main() {
 		runAttach(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
+	case "completion":
+		runCompletion(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -838,6 +840,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
+	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
 
