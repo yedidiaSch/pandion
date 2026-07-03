@@ -16,3 +16,8 @@
 
 # internal strategy notes (do not publish)
 /docs/monetization-strategy.md
+
+# secrets — API tokens for real-cloud e2e (NEVER commit)
+.env
+.env.*
+!.env.example
