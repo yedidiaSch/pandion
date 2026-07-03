@@ -25,7 +25,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
   "$BIN" down --provider=hetzner --id "$ID" >/dev/null 2>&1 || true
-  rm -f /tmp/lc_*.log
+  rm -f /tmp/lc_*.log "$HOME/.pandion/lock/$ID.json"
   if command -v hcloud >/dev/null 2>&1; then
     local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)
     [ "${left:-0}" = 0 ] && c_ok "teardown: no servers left" || c_no "teardown: $left left"
@@ -92,6 +92,16 @@ if grep -q "node is live" /tmp/lc_up.log; then
   c_ok "provisioned within budget (preflight passed, node up)"
 else
   c_no "up did not complete"; tail -20 /tmp/lc_up.log
+fi
+
+# reproducibility (H2): `up` must have recorded the resolved toolchain versions.
+c_in "[3b] reproducibility lockfile written with resolved package versions..."
+LOCK="$HOME/.pandion/lock/$ID.json"
+if [ -f "$LOCK" ] && grep -qE '"(cmake|gdb|tmux)": *"[0-9]' "$LOCK"; then
+  c_ok "lockfile records resolved versions ($LOCK)"
+  grep -qE '"os": *"Ubuntu' "$LOCK" && c_ok "lockfile records the OS" || c_in "note: OS not captured"
+else
+  c_no "lockfile missing or has no resolved versions"; [ -f "$LOCK" ] && head -30 "$LOCK"
 fi
 
 c_in "[4] pandion ls — must show the cluster, node, and a live hourly rate..."

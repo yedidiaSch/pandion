@@ -20,6 +20,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/discovery"
 	"github.com/yedidiaSch/pandion/internal/firewall"
 	"github.com/yedidiaSch/pandion/internal/harden"
+	"github.com/yedidiaSch/pandion/internal/lockfile"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	"github.com/yedidiaSch/pandion/internal/overlay"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
@@ -182,6 +183,8 @@ type nodePlan struct {
 	runUser   string    // unprivileged user the workload runs as (S-C)
 	workdir   string    // remote workspace dir (cwd for run), if synced
 	caps      []string  // capabilities to grant back (needs_caps/priv ports, P1b)
+	pkgs      []string  // resolved package list (for the reproducibility lockfile, H2)
+	image     string    // node image (recorded in the lockfile)
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -262,6 +265,26 @@ func loadManifest(id string) (*clusterManifest, error) {
 //
 // Discovery-IP injection, IPC firewall, and running the per-node commands land
 // in M3.3/M3.4.
+// queryNodeLock runs the toolchain-version query on a node and returns its
+// resolved environment (H2). A query failure yields an empty record rather than
+// aborting the provision — the lockfile is best-effort.
+func queryNodeLock(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, name, image string, pkgs []string) lockfile.NodeLock {
+	out, err := envssh.Run(ctx, addr, "root", signer, pinned, lockfile.QueryCmd(pkgs))
+	if err != nil {
+		return lockfile.NodeLock{Name: name, Image: image, Packages: map[string]string{}}
+	}
+	nl := lockfile.ParseQuery(out)
+	nl.Name, nl.Image = name, image
+	return nl
+}
+
+// writeLock persists the per-cluster reproducibility lockfile (~/.pandion/lock/<id>.json).
+func writeLock(id, prov string, nodes []lockfile.NodeLock) error {
+	return lockfile.Save(envHome(), &lockfile.Lock{
+		ID: id, Provider: prov, PandionVersion: version, Created: time.Now(), Nodes: nodes,
+	})
+}
+
 // dryRunCluster previews a cluster `up` — per-node size/region/TTL and projected
 // cost from cluster.yaml — creating nothing (no keys, no cloud-init, no cloud).
 func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
@@ -283,8 +306,15 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) 
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
-func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64) {
-	prov := o.P.Name() // hetzner | digitalocean — used in teardown hints
+func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string) {
+	prov := o.P.Name()         // hetzner | digitalocean — used in teardown hints
+	var pinLock *lockfile.Lock // reproducibility (H2): pin toolchain from this lock
+	if lockPath != "" {
+		lk, lerr := lockfile.Load(lockPath)
+		must(lerr)
+		pinLock = lk
+		fmt.Printf("pinning packages from lockfile %s\n", lockPath)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
 	defer cancel()
 
@@ -335,6 +365,9 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			pkgs = harden.DefaultToolchain() // C++ default when none specified
 		}
 		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard", "tmux") // always needed (tmux: durable run + attach)
+		if pinLock != nil {
+			pkgs = pinLock.PinnedPackages(n.Name, pkgs) // H2: reproduce recorded versions
+		}
 		var region []string
 		if eff.Region != "" {
 			region = []string{eff.Region}
@@ -346,7 +379,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
-			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts)}
+			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image}
 
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
@@ -402,6 +435,18 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 			return
 		}
+	}
+
+	// reproducibility (H2): record each node's resolved toolchain versions so a
+	// later `up -f … --lock ~/.pandion/lock/<id>.json` reproduces the environment.
+	locks := make([]lockfile.NodeLock, len(plans))
+	for i, p := range plans {
+		locks[i] = queryNodeLock(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, p.image, p.pkgs)
+	}
+	if err := writeLock(id, prov, locks); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write lockfile: %v\n", err)
+	} else {
+		fmt.Printf("wrote reproducibility lockfile: %s\n", lockfile.Path(envHome(), id))
 	}
 
 	// sync workspaces + remote build, in the egress build-window (before the

@@ -126,8 +126,11 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       host nftables (defense in depth).
 - [ ] **fail2ban** as secondary defense (M7-review), `unattended-upgrades` on
       longer-lived nodes.
-- [ ] **Reproducibility** (H2) — pin toolchain versions + record a per-cluster
-      lockfile (`~/.pandion/lock/<id>.json`). Toolchain is currently unpinned.
+- [x] **Reproducibility** (H2) — `up` records the resolved toolchain versions
+      (per node: package versions + OS/kernel) to `~/.pandion/lock/<id>.json`;
+      `up --lock <file>` pins them so a re-provision reproduces the environment.
+      Single-node + cluster. Best-effort (declared pkgs, not transitive deps; needs
+      the versions still in-mirror). *(done: this branch)*
 - [x] **Signed releases** — keyless cosign (Sigstore OIDC) signs `checksums.txt`
       → `checksums.txt.sig` + `.pem` on each release; `id-token: write` + cosign
       installed in the release workflow; verify snippet in the README. *(done: this
