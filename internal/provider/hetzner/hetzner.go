@@ -429,8 +429,15 @@ func toServer(s *hcloud.Server, clusterID string) provider.Server {
 	if s.ServerType != nil {
 		ps.Type = s.ServerType.Name
 	}
-	if s.Datacenter != nil && s.Datacenter.Location != nil {
-		ps.Region = s.Datacenter.Location.Name
+	// Prefer the location name (e.g. "fsn1"); fall back to the datacenter name
+	// (e.g. "fsn1-dc14") since list responses don't always hydrate the nested
+	// location — so `ls` shows a region rather than "—".
+	if s.Datacenter != nil {
+		if s.Datacenter.Location != nil && s.Datacenter.Location.Name != "" {
+			ps.Region = s.Datacenter.Location.Name
+		} else if s.Datacenter.Name != "" {
+			ps.Region = s.Datacenter.Name
+		}
 	}
 	if ip := s.PublicNet.IPv4.IP; ip != nil {
 		ps.IP = ip.String()
