@@ -122,6 +122,7 @@ func runUp(args []string) {
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
 	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
 	lock := fs.String("lock", "", "reproducibility: pin toolchain versions from this lockfile (H2)")
+	encWorkspace := fs.Bool("encrypt-workspace", false, "encrypt the workspace at rest with LUKS (ephemeral key; S-E)")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
@@ -167,7 +168,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
-			maxCost: *maxCost, lockPath: *lock,
+			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace,
 		})
 	}
 }
@@ -186,6 +187,7 @@ type hetznerUpOpts struct {
 	caps             []string
 	maxCost          float64 // budget cap (projected spend); 0 = off
 	lockPath         string  // reproducibility: pin toolchain from this lockfile (H2)
+	encryptWorkspace bool    // LUKS-encrypt the workspace at rest (S-E)
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
@@ -294,14 +296,15 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// 2) build hardened cloud-init: inject host key (race-free, S1/F1) + install
 	//    the C++ toolchain per the Execution Contract (§5)
 	ci := harden.CloudInit{
-		HostPrivKeyPEM:  host.PrivatePEM,
-		HostPubKey:      host.PublicAuthorized,
-		LoginPubKey:     login.PublicAuthorized,
-		RunUser:         opt.runUser, // unprivileged workload user (S-C)
-		IdleTTL:         opt.idleTTL, // idle poweroff dead-man's-switch (P2b)
-		Fail2ban:        true,        // SSH brute-force protection (P1)
-		AuditLog:        true,        // on-node audit trail (S-F)
-		SysctlHardening: true,        // CIS-lite kernel network baseline (P1)
+		HostPrivKeyPEM:   host.PrivatePEM,
+		HostPubKey:       host.PublicAuthorized,
+		LoginPubKey:      login.PublicAuthorized,
+		RunUser:          opt.runUser,          // unprivileged workload user (S-C)
+		IdleTTL:          opt.idleTTL,          // idle poweroff dead-man's-switch (P2b)
+		Fail2ban:         true,                 // SSH brute-force protection (P1)
+		AuditLog:         true,                 // on-node audit trail (S-F)
+		SysctlHardening:  true,                 // CIS-lite kernel network baseline (P1)
+		EncryptWorkspace: opt.encryptWorkspace, // LUKS at rest (S-E; opt-in)
 	}
 	switch opt.engine {
 	case "docker":
@@ -843,7 +846,7 @@ func envHome() string {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--lock FILE] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")

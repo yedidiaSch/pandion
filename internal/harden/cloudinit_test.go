@@ -196,6 +196,40 @@ func TestBuild_NoAuditByDefault(t *testing.T) {
 	}
 }
 
+func TestBuild_EncryptWorkspace(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM:   "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:       "ssh-ed25519 AAAA host",
+		RunUser:          "pandion-run",
+		EncryptWorkspace: true,
+	})
+	for _, want := range []string{
+		"- cryptsetup",                               // package
+		"/usr/local/bin/pandion-encfs",               // setup script written
+		"cryptsetup luksFormat",                      // LUKS format
+		"KEY=/run/pandion-luks.key",                  // key in tmpfs (RAM), not disk
+		"pandion-encfs, /home/pandion-run/workspace", // mounted at the run user's workspace
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("encrypt-workspace cloud-init missing %q\n%s", want, out)
+		}
+	}
+	// the LUKS key must NEVER be written to the persistent disk
+	if strings.Contains(out, "KEY=/var") || strings.Contains(out, "KEY=/etc") {
+		t.Error("LUKS key must live in tmpfs (/run), never on the persistent disk")
+	}
+}
+
+func TestBuild_NoEncryptByDefault(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+	})
+	if strings.Contains(out, "cryptsetup") || strings.Contains(out, "pandion-encfs") {
+		t.Errorf("encryption must be absent unless enabled (opt-in)\n%s", out)
+	}
+}
+
 func TestBuild_NoDeadmanWhenZero(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
