@@ -106,11 +106,13 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       (`block_metadata_service`, `audit_log`, `run_as`) with `defaults:` inheritance
       via `config.Effective`. `ipc_ports` intentionally NOT opened publicly — IPC
       rides the encrypted overlay (all wg0 traffic is already accepted); public
-      exposure would be a security regression. Remaining: per-node `engine`
-      (docker-in-cluster). *(this branch)*
-- [ ] **Docker engine** (`--engine=docker`, spec §2) — run the toolchain/workload
-      in a hardened container (non-root, seccomp/AppArmor, no docker.sock, read-only
-      rootfs). Only the native/host path exists today.
+      exposure would be a security regression. **P0-2 complete** — per-node `engine:
+      docker` + `container_image` now wired for clusters too. *(this branch)*
+- [x] **Docker engine** (`--engine=docker`, spec §2) — hardened container
+      (cap-drop, no-new-privileges, read-only rootfs, no docker.sock). Single-node
+      (#24) AND per-node in clusters (`engine: docker` + `container_image`, this
+      branch): docker.io installed, image pulled in the build window, workload run
+      via `dockerRun` in the durable tmux.
 - [ ] **Local target** (`--target=local`, spec §2) — run on the workstation; keep
       the `local+native` guardrail (`--allow-local-native`, Linux-only, H4).
 

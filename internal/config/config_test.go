@@ -114,6 +114,33 @@ func TestEffective_DefaultsInheritanceAndOverride(t *testing.T) {
 	}
 }
 
+func TestEffective_EngineAndContainerImage(t *testing.T) {
+	c := &Cluster{
+		Defaults: NodeCommon{Engine: "docker"},
+		Nodes: []Node{
+			{Name: "a"}, // inherits engine=docker, default container image
+			{Name: "b", NodeCommon: NodeCommon{Engine: "docker", ContainerImage: "alpine:3.20"}},
+			{Name: "c", NodeCommon: NodeCommon{Engine: "native"}}, // override to native
+		},
+	}
+	a := c.Effective(c.Nodes[0])
+	if a.Engine != "docker" || a.ContainerImage != "ubuntu:24.04" {
+		t.Fatalf("a: engine/image = %q/%q, want docker/ubuntu:24.04", a.Engine, a.ContainerImage)
+	}
+	if b := c.Effective(c.Nodes[1]); b.ContainerImage != "alpine:3.20" {
+		t.Fatalf("b container image override not applied: %q", b.ContainerImage)
+	}
+	if cc := c.Effective(c.Nodes[2]); cc.Engine != "native" {
+		t.Fatalf("c should override to native, got %q", cc.Engine)
+	}
+
+	// no engine anywhere ⇒ native (preserves existing behavior)
+	none := &Cluster{Nodes: []Node{{Name: "x"}}}
+	if e := none.Effective(none.Nodes[0]); e.Engine != "native" {
+		t.Fatalf("unset engine should default to native, got %q", e.Engine)
+	}
+}
+
 func TestEffective_EgressAllowUnionAndSecurityDefaults(t *testing.T) {
 	no := false
 	c := &Cluster{
