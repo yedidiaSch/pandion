@@ -53,50 +53,116 @@ func runSSH(args []string) {
 		os.Exit(3)
 	}
 
+	conn, cleanup := dialInfo("ssh", *id, target, *useOverlay)
+	defer cleanup()
+
+	sshArgs := append(conn.opts(), "root@"+conn.addr)
+	if cmd != "" {
+		sshArgs = append(sshArgs, cmd)
+	}
+	runClient("ssh", sshArgs)
+}
+
+// connInfo holds the pinned-connection parameters shared by ssh + cp.
+type connInfo struct {
+	addr    string
+	keyPath string
+	khPath  string
+}
+
+// opts returns the common openssh options (identity + host-key pinning).
+func (c connInfo) opts() []string {
+	return []string{
+		"-i", c.keyPath,
+		"-o", "IdentitiesOnly=yes",
+		"-o", "StrictHostKeyChecking=yes",
+		"-o", "UserKnownHostsFile=" + c.khPath,
+	}
+}
+
+// dialInfo resolves the node address, the persisted login key, and a throwaway
+// known_hosts pinning the node's host key. cmdName is used only for error prefixes.
+func dialInfo(cmdName, id string, target nodeManifest, useOverlay bool) (connInfo, func()) {
 	addr := target.IP
-	if *useOverlay {
+	if useOverlay {
 		addr = target.OverlayIP
 	}
 	if addr == "" {
-		fmt.Fprintln(os.Stderr, "ssh: node has no reachable address (try/omit --overlay)")
+		fmt.Fprintf(os.Stderr, "%s: node has no reachable address (try/omit --overlay)\n", cmdName)
 		os.Exit(3)
 	}
-
-	keyPath := filepath.Join(envHome(), ".pandion", "keys", *id, "login_ed25519")
+	keyPath := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
-		fmt.Fprintf(os.Stderr, "ssh: login key not found (%s): %v\n", keyPath, err)
+		fmt.Fprintf(os.Stderr, "%s: login key not found (%s): %v\n", cmdName, keyPath, err)
 		os.Exit(3)
 	}
-
-	// pin the node's host key via a throwaway known_hosts (MITM-proof).
 	kh, err := os.CreateTemp("", "pandion-known-hosts-*")
 	must(err)
-	defer os.Remove(kh.Name())
 	if _, err := kh.WriteString(knownHostsLine(addr, target.HostPub)); err != nil {
 		must(err)
 	}
 	kh.Close()
+	return connInfo{addr: addr, keyPath: keyPath, khPath: kh.Name()}, func() { os.Remove(kh.Name()) }
+}
 
-	sshArgs := []string{
-		"-i", keyPath,
-		"-o", "IdentitiesOnly=yes",
-		"-o", "StrictHostKeyChecking=yes",
-		"-o", "UserKnownHostsFile=" + kh.Name(),
-		"root@" + addr,
-	}
-	if cmd != "" {
-		sshArgs = append(sshArgs, cmd)
-	}
-
-	c := exec.Command("ssh", sshArgs...)
+// runClient execs an openssh-family client (ssh/scp), wiring stdio through and
+// propagating its exit code.
+func runClient(bin string, args []string) {
+	c := exec.Command(bin, args...)
 	c.Stdin, c.Stdout, c.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := c.Run(); err != nil {
 		if ee, ok := err.(*exec.ExitError); ok {
-			os.Exit(ee.ExitCode()) // propagate the remote/ssh exit code
+			os.Exit(ee.ExitCode())
 		}
-		fmt.Fprintf(os.Stderr, "ssh: %v (is the openssh client installed?)\n", err)
+		fmt.Fprintf(os.Stderr, "%s: %v (is the openssh client installed?)\n", bin, err)
 		os.Exit(1)
 	}
+}
+
+// runCP copies files to/from a node with scp, host-key pinned. A path prefixed
+// with ":" is on the node (e.g. ":/var/log/pandion/run.log").
+//
+//	pandion cp --id ID [--node NAME] [--overlay] SRC DST
+func runCP(args []string) {
+	fs := flag.NewFlagSet("cp", flag.ExitOnError)
+	id := fs.String("id", "", "cluster id (required)")
+	node := fs.String("node", "", "node name (default: the first node)")
+	useOverlay := fs.Bool("overlay", false, "use the WireGuard overlay IP")
+	_ = fs.Parse(args)
+	rest := fs.Args()
+	if *id == "" || len(rest) != 2 {
+		fmt.Fprintln(os.Stderr, "usage: pandion cp --id ID [--node NAME] SRC DST   (prefix a node path with ':')")
+		os.Exit(2)
+	}
+	src, dst := rest[0], rest[1]
+	if strings.HasPrefix(src, ":") == strings.HasPrefix(dst, ":") {
+		fmt.Fprintln(os.Stderr, "cp: exactly one of SRC/DST must be a node path (prefixed with ':')")
+		os.Exit(2)
+	}
+
+	man, err := loadManifest(*id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "cp: no manifest for %q: %v\n", *id, err)
+		os.Exit(3)
+	}
+	target, ok := pickNode(man.Nodes, *node)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "cp: node not found in cluster %q\n", *id)
+		os.Exit(3)
+	}
+	conn, cleanup := dialInfo("cp", *id, target, *useOverlay)
+	defer cleanup()
+
+	runClient("scp", append(conn.opts(), "-p", scpEndpoint(conn.addr, src), scpEndpoint(conn.addr, dst)))
+}
+
+// scpEndpoint rewrites a ":"-prefixed node path to scp's root@addr:path form;
+// a local path is returned unchanged.
+func scpEndpoint(addr, p string) string {
+	if strings.HasPrefix(p, ":") {
+		return "root@" + addr + ":" + p[1:]
+	}
+	return p
 }
 
 // pickNode returns the named node (or the first, if name is empty).
