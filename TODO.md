@@ -117,7 +117,11 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 ## P1 — security hardening the design promises (M1.x + security architecture)
 - [x] **Least-privilege run user** (S-C) — dedicated `pandion-run` user, dropped
       caps, add-back only declared `needs_caps`/`privileged_ports`. *(done: #21, #25)*
-- [ ] **Encrypted volumes at rest** (LUKS, S-E).
+- [x] **Encrypted volumes at rest** (LUKS, S-E) — opt-in (`--encrypt-workspace` /
+      `security.encrypt_volumes`): a LUKS2 volume with an EPHEMERAL tmpfs (RAM) key
+      is mounted at the run user's workspace, so synced code + build artifacts are
+      encrypted at rest and the disk yields only ciphertext (unrecoverable after
+      reboot — fine for ephemeral nodes). *(done: this branch)*
 - [x] **Cloud metadata block** (`169.254.169.254`, S-F) — unconditional egress drop
       of the metadata endpoint, placed BEFORE any egress-allow, so a compromised
       workload can't read instance credentials even if the operator opens a broad

@@ -51,6 +51,12 @@ type CloudInit struct {
 	// LOOSE reverse-path filtering (rp_filter=2) — strict (1) breaks WireGuard's
 	// policy routing.
 	SysctlHardening bool
+	// EncryptWorkspace, if set, mounts an encrypted (LUKS2) filesystem at the run
+	// user's workspace, so synced code and build artifacts are encrypted at rest
+	// (S-E). The key is generated into tmpfs (RAM) at boot and never touches the
+	// persistent disk — so a stolen/imaged disk yields only ciphertext, and the
+	// volume is intentionally unrecoverable after a reboot (fine for ephemeral nodes).
+	EncryptWorkspace bool
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
@@ -79,6 +85,9 @@ func Build(ci CloudInit) string {
 	}
 	if ci.AuditLog {
 		pkgs = append(pkgs, "auditd")
+	}
+	if ci.EncryptWorkspace {
+		pkgs = append(pkgs, "cryptsetup")
 	}
 	if len(pkgs) > 0 {
 		b.WriteString("package_update: true\n")
@@ -136,6 +145,14 @@ func Build(ci CloudInit) string {
 	if ci.SysctlHardening {
 		files = append(files, wf{"/etc/sysctl.d/99-pandion-hardening.conf", "0644", sysctlHardening()})
 		runcmds = append(runcmds, "[ sysctl, --system ]")
+	}
+
+	// encrypted workspace (S-E): set up + mount a LUKS volume at the run user's
+	// workspace. Placed AFTER useradd so the home directory exists.
+	if ci.EncryptWorkspace {
+		files = append(files, wf{"/usr/local/bin/pandion-encfs", "0755", encfsScript()})
+		runcmds = append(runcmds,
+			fmt.Sprintf("[ bash, /usr/local/bin/pandion-encfs, %s ]", workspacePath(ci.RunUser)))
 	}
 	if u := strings.TrimSpace(ci.RunUser); u != "" && u != "root" {
 		runcmds = append(runcmds,
@@ -228,6 +245,39 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv6.conf.all.accept_source_route = 0
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.log_martians = 1
+`
+}
+
+// workspacePath mirrors the CLI's workspace-dir logic: the run user's home (or
+// /root), so the encrypted mount lands where synced code + build artifacts live.
+func workspacePath(runUser string) string {
+	if runUser == "" || runUser == "root" {
+		return "/root/workspace"
+	}
+	return "/home/" + runUser + "/workspace"
+}
+
+// encfsScript sets up a LUKS2 volume backed by a file and mounts it at $1. The
+// key lives ONLY in tmpfs (/run, RAM) — never on the persistent disk — so the
+// data is encrypted at rest and the volume is deliberately unrecoverable after a
+// reboot. Idempotent. chowns the mount to the workspace's owner directory user.
+func encfsScript() string {
+	return `#!/bin/sh
+set -e
+WORKDIR="$1"
+KEY=/run/pandion-luks.key   # tmpfs (RAM) — never persisted to disk
+IMG=/var/lib/pandion-enc.img
+[ -e /dev/mapper/pandion_enc ] && exit 0   # already set up
+head -c 64 /dev/urandom > "$KEY"; chmod 600 "$KEY"
+fallocate -l 2G "$IMG" 2>/dev/null || dd if=/dev/zero of="$IMG" bs=1M count=2048
+cryptsetup luksFormat --batch-mode --type luks2 --key-file "$KEY" "$IMG"
+cryptsetup luksOpen --key-file "$KEY" "$IMG" pandion_enc
+mkfs.ext4 -q /dev/mapper/pandion_enc
+mkdir -p "$WORKDIR"
+mount /dev/mapper/pandion_enc "$WORKDIR"
+# match ownership to the parent (home) so the run user can write to it
+owner=$(stat -c '%U' "$(dirname "$WORKDIR")" 2>/dev/null || echo root)
+chown "$owner:$owner" "$WORKDIR" 2>/dev/null || true
 `
 }
 
