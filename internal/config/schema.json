@@ -115,9 +115,10 @@
       "description": "Fields valid at both defaults and per-node level. Composed via allOf; closedness enforced at use sites with unevaluatedProperties.",
       "properties": {
         "target": { "enum": ["cloud", "local"], "default": "cloud" },
-        "engine": { "enum": ["docker", "native"], "default": "docker" },
+        "engine": { "enum": ["docker", "native"], "default": "native" },
         "size": { "type": "string" },
         "image": { "type": "string" },
+        "container_image": { "type": "string" },
         "ttl": {
           "oneOf": [
             { "type": "string", "pattern": "^[0-9]+(s|m|h)$" },

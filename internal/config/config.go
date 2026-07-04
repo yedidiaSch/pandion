@@ -38,14 +38,15 @@ type Provider struct {
 
 // NodeCommon holds fields valid at both defaults and per-node level.
 type NodeCommon struct {
-	Target    string     `yaml:"target"`
-	Engine    string     `yaml:"engine"`
-	Size      string     `yaml:"size"`
-	Image     string     `yaml:"image"`
-	TTL       string     `yaml:"ttl"`
-	Toolchain *Toolchain `yaml:"toolchain"`
-	Sync      *Sync      `yaml:"sync"`
-	Sec       *Security  `yaml:"security"`
+	Target         string     `yaml:"target"`
+	Engine         string     `yaml:"engine"`
+	Size           string     `yaml:"size"`
+	Image          string     `yaml:"image"`
+	ContainerImage string     `yaml:"container_image"` // for engine=docker
+	TTL            string     `yaml:"ttl"`
+	Toolchain      *Toolchain `yaml:"toolchain"`
+	Sync           *Sync      `yaml:"sync"`
+	Sec            *Security  `yaml:"security"`
 }
 
 // Toolchain is the set of packages installed on a node.
@@ -108,6 +109,10 @@ type Effective struct {
 	// EncryptVolumes defaults OFF (opt-in) — LUKS makes the volume unrecoverable
 	// after reboot, so it's only enabled when explicitly requested.
 	EncryptVolumes bool
+	// Engine is "native" (default) or "docker"; ContainerImage is the image for
+	// engine=docker (default "ubuntu:24.04").
+	Engine         string
+	ContainerImage string
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -127,6 +132,14 @@ func (c *Cluster) Effective(n Node) Effective {
 		BlockMetadata:  c.secBool(n, func(s *Security) *bool { return s.BlockMetadataService }, true),
 		AuditLog:       c.secBool(n, func(s *Security) *bool { return s.AuditLog }, true),
 		EncryptVolumes: c.secBool(n, func(s *Security) *bool { return s.EncryptVolumes }, false),
+		Engine:         pick(n.Engine, c.Defaults.Engine),
+		ContainerImage: pick(n.ContainerImage, c.Defaults.ContainerImage),
+	}
+	if e.Engine == "" {
+		e.Engine = "native" // unset ⇒ native (host), preserving existing behavior
+	}
+	if e.Engine == "docker" && e.ContainerImage == "" {
+		e.ContainerImage = "ubuntu:24.04"
 	}
 	switch {
 	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
