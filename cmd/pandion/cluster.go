@@ -174,20 +174,22 @@ func orRoot(u string) string {
 
 // nodePlan holds the locally-generated identity for one cluster node.
 type nodePlan struct {
-	name        string
-	host        *sshkeys.KeyPair // per-node SSH host key (pinned)
-	wg          overlay.Keypair  // per-node WireGuard key
-	overlayIP   string           // e.g. 10.99.0.1
-	run         string
-	ip          string    // public IP, filled after provisioning
-	sync        *syncSpec // workspace to push + optional remote build
-	runUser     string    // unprivileged user the workload runs as (S-C)
-	workdir     string    // remote workspace dir (cwd for run), if synced
-	caps        []string  // capabilities to grant back (needs_caps/priv ports, P1b)
-	pkgs        []string  // resolved package list (for the reproducibility lockfile, H2)
-	image       string    // node image (recorded in the lockfile)
-	egressAllow []string  // per-node outbound allowlist (cluster.yaml egress_allow / security)
-	blockMeta   bool      // block the cloud metadata endpoint (security.block_metadata_service)
+	name         string
+	host         *sshkeys.KeyPair // per-node SSH host key (pinned)
+	wg           overlay.Keypair  // per-node WireGuard key
+	overlayIP    string           // e.g. 10.99.0.1
+	run          string
+	ip           string    // public IP, filled after provisioning
+	sync         *syncSpec // workspace to push + optional remote build
+	runUser      string    // unprivileged user the workload runs as (S-C)
+	workdir      string    // remote workspace dir (cwd for run), if synced
+	caps         []string  // capabilities to grant back (needs_caps/priv ports, P1b)
+	pkgs         []string  // resolved package list (for the reproducibility lockfile, H2)
+	image        string    // node image (recorded in the lockfile)
+	egressAllow  []string  // per-node outbound allowlist (cluster.yaml egress_allow / security)
+	blockMeta    bool      // block the cloud metadata endpoint (security.block_metadata_service)
+	engine       string    // "native" | "docker"
+	containerImg string    // container image for engine=docker
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -378,9 +380,14 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		// apply cluster.yaml per-node settings (P0-2), with defaults inheritance.
 		eff := cl.Effective(n)
-		pkgs := eff.Packages
-		if len(pkgs) == 0 {
-			pkgs = harden.DefaultToolchain() // C++ default when none specified
+		var pkgs []string
+		if eff.Engine == "docker" {
+			pkgs = []string{"docker.io"} // the container image provides the toolchain
+		} else {
+			pkgs = eff.Packages
+			if len(pkgs) == 0 {
+				pkgs = harden.DefaultToolchain() // C++ default when none specified
+			}
 		}
 		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard", "tmux") // always needed (tmux: durable run + attach)
 		if pinLock != nil {
@@ -398,7 +405,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
 			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image,
-			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata}
+			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata,
+			engine: eff.Engine, containerImg: eff.ContainerImage}
 
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
@@ -477,15 +485,45 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 	// sync workspaces + remote build, in the egress build-window (before the
 	// firewall lockdown so builds can fetch dependencies). (C5/H1/H3, P0-1)
+	// docker nodes ALSO pull their image here, while egress is still open.
 	for _, p := range plans {
+		fail := func(err error) {
+			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
+			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+		}
+		if p.engine == "docker" {
+			fmt.Printf("[%s] pulling image %s...\n", p.name, p.containerImg)
+			if out, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
+				"docker pull "+shellQuote(p.containerImg)); err != nil {
+				fail(fmt.Errorf("docker pull failed: %v\n%s", err, out))
+				return
+			}
+			if p.sync != nil {
+				fmt.Printf("[%s] workspace sync...\n", p.name)
+				wd, err := syncFiles(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, "root")
+				if err != nil {
+					fail(err)
+					return
+				}
+				p.workdir = wd
+				if b := strings.TrimSpace(p.sync.Build); b != "" {
+					fmt.Printf("[%s] building in container (%s)...\n", p.name, p.containerImg)
+					if out, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
+						dockerRun(p.containerImg, wd, b, nil)); err != nil {
+						fail(fmt.Errorf("container build failed: %v\n%s", err, out))
+						return
+					}
+				}
+			}
+			continue
+		}
 		if p.sync == nil {
 			continue
 		}
 		fmt.Printf("[%s] workspace sync...\n", p.name)
 		wd, err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, p.runUser)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
-			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+			fail(err)
 			return
 		}
 		p.workdir = wd
@@ -669,9 +707,16 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 	}
 
 	// launch each command in a detached tmux session (survives Ctrl+C) teeing to
-	// the node's run log, THEN multiplex by tailing those logs.
+	// the node's run log, THEN multiplex by tailing those logs. docker nodes run
+	// the workload in a hardened container; native nodes run as the run user.
 	for _, p := range runnable {
-		if err := launchRun(ctx, p.ip+":22", login.Signer, p.host.Public, runAs(p.runUser, p.workdir, p.run, p.caps)); err != nil {
+		var runCmd string
+		if p.engine == "docker" {
+			runCmd = dockerRun(p.containerImg, p.workdir, p.run, p.caps)
+		} else {
+			runCmd = runAs(p.runUser, p.workdir, p.run, p.caps)
+		}
+		if err := launchRun(ctx, p.ip+":22", login.Signer, p.host.Public, runCmd); err != nil {
 			fmt.Fprintf(os.Stderr, "launch on %s failed: %v\n", p.name, err)
 			return
 		}
