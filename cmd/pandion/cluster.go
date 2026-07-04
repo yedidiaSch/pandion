@@ -402,16 +402,17 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
-			HostPrivKeyPEM:  host.PrivatePEM,
-			HostPubKey:      host.PublicAuthorized,
-			LoginPubKey:     login.PublicAuthorized,
-			Packages:        pkgs,
-			WGConfig:        overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
-			RunUser:         runUser,
-			IdleTTL:         windows[i],
-			Fail2ban:        true,         // SSH brute-force protection (P1)
-			AuditLog:        eff.AuditLog, // on-node audit trail (S-F; security.audit_log)
-			SysctlHardening: true,         // CIS-lite kernel network baseline (P1)
+			HostPrivKeyPEM:   host.PrivatePEM,
+			HostPubKey:       host.PublicAuthorized,
+			LoginPubKey:      login.PublicAuthorized,
+			Packages:         pkgs,
+			WGConfig:         overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
+			RunUser:          runUser,
+			IdleTTL:          windows[i],
+			Fail2ban:         true,               // SSH brute-force protection (P1)
+			AuditLog:         eff.AuditLog,       // on-node audit trail (S-F; security.audit_log)
+			SysctlHardening:  true,               // CIS-lite kernel network baseline (P1)
+			EncryptWorkspace: eff.EncryptVolumes, // LUKS at rest (S-E; security.encrypt_volumes)
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,

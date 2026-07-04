@@ -105,6 +105,9 @@ type Effective struct {
 	// false explicitly opts out.
 	BlockMetadata bool // block the cloud metadata endpoint (S-F)
 	AuditLog      bool // install auditd baseline logging (S-F)
+	// EncryptVolumes defaults OFF (opt-in) — LUKS makes the volume unrecoverable
+	// after reboot, so it's only enabled when explicitly requested.
+	EncryptVolumes bool
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -116,13 +119,14 @@ func (c *Cluster) Effective(n Node) Effective {
 		return def
 	}
 	e := Effective{
-		Size:          pick(n.Size, c.Defaults.Size),
-		Image:         pick(n.Image, c.Defaults.Image),
-		Region:        c.Provider.Region,
-		TTLRaw:        pick(n.TTL, c.Defaults.TTL),
-		EgressAllow:   c.egressAllow(n),
-		BlockMetadata: c.secBool(n, func(s *Security) *bool { return s.BlockMetadataService }, true),
-		AuditLog:      c.secBool(n, func(s *Security) *bool { return s.AuditLog }, true),
+		Size:           pick(n.Size, c.Defaults.Size),
+		Image:          pick(n.Image, c.Defaults.Image),
+		Region:         c.Provider.Region,
+		TTLRaw:         pick(n.TTL, c.Defaults.TTL),
+		EgressAllow:    c.egressAllow(n),
+		BlockMetadata:  c.secBool(n, func(s *Security) *bool { return s.BlockMetadataService }, true),
+		AuditLog:       c.secBool(n, func(s *Security) *bool { return s.AuditLog }, true),
+		EncryptVolumes: c.secBool(n, func(s *Security) *bool { return s.EncryptVolumes }, false),
 	}
 	switch {
 	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
