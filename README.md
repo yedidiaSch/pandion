@@ -6,12 +6,13 @@
 
 Pandion is a single-binary CLI that provisions, **security-hardens**, and orchestrates
 ephemeral remote dev/test environments for C++ and distributed-IPC workloads
-(ZeroMQ, MQTT, …) on your own cloud account. No backend. No agents. No secrets leave your machine.
+(ZeroMQ, MQTT, …) on your own **Hetzner or DigitalOcean** account. No backend. No agents.
+No secrets leave your machine.
 
 [![CI](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml/badge.svg)](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yedidiaSch/pandion?sort=semver)](https://github.com/yedidiaSch/pandion/releases)
 [![Go](https://img.shields.io/github/go-mod/go-version/yedidiaSch/pandion)](go.mod)
-[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](LICENSE)
 [![Platforms](https://img.shields.io/badge/binaries-linux%20%7C%20macOS%20%7C%20windows-informational)](#platform-support)
 
 [Quickstart](#-quickstart) · [Features](#-features) · [Security](#-security-first) · [How it works](#-how-it-works) · [Commands](#-command-reference) · [Roadmap](#-project-status)
@@ -70,15 +71,16 @@ that is secure by default and leaves nothing behind.**
 | | |
 |---|---|
 | 🚀 **One-command clusters** | `cluster.yaml` → concurrent provisioning + a synchronization **barrier** (all nodes ready before any command runs) |
-| 🔐 **SSH host-key pinning** | Keys are generated locally and injected via cloud-init — **MITM/TOFU impossible**, never `StrictHostKeyChecking=no` |
-| 🧱 **Default-deny firewall** | nftables egress lockdown (exfiltration-proof) with a build-window for the toolchain fetch |
-| 🕸️ **WireGuard overlay + mesh** | Encrypted management + IPC plane; single-node or full node-to-node mesh |
+| ☁️ **Two providers** | **Hetzner** and **DigitalOcean** behind one seam (+ an offline `mock`); spec-based size discovery, first-class tags, exact live pricing |
+| 🔐 **Hardened by default** | SSH host-key pinning, key-only auth, default-deny egress, WireGuard overlay, **cloud-edge firewall**, metadata block, fail2ban, auditd, sysctl baseline, least-privilege run user, LUKS-at-rest — see [Security](#-security-first) |
 | 🛡️ **Public deny-all** | Lockout-safe `pandion lockdown`: SSH becomes overlay-only, public scan sees just the WG port |
 | 🧭 **Service discovery** | `$PANDION_<NODE>_IP` injected into every node — no hardcoded IPs, IPC rides the overlay |
-| 📺 **Multiplexed output** | Color-coded, per-node-prefixed live streams, tee'd to per-node log files |
-| ♻️ **No-leak lifecycle** | Journaled state, tag-based reconcile, idempotent teardown, Ctrl+C auto-rollback / detach-not-destroy |
-| 🧰 **C++ toolchain, ready** | `gcc`/`clang`/`cmake`/`gdb`/`tmux` installed and verified before your command runs |
-| 🧪 **Offline by default** | A `mock` provider runs the whole flow with no cloud and no cost — the CI backbone |
+| 📺 **Durable runs + attach** | Workloads run in tmux; `Ctrl+C` **detaches** without killing them, `pandion attach` reconnects to the live multiplexed streams |
+| 💸 **Cost-aware** | `ls`/`status` live cost, `--dry-run` cost preview, `--max-cost` budget cap, `reap` orphan sweep |
+| 🧪 **Reproducible** | Toolchain-version lockfile (`--lock`); **keyless-cosign-signed** releases + SBOMs |
+| ♻️ **No-leak lifecycle** | Journaled state, tag-based reconcile, idempotent verified teardown, Ctrl+C auto-rollback |
+| 🧰 **Native or Docker** | Polyglot toolchain on the host (`pandion-run`) or a hardened container — single node and per-node in clusters |
+| 🔧 **Operator tooling** | `pandion ssh` / `pandion cp` (host-key-pinned), shell completion, offline `mock` provider |
 
 ---
 
@@ -123,16 +125,18 @@ sha256sum -c checksums.txt --ignore-missing   # verifies the file you downloaded
 
 **From source** (Go 1.22+):
 ```bash
-go install github.com/pandion/pandion/cmd/pandion@latest
+go install github.com/yedidiaSch/pandion/cmd/pandion@latest
 ```
 
 ---
 
 ## 🚀 Quickstart
 
-> **Prerequisite:** a project-scoped [Hetzner Cloud](https://console.hetzner.cloud) API token.
+> **Prerequisite:** a project-scoped [Hetzner Cloud](https://console.hetzner.cloud) API token
+> (or a [DigitalOcean](https://cloud.digitalocean.com) token for `--provider=digitalocean`).
 > ```bash
-> export HCLOUD_TOKEN=your-token     # a leading space keeps it out of shell history
+> export HCLOUD_TOKEN=your-token           # a leading space keeps it out of shell history
+> # export DIGITALOCEAN_TOKEN=your-token   # for --provider=digitalocean
 > ```
 
 **Try it with zero cost first** — the `mock` provider runs the full lifecycle offline:
@@ -182,10 +186,15 @@ time** — there is no window in which a fresh node is exposed.
 | **SSH host-key pinning** | Pandion generates the host key, so it *knows* the fingerprint and pins it — MITM is rejected |
 | **Key-only, root-scoped access** | Login key registered with the provider; password auth off |
 | **Default-deny egress** | nftables output lockdown after the toolchain fetch — a compromised workload can't phone home |
+| **Cloud-metadata block** | Egress to `169.254.169.254` dropped unconditionally — instance credentials can't be read even under a broad allowlist |
 | **WireGuard overlay** | All management + IPC on an encrypted plane; SSH can be bound to it entirely |
 | **Public deny-all** | `pandion lockdown` removes public SSH after **verifying** overlay access — you can't lock yourself out |
-| **No-secret telemetry** | Zero telemetry. Tokens/keys live only on your machine (never in remote config, argv, or logs) |
-| **Ephemeral by default** | Fast create/destroy denies attackers persistence; teardown is verified and leak-free |
+| **Cloud-edge firewall** | A provider firewall (SSH+WG+ICMP inbound only) in *front* of the host nftables; removed on teardown (no leak) |
+| **Least privilege** | Workloads run as unprivileged `pandion-run` (or a hardened container); only declared capabilities added back |
+| **fail2ban · auditd · sysctl** | SSH brute-force protection, an on-node audit trail, and a CIS-lite kernel network baseline — on by default |
+| **LUKS-at-rest** | Opt-in `--encrypt-workspace`: encrypted workspace with an ephemeral RAM key — the disk yields only ciphertext |
+| **Idle dead-man's-switch** | An abandoned node powers itself off (no SSH for the TTL window) |
+| **Signed & no telemetry** | Keyless-cosign-signed releases + SBOMs. Zero telemetry; tokens/keys live only on your machine |
 
 Design details, threat model, and the record of **9 findings that only surfaced against the
 live cloud API** are documented in the companion design set (security architecture + risk
@@ -199,7 +208,7 @@ Pandion is a **stateful controller that spends real money** — so it's built ar
 state, idempotency, and reconciliation, not fire-and-forget scripts.
 
 ```
-        your machine                                   Hetzner (your account)
+        your machine                                   cloud (your account)
   ┌───────────────────────┐                        ┌──────────────────────────┐
   │  pandion (one binary) │                        │   node: broker (Ubuntu)  │
   │                       │   1. CreateServer +     │   • pinned host key      │
@@ -208,7 +217,7 @@ state, idempotency, and reconciliation, not fire-and-forget scripts.
   │   + reconcile) │      │   2. pinned SSH         │           ▲              │
   │                │      │◀─── (over overlay) ────▶│           │ WireGuard    │
   │  provider ◀────┘      │                        │           ▼   mesh       │
-  │  (hetzner | mock)     │   3. wg set peers,      │   node: worker (Ubuntu)  │
+  │  (hetzner|do|mock)    │   3. wg set peers,      │   node: worker (Ubuntu)  │
   │                       │      inject $PANDION_*  │   • wg0  10.99.0.2        │
   │  journaled state ─────┼── tag-based reconcile ─▶│   • $PANDION_BROKER_IP   │
   └───────────────────────┘   (source of truth)    └──────────────────────────┘
@@ -218,8 +227,8 @@ state, idempotency, and reconciliation, not fire-and-forget scripts.
 before/after every transition so any command is resumable. The provider (queried by tag) is the
 source of truth for teardown — local state is only a cache.
 
-Under the hood: a provider seam (`hetzner` + an offline `mock`), a concurrent orchestrator with a
-readiness **barrier**, and a hardening pipeline of small, unit-tested packages
+Under the hood: a provider seam (`hetzner`, `digitalocean`, and an offline `mock`), a concurrent
+orchestrator with a readiness **barrier**, and a hardening pipeline of small, unit-tested packages
 (`harden` → `overlay` → `firewall` → `discovery` → `stream`).
 
 ---
@@ -228,15 +237,23 @@ readiness **barrier**, and a hardening pipeline of small, unit-tested packages
 
 | Command | What it does |
 |---|---|
-| `pandion up [--provider mock\|hetzner] [--id ID] [flags] -- <cmd>` | Provision + harden + run a **single** node |
-| `pandion up --provider hetzner -f cluster.yaml --id ID` | Provision a **multi-node** cluster + mesh |
+| `pandion up [--provider mock\|hetzner\|digitalocean] [--id ID] [flags] -- <cmd>` | Provision + harden + run a **single** node |
+| `pandion up --provider … -f cluster.yaml --id ID` | Provision a **multi-node** cluster + mesh |
+| `pandion attach --id ID` | Reconnect to a running cluster's live multiplexed streams |
+| `pandion ssh --id ID [--node N] [--overlay] [-- CMD]` | Host-key-pinned SSH into a node |
+| `pandion cp --id ID [--node N] SRC DST` | scp to/from a node (prefix a node path with `:`) |
+| `pandion ls` / `status [--json]` | List live clusters/nodes with uptime + **live cost** |
+| `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
 | `pandion down [--provider …] --id ID` | Idempotent, verified teardown (reconciles by tag) |
 | `pandion validate [-f cluster.yaml]` | Schema-check a topology (exit 2 with a precise pointer on error) |
 | `pandion lockdown --id ID` | Lockout-safe public deny-all (SSH over the overlay only) |
+| `pandion completion bash\|zsh\|fish` | Shell completion script |
 | `pandion demo` · `pandion version` | Offline mock lifecycle · version |
 
-Selected `up` flags: `--no-toolchain`, `--no-firewall`, `--no-overlay`,
-`--egress-allow <cidr,...>`. Respects `NO_COLOR`.
+Selected `up` flags: `--dry-run` (preview plan + cost), `--max-cost N` (budget cap),
+`--lock FILE` (pin toolchain versions), `--encrypt-workspace` (LUKS-at-rest),
+`--engine docker`, `--no-toolchain`, `--no-firewall`, `--no-overlay`,
+`--egress-allow <cidr,...>`, `--ttl DUR` / `--no-ttl`. Respects `NO_COLOR`.
 
 ---
 
@@ -247,21 +264,21 @@ Selected `up` flags: `--no-toolchain`, `--no-firewall`, `--no-overlay`,
 | **CLI on Linux** | ✅ Built **and** e2e-validated on real cloud |
 | **CLI on macOS / Windows** | ⚙️ Cross-compiled & released, **not yet validated** (see roadmap **M7**). Pure-Go core; the operator-side overlay join uses `wg-quick` (Linux/macOS) or the WireGuard app (Windows) |
 | **Provisioned nodes** | 🐧 **Ubuntu Linux** (by design — cloud-init/apt/nftables/systemd) |
-| **Providers** | Hetzner Cloud (a `mock` provider backs offline testing; DigitalOcean is planned) |
+| **Providers** | **Hetzner Cloud** and **DigitalOcean** (a `mock` provider backs offline testing; AWS/GCP deferred) |
 
 ---
 
 ## 📈 Project status
 
-**v0.1.0 — MVP.** The full core of the design is implemented and validated on real cloud:
-hardened single nodes and multi-node IPC clusters, WireGuard mesh, service discovery,
-multiplexed output, public deny-all, and no-leak teardown. Backed by offline CI and self-cleaning
-real-cloud e2e scripts (`scripts/`).
+**v0.3.0 — MVP complete and exceeded.** Hardened single nodes and multi-node IPC clusters on
+**Hetzner and DigitalOcean**, native or containerized, with the full security posture, no-leak
+lifecycle, live cost + budget controls, durable-run/`attach`, reproducibility, and operator
+tooling (`ssh`/`cp`) — every cloud-facing capability proven on real cloud by a self-cleaning e2e
+script (`scripts/`, see [`scripts/README.md`](scripts/README.md)). Release artifacts are
+keyless-cosign-signed. See [`CHANGELOG.md`](CHANGELOG.md) for the full history.
 
-**On the roadmap:**
-`pandion attach` · macOS/Windows validation (M7) · LUKS-at-rest + least-privilege run user ·
-native engine · DigitalOcean provider · live cost tracking + TTL dead-man's-switch ·
-signed APT/YUM repos.
+**Still ahead:** macOS/Windows validation (M7) · off-node auditd log shipping · OS-keychain
+secret store · structured audit log (`log/slog`) · more providers (AWS/GCP) — see [`TODO.md`](TODO.md).
 
 ---
 
@@ -271,16 +288,17 @@ signed APT/YUM repos.
 make ci                       # gofmt + go vet + go test -race + build   (offline, no cloud)
 go run ./cmd/pandion demo     # exercise the full lifecycle on the mock provider
 
-# real-cloud e2e (a few cents each, self-cleaning) — needs HCLOUD_TOKEN
-scripts/e2e_m32b.sh           # 2-node cluster + WireGuard mesh
-scripts/e2e_m33.sh            # service discovery + IPC over the overlay
-scripts/e2e_m34.sh            # multiplexed output + per-node logs
+# real-cloud e2e (self-cleaning; needs HCLOUD_TOKEN). Full index + costs:
+#   scripts/README.md
+scripts/e2e_ls_cost.sh        # ls/cost, --dry-run, --max-cost (mostly FREE)
+scripts/e2e_network_hardening.sh   # cloud firewall + sysctl + no-leak teardown
 ```
 
 Releases are automated by [GoReleaser](https://goreleaser.com): push a semver tag and the
-pipeline builds every platform, generates checksums + SBOMs, and publishes a GitHub Release.
+pipeline builds every platform, generates checksums + SBOMs, **keyless-cosign-signs** the
+checksums, and publishes a GitHub Release.
 ```bash
-git tag v0.1.1 && git push origin v0.1.1
+git tag v0.3.1 && git push origin v0.3.1
 ```
 
 ---
