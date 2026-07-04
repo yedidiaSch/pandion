@@ -60,6 +60,8 @@ func main() {
 		runReap(os.Args[2:])
 	case "attach":
 		runAttach(os.Args[2:])
+	case "ssh":
+		runSSH(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
 	case "completion":
@@ -847,6 +849,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
+	fmt.Fprintln(os.Stderr, "  pandion ssh --id ID [--node NAME] [--overlay] [-- CMD]   (SSH into a node, host-key pinned)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
