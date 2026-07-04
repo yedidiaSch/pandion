@@ -33,3 +33,12 @@ func TestPickNode(t *testing.T) {
 		t.Error("no nodes should not be found")
 	}
 }
+
+func TestScpEndpoint(t *testing.T) {
+	if got := scpEndpoint("1.2.3.4", ":/var/log/pandion/run.log"); got != "root@1.2.3.4:/var/log/pandion/run.log" {
+		t.Fatalf("remote path = %q", got)
+	}
+	if got := scpEndpoint("1.2.3.4", "./local.txt"); got != "./local.txt" {
+		t.Fatalf("local path should be unchanged, got %q", got)
+	}
+}
