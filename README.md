@@ -138,6 +138,12 @@ go install github.com/yedidiaSch/pandion/cmd/pandion@latest
 > export HCLOUD_TOKEN=your-token           # a leading space keeps it out of shell history
 > # export DIGITALOCEAN_TOKEN=your-token   # for --provider=digitalocean
 > ```
+> Or store it once in your **OS keychain** (macOS Keychain / libsecret / Windows
+> Credential Manager) and skip the env var — the token is never passed on the command line:
+> ```bash
+> pandion login --provider hetzner        # prompts (hidden), or reads $HCLOUD_TOKEN if set
+> ```
+> Resolution order is **env var first, then keychain** (so scripts/CI are unchanged).
 
 **Try it with zero cost first** — the `mock` provider runs the full lifecycle offline:
 ```bash
