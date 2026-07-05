@@ -195,6 +195,15 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       added. **Pending live e2e** — the hardened-provision paths are unverified until
       each account's payment method clears and a token is available. Likely first-run
       tweaks: image labels, Scaleway commercial-type/volume pairing, zone defaults.
+- [~] **IDE Tier-2 — distributed debug-attach over the overlay** (the deliberate moat bet).
+      *Implemented:* `pandion debug` generates a VS Code `cppdbg` attach config that drives a
+      remote `gdb` through the pinned SSH pipe (`pipeTransport`) at the node's overlay IP —
+      no new port/gdbserver/agent, nothing installed on the node (root login bypasses ptrace).
+      Merges into `./.vscode/launch.json` (JSONC-tolerant, dedupes, preserves other configs).
+      Unit-tested; `scripts/e2e_debug.sh` proves the transport (remote gdb attaches to a real
+      workload PID over the pinned pipe and prints a backtrace). **Pending live e2e run** +
+      a GUI smoke test. Tier-1 (`pandion code`, Remote-SSH) already shipped. Next: `--lang`
+      for Python (debugpy) / Go (delve), and a multi-node compound "attach to all" config.
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.

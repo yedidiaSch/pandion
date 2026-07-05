@@ -7,6 +7,16 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **IDE Tier-2 — distributed debug-attach over the overlay (`pandion debug`)** — attach
+  your **local** VS Code debugger to a **running process on a remote node**, across the
+  mesh. Generates a `cppdbg` *attach* config that drives a remote `gdb` through the same
+  host-key-pinned SSH pipe Pandion already uses (VS Code `pipeTransport`), pointed at the
+  node's overlay IP — no new port, no `gdbserver`, no agent, and nothing installed on the
+  node (`gdb` ships in the toolchain; root login bypasses ptrace limits). Merges into the
+  project's `./.vscode/launch.json` (JSONC-tolerant, dedupes by name, preserves other
+  configs) so F5 just works; `--public`, `--pid`, `--program`, `--print` flags. Backed by
+  `scripts/e2e_debug.sh`, which proves the transport by driving remote `gdb` over the pinned
+  pipe to a real workload PID and pulling a backtrace.
 - **Three more providers — Vultr, Linode/Akamai and Scaleway** — behind the same
   `Provider` seam, each with spec-based size discovery, first-class tags, an exact
   live `Pricer`, and no-leak teardown (C4). Select with `--provider=vultr`,
