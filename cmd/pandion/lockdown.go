@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/firewall"
 	"github.com/yedidiaSch/pandion/internal/overlay"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
@@ -31,6 +32,7 @@ func runLockdown(args []string) {
 		fmt.Fprintln(os.Stderr, "lockdown: --id is required")
 		os.Exit(2)
 	}
+	initAudit()
 
 	man, err := loadManifest(*id)
 	if err != nil {
@@ -92,6 +94,7 @@ func runLockdown(args []string) {
 		fmt.Printf("  %s: public SSH removed (overlay-only)\n", n.Name)
 	}
 
+	audit.Event("lockdown", "id", *id, "nodes", len(man.Nodes))
 	fmt.Println("----------------------------------------------------------------")
 	fmt.Printf("cluster %q locked down: public ingress = deny-all; SSH only over the overlay.\n", *id)
 	fmt.Println("a public scan now sees only the WireGuard port. Reach nodes at their 10.99.0.x IPs.")

@@ -18,6 +18,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/firewall"
 	"github.com/yedidiaSch/pandion/internal/harden"
@@ -136,6 +137,8 @@ func runUp(args []string) {
 	p, err := newProvider(*prov)
 	must(err)
 	o := orchestrator.New(p, mustStore())
+	initAudit()
+	audit.Event("up.start", "provider", p.Name(), "id", *id, "cluster_file", *file)
 
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
@@ -360,6 +363,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	c, err := o.Up(ctx, id, node, userData, login.PublicAuthorized)
 	must(err)
 	ip := c.Nodes[0].IP
+	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
 	fmt.Printf("UP (hetzner): cluster %q node %q running at %s (host fp %s)\n",
 		c.ID, node, ip, host.Fingerprint())
 
@@ -535,6 +539,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	fmt.Println("----------------------------------------------------------------")
 	tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
 
+	audit.Event("up.complete", "id", id, "node", node, "provider", prov, "ip", ip)
 	fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
 }
 
@@ -577,6 +582,7 @@ func runReap(args []string) {
 	p, err := newProvider(*prov)
 	must(err)
 	o := orchestrator.New(p, mustStore())
+	initAudit()
 
 	plan, err := o.ReapPlan(context.Background(), *olderThan)
 	must(err)
@@ -600,6 +606,7 @@ func runReap(args []string) {
 		}
 	}
 	n, err := o.Reap(context.Background(), plan)
+	audit.Event("reap", "provider", p.Name(), "clusters", n, "planned", len(plan))
 	fmt.Printf("reaped %d/%d cluster(s).\n", n, len(plan))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "reap: %v\n", err)
@@ -825,6 +832,7 @@ func runDown(args []string) {
 	p, err := newProvider(*prov)
 	must(err)
 	o := orchestrator.New(p, mustStore())
+	initAudit()
 	ctx := context.Background()
 
 	// preview against the provider (the reconcile source of truth).
@@ -852,7 +860,9 @@ func runDown(args []string) {
 			return
 		}
 	}
+	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
 	must(o.Down(ctx, *id))
+	audit.Event("down.complete", "id", *id, "provider", p.Name())
 	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
 }
 
@@ -881,6 +891,23 @@ func mustStore() *state.Store {
 func envHome() string {
 	h, _ := os.UserHomeDir()
 	return h
+}
+
+// initAudit wires the structured infra-action trail: always appended to
+// ~/.pandion/logs/audit.jsonl, and also echoed to stderr when PANDION_LOG is set
+// (L3). Called by the commands that touch infrastructure.
+func initAudit() {
+	dir := filepath.Join(envHome(), ".pandion", "logs")
+	_ = os.MkdirAll(dir, 0o700)
+	var w io.Writer = io.Discard
+	if f, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
+		w = f // intentionally kept open for the process lifetime (a short-lived CLI)
+	}
+	level, verbose := audit.LevelFromEnv()
+	if verbose {
+		w = io.MultiWriter(w, os.Stderr)
+	}
+	audit.Init(w, level)
 }
 
 func usage() {
