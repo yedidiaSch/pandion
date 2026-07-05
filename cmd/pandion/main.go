@@ -72,7 +72,7 @@ func main() {
 	case "code":
 		runCode(os.Args[2:])
 	case "debug":
-		runDebug(os.Args[2:])
+		runDebugDispatch(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
 	case "completion":
@@ -913,6 +913,7 @@ func runDown(args []string) {
 	}
 	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
 	must(o.Down(ctx, *id))
+	reapShares(*id) // revoke + delete any outstanding debug shares (no leak)
 	audit.Event("down.complete", "id", *id, "provider", p.Name())
 	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
 }
@@ -973,6 +974,9 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
 	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")
 	fmt.Fprintln(os.Stderr, "  pandion debug --id ID [--node NAME] [--public] [--pid N] [--print]   (attach your local debugger to a remote process over the overlay)")
+	fmt.Fprintln(os.Stderr, "  pandion debug share --id ID [--node NAME] [--expires 2h]   (grant a teammate a scoped, expiring remote-debug token)")
+	fmt.Fprintln(os.Stderr, "  pandion debug join <token>   (accept a shared debug grant: scoped overlay peer + launch.json)")
+	fmt.Fprintln(os.Stderr, "  pandion debug unshare --id ID [--share SID | --all]   (revoke a shared debug grant)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")

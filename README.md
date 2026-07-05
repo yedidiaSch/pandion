@@ -82,6 +82,7 @@ that is secure by default and leaves nothing behind.**
 | 🧰 **Native or Docker** | Polyglot toolchain on the host (`pandion-run`) or a hardened container — single node and per-node in clusters |
 | 🔧 **Operator tooling** | `pandion ssh` / `pandion cp` (host-key-pinned), shell completion, offline `mock` provider |
 | 🐞 **IDE debug-attach** | `pandion debug` attaches your **local** VS Code debugger to a **remote** process over the overlay — remote `gdb` driven through the pinned SSH pipe (no new port, no agent) |
+| 🤝 **Shared debugging** | `pandion debug share` sends a teammate **one token** for a scoped, expiring, revocable remote-debug attach — a root `gdbserver` pinned to one non-root PID, reached over the pinned SSH pipe; no shell, no port, no root RCE; `unshare`/`down` revoke it |
 
 ---
 
@@ -258,6 +259,8 @@ orchestrator with a readiness **barrier**, and a hardening pipeline of small, un
 | `pandion cp --id ID [--node N] SRC DST` | scp to/from a node (prefix a node path with `:`) |
 | `pandion code --id ID [--node N] [--print]` | **IDE Tier-1:** pinned SSH config for VS Code Remote-SSH / JetBrains Gateway |
 | `pandion debug --id ID [--node N] [--public] [--pid N] [--print]` | **IDE Tier-2:** attach your **local** debugger to a **remote** process over the overlay |
+| `pandion debug share --id ID [--node N] [--expires 2h]` | **Shared debug:** grant a teammate a scoped, expiring, revocable remote-debug token |
+| `pandion debug join <token>` · `pandion debug unshare --id ID --all` | Accept a shared grant (scoped WG peer + launch.json) · revoke it |
 | `pandion ls` / `status [--json]` | List live clusters/nodes with uptime + **live cost** |
 | `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
 | `pandion down [--provider …] --id ID` | Idempotent, verified teardown (reconciles by tag) |
