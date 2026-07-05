@@ -3,6 +3,7 @@ package state
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 )
@@ -102,7 +103,9 @@ func TestNewStorePerms(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat: %v", err)
 	}
-	if perm := fi.Mode().Perm(); perm != 0o700 {
-		t.Errorf("state dir perms = %o, want 0700", perm)
+	if runtime.GOOS != "windows" { // POSIX perms don't apply on Windows
+		if perm := fi.Mode().Perm(); perm != 0o700 {
+			t.Errorf("state dir perms = %o, want 0700", perm)
+		}
 	}
 }
