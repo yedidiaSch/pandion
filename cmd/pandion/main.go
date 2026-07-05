@@ -132,6 +132,24 @@ func newProvider(name string) (provider.Provider, error) {
 		}
 		accessKey := strings.TrimSpace(os.Getenv("SCW_ACCESS_KEY"))
 		projectID := strings.TrimSpace(os.Getenv("SCW_DEFAULT_PROJECT_ID"))
+		// Preflight: name exactly what's missing. Scaleway needs all three values;
+		// they look alike (two UUIDs + one SCW-prefixed key) and are easy to mix up.
+		// Skip the check if a Scaleway config file can supply them (WithEnv reads it).
+		if !scaleway.ConfigFileExists() {
+			var missing []string
+			if accessKey == "" {
+				missing = append(missing, "SCW_ACCESS_KEY")
+			}
+			if projectID == "" {
+				missing = append(missing, "SCW_DEFAULT_PROJECT_ID")
+			}
+			if len(missing) > 0 {
+				return nil, fmt.Errorf("scaleway: %s not set — Scaleway auth needs three values: "+
+					"SCW_ACCESS_KEY (SCW…), SCW_SECRET_KEY (uuid, the only sensitive one), and "+
+					"SCW_DEFAULT_PROJECT_ID (uuid). Get the key pair from the console → IAM → API Keys, "+
+					"and the project id from the project dashboard", strings.Join(missing, " and "))
+			}
+		}
 		return scaleway.New(secretKey, accessKey, projectID)
 	default:
 		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway)", name)

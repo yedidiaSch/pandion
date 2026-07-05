@@ -25,6 +25,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -34,6 +36,23 @@ import (
 	"github.com/scaleway/scaleway-sdk-go/scw"
 	"github.com/yedidiaSch/pandion/internal/provider"
 )
+
+// ConfigFileExists reports whether a Scaleway CLI config file is present. The
+// SDK's WithEnv also loads credentials from that file, so a caller can use this
+// to decide whether missing SCW_* environment variables are actually fatal
+// (env-only setups) or fine (the config file supplies them).
+func ConfigFileExists() bool {
+	if p := strings.TrimSpace(os.Getenv("SCW_CONFIG_PATH")); p != "" {
+		_, err := os.Stat(p)
+		return err == nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return false
+	}
+	_, err = os.Stat(filepath.Join(home, ".config", "scw", "config.yaml"))
+	return err == nil
+}
 
 const (
 	// tagAll marks every Pandion instance (ListAllTagged / reaper source of truth).
