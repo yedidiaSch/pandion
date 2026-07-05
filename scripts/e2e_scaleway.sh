@@ -29,7 +29,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
-  "$BIN" down --provider=scaleway --id "$ID" >/dev/null 2>&1 || true
+  "$BIN" down --provider=scaleway --id "$ID" --yes >/dev/null 2>&1 || true
   rm -f /tmp/scw_*.log
   if command -v scw >/dev/null 2>&1; then
     local left; left=$(scw instance server list -o json 2>/dev/null | grep -c "$ID" || true)

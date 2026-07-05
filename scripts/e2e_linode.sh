@@ -23,7 +23,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
-  "$BIN" down --provider=linode --id "$ID" >/dev/null 2>&1 || true
+  "$BIN" down --provider=linode --id "$ID" --yes >/dev/null 2>&1 || true
   rm -f /tmp/linode_*.log
   c_in "done (exit $code)"
 }
