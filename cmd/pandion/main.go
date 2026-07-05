@@ -71,6 +71,8 @@ func main() {
 		runCP(os.Args[2:])
 	case "code":
 		runCode(os.Args[2:])
+	case "debug":
+		runDebug(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
 	case "completion":
@@ -970,6 +972,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion ssh --id ID [--node NAME] [--overlay] [-- CMD]   (SSH into a node, host-key pinned)")
 	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
 	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")
+	fmt.Fprintln(os.Stderr, "  pandion debug --id ID [--node NAME] [--public] [--pid N] [--print]   (attach your local debugger to a remote process over the overlay)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
