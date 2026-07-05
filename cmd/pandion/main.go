@@ -71,6 +71,10 @@ func main() {
 		runLs(os.Args[2:])
 	case "completion":
 		runCompletion(os.Args[2:])
+	case "login":
+		runLogin(os.Args[2:])
+	case "logout":
+		runLogout(os.Args[2:])
 	default:
 		usage()
 		os.Exit(2)
@@ -92,15 +96,15 @@ func newProvider(name string) (provider.Provider, error) {
 	case "mock", "":
 		return mock.New(), nil
 	case "hetzner":
-		token := os.Getenv("HCLOUD_TOKEN")
-		if token == "" {
-			return nil, fmt.Errorf("HCLOUD_TOKEN not set (required for --provider=hetzner)")
+		token, err := providerToken("hetzner", "HCLOUD_TOKEN")
+		if err != nil {
+			return nil, err
 		}
 		return hetzner.New(token), nil
 	case "digitalocean", "do":
-		token := os.Getenv("DIGITALOCEAN_TOKEN")
-		if token == "" {
-			return nil, fmt.Errorf("DIGITALOCEAN_TOKEN not set (required for --provider=digitalocean)")
+		token, err := providerToken("digitalocean", "DIGITALOCEAN_TOKEN")
+		if err != nil {
+			return nil, err
 		}
 		return digitalocean.New(token), nil
 	default:
@@ -922,6 +926,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
 	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
+	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }

@@ -132,9 +132,11 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       config, priv-esc binaries) + enabled on every node by default; honors
       `security.audit_log`. Off-node, tamper-evident log SHIPPING still TODO (the
       on-node trail lands now). *(done: this branch)*
-- [ ] **Secret keychain** (H6) — token/keys via OS keychain (macOS Keychain /
-      libsecret / Windows Credential Manager); today the token is env-only and keys
-      are `0600` files.
+- [~] **Secret keychain** (H6) — provider **API tokens** in the OS keychain
+      (macOS Keychain / libsecret / Windows Cred Manager) via `pandion login`/`logout`
+      (`internal/secret` on go-keyring); resolution is env-first then keychain, no
+      token in argv, graceful on headless. *(done: this branch)* SSH keys stay `0600`
+      files for now (moving them to the keychain is a larger follow-up).
 - [x] **Provider-level Cloud Firewall** (M8) — per-cluster Hetzner firewall (label
       selector → auto-applies to every node) allowing only SSH + WireGuard + ICMP
       inbound, in front of host nftables; created on `up`, deleted on teardown via
