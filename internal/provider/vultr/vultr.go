@@ -156,7 +156,7 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 	if spec.LoginPubKey != "" {
 		id, err := v.ensureLoginKey(ctx, spec.ClusterID, spec.LoginPubKey)
 		if err != nil {
-			return provider.Server{}, fmt.Errorf("register login ssh key: %w", err)
+			return provider.Server{}, fmt.Errorf("register login ssh key: %w", friendlyErr(err))
 		}
 		sshKeys = []string{id}
 	}
@@ -191,7 +191,7 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 				if isAvailabilityErr(cerr) {
 					continue // try the next (region,plan)
 				}
-				return provider.Server{}, fmt.Errorf("create %s@%s: %w", p.ID, region, cerr)
+				return provider.Server{}, fmt.Errorf("create %s@%s: %w", p.ID, region, friendlyErr(cerr))
 			}
 			return v.waitActive(ctx, inst.ID, spec.ClusterID)
 		}
@@ -436,7 +436,7 @@ func (v *Vultr) instancesByTag(ctx context.Context, tag string) ([]govultr.Insta
 	for {
 		page, meta, _, err := v.c.Instance.List(ctx, opt)
 		if err != nil {
-			return nil, err
+			return nil, friendlyErr(err)
 		}
 		for i := range page {
 			if contains(page[i].Tags, tag) {
@@ -501,6 +501,25 @@ func isNotFoundErr(err error) bool {
 		strings.Contains(m, "does not exist") ||
 		strings.Contains(m, "invalid instance") ||
 		strings.Contains(m, "unable to find")
+}
+
+// friendlyErr turns Vultr's opaque "Unauthorized IP address: <ip>" 401 into
+// actionable guidance. Vultr's optional API Access Control allowlist rejects
+// account-scoped calls from non-allowlisted IPs — an easy trap, especially on a
+// dual-stack host where the SDK may egress over an unlisted IPv6. Public catalog
+// endpoints (plans/regions) are unaffected, so pricing can work while provisioning
+// fails, which is doubly confusing without this hint.
+func friendlyErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if strings.Contains(err.Error(), "Unauthorized IP address") {
+		return fmt.Errorf("%w\n"+
+			"  → this host's IP is not allowed by Vultr's API Access Control.\n"+
+			"    Add it (allow BOTH your IPv4 and IPv6) under Vultr console →\n"+
+			"    Account → API → Access Control, or toggle 'Allow All'", err)
+	}
+	return err
 }
 
 // keyMaterial extracts the base64 body of an SSH public key so keys compare by
