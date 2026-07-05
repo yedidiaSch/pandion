@@ -181,6 +181,20 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       `up`/`down`/`ls`/`reap`/`validate` and the hardened `up` flow (now provider-agnostic).
       Unit-tested; `scripts/e2e_digitalocean.sh` added. **Pending live e2e** (the DO
       hardened-provision path is unverified without a `DIGITALOCEAN_TOKEN`).
+- [~] **Vultr / Linode / Scaleway providers** (H6 payment-flexibility follow-up) —
+      three more backends behind the same `Provider` seam, taking Pandion to **five
+      providers + mock** (PR #48). *Implemented:* full `Provider` + live `Pricer` each
+      (spec-based size discovery, first-class tags, no-leak teardown). Vultr adds
+      `AuxReaper` (login-key cleanup); Linode installs the login key inline
+      (`AuthorizedKeys`) and filters regions to the `Metadata` capability for
+      cloud-init; Scaleway is zone-based with a two-phase boot and terminates **plus
+      deletes detached block volumes** so nothing keeps billing (C4). Vultr/Linode
+      use a single token (`VULTR_API_KEY` / `LINODE_TOKEN`); Scaleway uses the
+      `SCW_SECRET_KEY` + `SCW_ACCESS_KEY` + `SCW_DEFAULT_PROJECT_ID` triple (only the
+      secret key is keychain-stored). Unit-tested; `scripts/e2e_{vultr,linode,scaleway}.sh`
+      added. **Pending live e2e** — the hardened-provision paths are unverified until
+      each account's payment method clears and a token is available. Likely first-run
+      tweaks: image labels, Scaleway commercial-type/volume pairing, zone defaults.
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.
@@ -199,7 +213,9 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - **Auto-restart of crashed processes** — fail-fast is a deliberate design choice
   (§5): freeze, alert, leave the node up for GDB. Do not add a supervisor.
 - **AWS / GCP providers** — deferred until there's a concrete need (see
-  `pandion-provider-comparison.md`); the `Provider` seam is ready if so.
+  `pandion-provider-comparison.md`); the `Provider` seam is proven across **five
+  backends** (Hetzner, DigitalOcean, Vultr, Linode/Akamai, Scaleway), so adding
+  another is a self-contained driver + one `newProvider` case + an e2e script.
 - **Non-Ubuntu / non-Linux nodes** — provisioned environments are Ubuntu-by-design.
 
 ---

@@ -32,7 +32,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
   for id in "$CID" "$SID"; do
-    "$BIN" down --provider=hetzner --id "$id" >/dev/null 2>&1 || true
+    "$BIN" down --provider=hetzner --id "$id" --yes >/dev/null 2>&1 || true
   done
   rm -f "$CLYAML" /tmp/attach_*.log
   if command -v hcloud >/dev/null 2>&1; then

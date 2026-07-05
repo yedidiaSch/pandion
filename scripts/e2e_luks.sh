@@ -22,7 +22,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
-  "$BIN" down --provider=hetzner --id "$ID" >/dev/null 2>&1 || true
+  "$BIN" down --provider=hetzner --id "$ID" --yes >/dev/null 2>&1 || true
   rm -f /tmp/luks_*.log "$HOME/.pandion/lock/$ID.json"
   if command -v hcloud >/dev/null 2>&1; then
     local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)

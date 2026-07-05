@@ -31,7 +31,7 @@ teardown(){
   # bring the local overlay down if we brought it up
   if [ "$JOINED" = 1 ]; then sudo wg-quick down "$WGCONF" >/dev/null 2>&1 || true; fi
   # destroy the cloud node (idempotent; reconciles by tag)
-  "$BIN" down --provider=hetzner --id "$ID" >/dev/null 2>&1 || true
+  "$BIN" down --provider=hetzner --id "$ID" --yes >/dev/null 2>&1 || true
   if command -v hcloud >/dev/null 2>&1; then
     local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)
     if [ "${left:-0}" = 0 ]; then c_ok "teardown: no servers left"; else c_no "teardown: $left server(s) remain — check 'hcloud server list'"; fi
