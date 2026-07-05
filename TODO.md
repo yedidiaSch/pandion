@@ -185,8 +185,10 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 - [x] **`--dry-run`** (L4) — preview the plan **+ projected cost** (per-node size/region/
       TTL, rolled-up hourly & over-TTL spend) and exit; creates nothing. Works on any
       pricing provider incl. mock (offline). *(done: this branch)*
-- [ ] **Structured logging / audit trail** (L3) — `log/slog` for Pandion's own infra
-      actions (today it's plain `fmt` prints).
+- [x] **Structured logging / audit trail** (L3) — `internal/audit` on `log/slog`
+      emits a JSON trail of Pandion's own infra actions (provision, up.complete,
+      down, lockdown, reap) to `~/.pandion/logs/audit.jsonl`; `PANDION_LOG` also
+      tees it to stderr. Human console + workload streams unchanged. *(done: this branch)*
 - [ ] **Config precedence + profiles** (CLI spec) — `flags > env > cluster.yaml >
       ~/.pandion/config.yaml > defaults`; named credential/config profiles.
 - [ ] **Shell completion** (`pandion completion …`), richer `--help` examples.

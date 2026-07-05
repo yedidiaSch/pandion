@@ -284,6 +284,11 @@ secret store · structured audit log (`log/slog`) · more providers (AWS/GCP) �
 
 ## 🛠️ Development
 
+Pandion keeps a **structured audit trail** of its own infra actions (provision,
+teardown, lockdown, reap) as JSON lines at `~/.pandion/logs/audit.jsonl` — handy for
+debugging a run after the fact. Set `PANDION_LOG=debug|info|warn|error` to also
+stream it to stderr live (the human console output is otherwise unchanged).
+
 ```bash
 make ci                       # gofmt + go vet + go test -race + build   (offline, no cloud)
 go run ./cmd/pandion demo     # exercise the full lifecycle on the mock provider
