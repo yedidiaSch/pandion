@@ -9,10 +9,10 @@ import (
 )
 
 func TestBuildAttachConfig_PinnedPipeAndFields(t *testing.T) {
-	cfg := buildAttachConfig("pipeline", "worker", "10.99.0.2",
+	cfg := buildAttachConfig("pipeline", "worker", "root", "10.99.0.2",
 		"/home/u/.pandion/keys/pipeline/login_ed25519",
 		"/home/u/.pandion/keys/pipeline/known_hosts",
-		"/home/pandion-run/workspace/app", pickRemoteProcess)
+		remoteGDB, "/home/pandion-run/workspace/app", pickRemoteProcess)
 
 	if cfg.Type != "cppdbg" || cfg.Request != "attach" || cfg.MIMode != "gdb" {
 		t.Fatalf("wrong debugger identity: %+v", cfg)
@@ -45,7 +45,7 @@ func TestBuildAttachConfig_PinnedPipeAndFields(t *testing.T) {
 }
 
 func TestBuildAttachConfig_ExplicitPID(t *testing.T) {
-	cfg := buildAttachConfig("c", "n", "203.0.113.7", "k", "kh", "/root/workspace", "4242")
+	cfg := buildAttachConfig("c", "n", "root", "203.0.113.7", "k", "kh", remoteGDB, "/root/workspace", "4242")
 	if cfg.ProcessID != "4242" {
 		t.Fatalf("processId = %q, want 4242", cfg.ProcessID)
 	}
@@ -57,7 +57,7 @@ func TestBuildAttachConfig_ExplicitPID(t *testing.T) {
 func TestMergeLaunchJSON_CreatesWhenAbsent(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".vscode", "launch.json")
-	cfg := buildAttachConfig("c", "n", "10.0.0.2", "k", "kh", "/w", pickRemoteProcess)
+	cfg := buildAttachConfig("c", "n", "root", "10.0.0.2", "k", "kh", remoteGDB, "/w", pickRemoteProcess)
 
 	created, dropped, err := mergeLaunchJSON(path, cfg)
 	if err != nil || !created || dropped {
@@ -86,7 +86,7 @@ func TestMergeLaunchJSON_PreservesAndDedupes(t *testing.T) {
 	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := buildAttachConfig("c", "n", "10.0.0.2", "k", "kh", "/w", "999")
+	cfg := buildAttachConfig("c", "n", "root", "10.0.0.2", "k", "kh", remoteGDB, "/w", "999")
 
 	created, _, err := mergeLaunchJSON(path, cfg)
 	if err != nil || created {
@@ -130,7 +130,7 @@ func TestMergeLaunchJSON_ToleratesComments(t *testing.T) {
 	if err := os.WriteFile(path, []byte(seed), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	cfg := buildAttachConfig("c", "n", "10.0.0.2", "k", "kh", "/w", pickRemoteProcess)
+	cfg := buildAttachConfig("c", "n", "root", "10.0.0.2", "k", "kh", remoteGDB, "/w", pickRemoteProcess)
 
 	created, dropped, err := mergeLaunchJSON(path, cfg)
 	if err != nil {

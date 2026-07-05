@@ -6,6 +6,23 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Added
+- **Shared debugging — `pandion debug share` / `join` / `unshare`** — hand a teammate
+  **one token** that grants a scoped, expiring, revocable remote-debug attach to a running
+  process, with no backend and without giving up root or your overlay. On the node the
+  debugger is `gdbserver --once --attach - <PID>` (stdio), run as root **only** through a
+  ForceCommand wrapper bound to one pinned PID; the guest's local gdb connects with `target
+  remote | ssh …`, so the gdb protocol rides the host-key-pinned SSH channel — no open port,
+  no forwarding, passes the deny-all firewall. gdbserver-as-root reads memory correctly yet
+  only ever proxies that one non-root process (no shell, no other process, no code-exec as
+  root; sharing a root/system PID is refused). The grant is a locked-down non-root
+  `pandion-debug` user (`restrict` + native `expiry-time`) plus a **scoped WireGuard peer**
+  (AllowedIPs = only the target node). `join` brings up the peer + writes `launch.json`;
+  `unshare` (and `down`) revoke the key + pinned PID + peer; every step is audit-logged.
+  `gdbserver` now ships in the default toolchain. **Verified live** by
+  `scripts/e2e_debug_share.sh` (real symbolized backtrace over the guest grant; root-PID
+  refused; post-`unshare` access gone).
+
 ## [0.4.0] — 2026-07-05
 
 Three more cloud providers (five total), a new **IDE Tier-2** debug-attach that

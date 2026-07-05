@@ -60,13 +60,16 @@ type CloudInit struct {
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
-// gcc/g++/make (build-essential), clang, cmake, gdb, plus tmux for `attach`.
+// gcc/g++/make (build-essential), clang, cmake, gdb, gdbserver (for shared
+// debug-attach, `debug share`), plus tmux for `attach`. gdbserver is installed
+// here — in the build window, while egress is open — because a locked-down node
+// cannot apt-install it later.
 //
 // NOTE (reproducibility, H2): these are unpinned for M1. Version pinning +
 // lockfile recording is a later refinement; pass explicit "pkg=version" strings
 // here to pin.
 func DefaultToolchain() []string {
-	return []string{"build-essential", "clang", "cmake", "gdb", "tmux"}
+	return []string{"build-essential", "clang", "cmake", "gdb", "gdbserver", "tmux"}
 }
 
 // Build produces cloud-init user-data.

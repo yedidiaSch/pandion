@@ -201,9 +201,17 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       no new port/gdbserver/agent, nothing installed on the node (root login bypasses ptrace).
       Merges into `./.vscode/launch.json` (JSONC-tolerant, dedupes, preserves other configs).
       Unit-tested; `scripts/e2e_debug.sh` proves the transport (remote gdb attaches to a real
-      workload PID over the pinned pipe and prints a backtrace). **Pending live e2e run** +
-      a GUI smoke test. Tier-1 (`pandion code`, Remote-SSH) already shipped. Next: `--lang`
-      for Python (debugpy) / Go (delve), and a multi-node compound "attach to all" config.
+      workload PID over the pinned pipe and prints a backtrace) — **verified live** on Hetzner.
+      Tier-1 (`pandion code`, Remote-SSH) already shipped.
+    - **Shared debugging** (`pandion debug share`/`join`/`unshare`) — send a teammate one
+      token for a scoped, expiring, revocable remote-debug attach. On the node: `gdbserver
+      --attach` (stdio) run as root ONLY via a ForceCommand wrapper bound to one pinned
+      non-root PID; guest gdb connects `target remote | ssh` (pinned, no port). Non-root
+      `pandion-debug` grant + scoped WG peer; revoked by `unshare`/`down`; audited. **Verified
+      live** — `scripts/e2e_debug_share.sh`: real symbolized backtrace over the guest grant,
+      root-PID refused, post-`unshare` access gone. Remaining: a **GUI smoke test** with real
+      VS Code over the overlay. Next: a relay for a zero-install clickable URL, collaborative
+      same-session (shared-tmux / Delve multi-client), `--lang` for Python/Go.
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.
