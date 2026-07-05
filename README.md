@@ -71,7 +71,7 @@ that is secure by default and leaves nothing behind.**
 | | |
 |---|---|
 | 🚀 **One-command clusters** | `cluster.yaml` → concurrent provisioning + a synchronization **barrier** (all nodes ready before any command runs) |
-| ☁️ **Two providers** | **Hetzner** and **DigitalOcean** behind one seam (+ an offline `mock`); spec-based size discovery, first-class tags, exact live pricing |
+| ☁️ **Five providers** | **Hetzner**, **DigitalOcean**, **Vultr**, **Linode/Akamai** and **Scaleway** behind one seam (+ an offline `mock`); spec-based size discovery, first-class tags, exact live pricing |
 | 🔐 **Hardened by default** | SSH host-key pinning, key-only auth, default-deny egress, WireGuard overlay, **cloud-edge firewall**, metadata block, fail2ban, auditd, sysctl baseline, least-privilege run user, LUKS-at-rest — see [Security](#-security-first) |
 | 🛡️ **Public deny-all** | Lockout-safe `pandion lockdown`: SSH becomes overlay-only, public scan sees just the WG port |
 | 🧭 **Service discovery** | `$PANDION_<NODE>_IP` injected into every node — no hardcoded IPs, IPC rides the overlay |
@@ -132,16 +132,23 @@ go install github.com/yedidiaSch/pandion/cmd/pandion@latest
 
 ## 🚀 Quickstart
 
-> **Prerequisite:** a project-scoped [Hetzner Cloud](https://console.hetzner.cloud) API token
-> (or a [DigitalOcean](https://cloud.digitalocean.com) token for `--provider=digitalocean`).
+> **Prerequisite:** a project-scoped API token for whichever provider you use —
+> [Hetzner Cloud](https://console.hetzner.cloud), [DigitalOcean](https://cloud.digitalocean.com),
+> [Vultr](https://my.vultr.com), [Linode/Akamai](https://cloud.linode.com) or
+> [Scaleway](https://console.scaleway.com).
 > ```bash
 > export HCLOUD_TOKEN=your-token           # a leading space keeps it out of shell history
 > # export DIGITALOCEAN_TOKEN=your-token   # for --provider=digitalocean
+> # export VULTR_API_KEY=your-key          # for --provider=vultr
+> # export LINODE_TOKEN=your-token         # for --provider=linode
+> # Scaleway needs a triple (only the secret key is sensitive):
+> # export SCW_SECRET_KEY=… SCW_ACCESS_KEY=… SCW_DEFAULT_PROJECT_ID=…
 > ```
-> Or store it once in your **OS keychain** (macOS Keychain / libsecret / Windows
-> Credential Manager) and skip the env var — the token is never passed on the command line:
+> Or store the token once in your **OS keychain** (macOS Keychain / libsecret / Windows
+> Credential Manager) and skip the env var — it is never passed on the command line:
 > ```bash
 > pandion login --provider hetzner        # prompts (hidden), or reads $HCLOUD_TOKEN if set
+> # also: --provider vultr|linode|scaleway  (Scaleway stores only the secret key)
 > ```
 > Resolution order is **env var first, then keychain** (so scripts/CI are unchanged).
 
@@ -223,8 +230,8 @@ state, idempotency, and reconciliation, not fire-and-forget scripts.
   │   + reconcile) │      │   2. pinned SSH         │           ▲              │
   │                │      │◀─── (over overlay) ────▶│           │ WireGuard    │
   │  provider ◀────┘      │                        │           ▼   mesh       │
-  │  (hetzner|do|mock)    │   3. wg set peers,      │   node: worker (Ubuntu)  │
-  │                       │      inject $PANDION_*  │   • wg0  10.99.0.2        │
+  │  (hetzner|do|vultr|   │   3. wg set peers,      │   node: worker (Ubuntu)  │
+  │   linode|scw|mock)    │      inject $PANDION_*  │   • wg0  10.99.0.2        │
   │  journaled state ─────┼── tag-based reconcile ─▶│   • $PANDION_BROKER_IP   │
   └───────────────────────┘   (source of truth)    └──────────────────────────┘
 ```
@@ -233,7 +240,7 @@ state, idempotency, and reconciliation, not fire-and-forget scripts.
 before/after every transition so any command is resumable. The provider (queried by tag) is the
 source of truth for teardown — local state is only a cache.
 
-Under the hood: a provider seam (`hetzner`, `digitalocean`, and an offline `mock`), a concurrent
+Under the hood: a provider seam (`hetzner`, `digitalocean`, `vultr`, `linode`, `scaleway`, and an offline `mock`), a concurrent
 orchestrator with a readiness **barrier**, and a hardening pipeline of small, unit-tested packages
 (`harden` → `overlay` → `firewall` → `discovery` → `stream`).
 
@@ -243,7 +250,7 @@ orchestrator with a readiness **barrier**, and a hardening pipeline of small, un
 
 | Command | What it does |
 |---|---|
-| `pandion up [--provider mock\|hetzner\|digitalocean] [--id ID] [flags] -- <cmd>` | Provision + harden + run a **single** node |
+| `pandion up [--provider mock\|hetzner\|digitalocean\|vultr\|linode\|scaleway] [--id ID] [flags] -- <cmd>` | Provision + harden + run a **single** node |
 | `pandion up --provider … -f cluster.yaml --id ID` | Provision a **multi-node** cluster + mesh |
 | `pandion attach --id ID` | Reconnect to a running cluster's live multiplexed streams |
 | `pandion ssh --id ID [--node N] [--overlay] [-- CMD]` | Host-key-pinned SSH into a node |
@@ -270,14 +277,14 @@ Selected `up` flags: `--dry-run` (preview plan + cost), `--max-cost N` (budget c
 | **CLI on Linux** | ✅ Built **and** e2e-validated on real cloud |
 | **CLI on macOS / Windows** | ⚙️ Cross-compiled & released, **not yet validated** (see roadmap **M7**). Pure-Go core; the operator-side overlay join uses `wg-quick` (Linux/macOS) or the WireGuard app (Windows) |
 | **Provisioned nodes** | 🐧 **Ubuntu Linux** (by design — cloud-init/apt/nftables/systemd) |
-| **Providers** | **Hetzner Cloud** and **DigitalOcean** (a `mock` provider backs offline testing; AWS/GCP deferred) |
+| **Providers** | **Hetzner Cloud**, **DigitalOcean**, **Vultr**, **Linode/Akamai** and **Scaleway** (a `mock` provider backs offline testing; AWS/GCP deferred) |
 
 ---
 
 ## 📈 Project status
 
 **v0.3.0 — MVP complete and exceeded.** Hardened single nodes and multi-node IPC clusters on
-**Hetzner and DigitalOcean**, native or containerized, with the full security posture, no-leak
+**Hetzner, DigitalOcean, Vultr, Linode/Akamai and Scaleway**, native or containerized, with the full security posture, no-leak
 lifecycle, live cost + budget controls, durable-run/`attach`, reproducibility, and operator
 tooling (`ssh`/`cp`) — every cloud-facing capability proven on real cloud by a self-cleaning e2e
 script (`scripts/`, see [`scripts/README.md`](scripts/README.md)). Release artifacts are

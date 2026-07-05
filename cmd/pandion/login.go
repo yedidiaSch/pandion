@@ -19,6 +19,14 @@ func providerEnv(provider string) (name, env string, ok bool) {
 		return "hetzner", "HCLOUD_TOKEN", true
 	case "digitalocean", "do":
 		return "digitalocean", "DIGITALOCEAN_TOKEN", true
+	case "vultr":
+		return "vultr", "VULTR_API_KEY", true
+	case "linode", "akamai":
+		return "linode", "LINODE_TOKEN", true
+	case "scaleway", "scw":
+		// only the secret key is stored in the keychain; SCW_ACCESS_KEY and
+		// SCW_DEFAULT_PROJECT_ID are non-secret identifiers kept in the environment.
+		return "scaleway", "SCW_SECRET_KEY", true
 	}
 	return "", "", false
 }
@@ -62,11 +70,11 @@ func readToken(env string) string {
 // in an environment variable (H6). The token is never taken from argv.
 func runLogin(args []string) {
 	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean|vultr|linode|scaleway")
 	_ = fs.Parse(args)
 	name, env, ok := providerEnv(*provider)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "login: unknown provider %q (use hetzner|digitalocean)\n", *provider)
+		fmt.Fprintf(os.Stderr, "login: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway)\n", *provider)
 		os.Exit(2)
 	}
 	token := readToken(env)
@@ -85,11 +93,11 @@ func runLogin(args []string) {
 // runLogout removes a provider's token from the OS keychain.
 func runLogout(args []string) {
 	fs := flag.NewFlagSet("logout", flag.ExitOnError)
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean|vultr|linode|scaleway")
 	_ = fs.Parse(args)
 	name, _, ok := providerEnv(*provider)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "logout: unknown provider %q (use hetzner|digitalocean)\n", *provider)
+		fmt.Fprintf(os.Stderr, "logout: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway)\n", *provider)
 		os.Exit(2)
 	}
 	if err := secret.Delete(name); err != nil {
