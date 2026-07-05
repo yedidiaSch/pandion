@@ -16,6 +16,7 @@ import (
 
 	gossh "golang.org/x/crypto/ssh"
 
+	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/discovery"
 	"github.com/yedidiaSch/pandion/internal/firewall"
@@ -450,6 +451,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	for _, p := range plans {
 		p.ip = ipByName[p.name]
 		fmt.Printf("  %-12s ip=%-15s overlay=%s\n", p.name, p.ip, p.overlayIP)
+		audit.Event("provision", "id", id, "node", p.name, "provider", prov, "ip", p.ip, "engine", p.engine)
 	}
 
 	// cloud-edge firewall (defense-in-depth in front of host nftables, M8).
@@ -638,6 +640,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	streaming.Store(true)
 	streamCluster(streamCtx, id, plans, login)
 
+	audit.Event("up.complete", "id", id, "provider", prov, "nodes", len(plans))
 	fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 }
 
