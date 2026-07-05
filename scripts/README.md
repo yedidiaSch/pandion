@@ -33,6 +33,7 @@ cost a few cents (a node for a few minutes); the FREE ones provision nothing.
 | `e2e_ssh.sh` | `pandion ssh` — host-key-pinned command on a node | paid (1 node) |
 | `e2e_cp.sh` | `pandion cp` — pinned scp round-trip to/from a node | paid (1 node) |
 | `e2e_docker_cluster.sh` | Per-node `engine: docker` in a cluster (runs in the container, proven with an Alpine image) | paid (1 node) |
+| `e2e_operator.sh` | `down --dry-run` (previews, destroys nothing) + `pandion code` (generated pinned SSH config connects via `ssh -F`) | paid (1 node) |
 | `e2e_digitalocean.sh` | DigitalOcean provider: `--max-cost` preflight (FREE, exercises live pricing) + `ls` | mixed (1 droplet) |
 
 > **Naming:** `e2e_m22/m32b/m33/m34` are milestone-era (they predate the current

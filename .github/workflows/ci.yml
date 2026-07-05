@@ -35,3 +35,27 @@ jobs:
 
       - name: go build
         run: go build ./...
+
+  # Validate the pure-Go core builds + unit-tests pass on macOS and Windows (M7).
+  # Real-cloud e2e from those hosts still needs the machines + tokens; the CLI is
+  # pure Go (work happens over SSH on the Linux nodes), so this covers the core.
+  cross-platform:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          check-latest: true
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...

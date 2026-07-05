@@ -165,6 +165,106 @@ func scpEndpoint(addr, p string) string {
 	return p
 }
 
+// sshConfigBlock renders a host-key-pinned SSH config entry for a node, suitable
+// for VS Code Remote-SSH / JetBrains Gateway (or plain `ssh <alias>`).
+func sshConfigBlock(alias, addr, keyPath, khPath string) string {
+	return fmt.Sprintf(`Host %s
+    HostName %s
+    User root
+    IdentityFile %s
+    IdentitiesOnly yes
+    StrictHostKeyChecking yes
+    UserKnownHostsFile %s
+`, alias, addr, keyPath, khPath)
+}
+
+// writeClusterKnownHosts writes a persistent, pinned known_hosts for every node
+// in the cluster (public + overlay addresses), so the generated SSH config keeps
+// the same MITM-proof posture as `pandion ssh`.
+func writeClusterKnownHosts(path string, nodes []nodeManifest) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	var b strings.Builder
+	for _, n := range nodes {
+		if n.IP != "" {
+			b.WriteString(knownHostsLine(n.IP, n.HostPub))
+		}
+		if n.OverlayIP != "" {
+			b.WriteString(knownHostsLine(n.OverlayIP, n.HostPub))
+		}
+	}
+	return os.WriteFile(path, []byte(b.String()), 0o600)
+}
+
+// runCode emits a host-key-pinned SSH config entry for a node so an IDE (VS Code
+// Remote-SSH, JetBrains Gateway) can attach over SSH — the ethos-aligned way to
+// edit/debug a node "left up for GDB/SSH". No backend, keys stay local.
+//
+//	pandion code --id ID [--node NAME] [--overlay] [--print]
+func runCode(args []string) {
+	fs := flag.NewFlagSet("code", flag.ExitOnError)
+	id := fs.String("id", "", "cluster id (required)")
+	node := fs.String("node", "", "node name (default: the first node)")
+	useOverlay := fs.Bool("overlay", false, "use the WireGuard overlay IP")
+	printOnly := fs.Bool("print", false, "print the SSH config block and exit (don't write files)")
+	_ = fs.Parse(args)
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "code: --id is required")
+		os.Exit(2)
+	}
+	man, err := loadManifest(*id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "code: no manifest for %q: %v\n", *id, err)
+		os.Exit(3)
+	}
+	target, ok := pickNode(man.Nodes, *node)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "code: node not found in cluster %q\n", *id)
+		os.Exit(3)
+	}
+	addr := target.IP
+	if *useOverlay {
+		addr = target.OverlayIP
+	}
+	if addr == "" {
+		fmt.Fprintln(os.Stderr, "code: node has no reachable address (try/omit --overlay)")
+		os.Exit(3)
+	}
+	keyDir := filepath.Join(envHome(), ".pandion", "keys", *id)
+	keyPath := filepath.Join(keyDir, "login_ed25519")
+	if _, err := os.Stat(keyPath); err != nil {
+		fmt.Fprintf(os.Stderr, "code: login key not found (%s): %v\n", keyPath, err)
+		os.Exit(3)
+	}
+	khPath := filepath.Join(keyDir, "known_hosts")
+	must(writeClusterKnownHosts(khPath, man.Nodes))
+
+	alias := "pandion-" + *id + "-" + target.Name
+	block := sshConfigBlock(alias, addr, keyPath, khPath)
+
+	printUsage := func() {
+		fmt.Println("\n# One-time: add this line to ~/.ssh/config")
+		fmt.Println("#   Include ~/.pandion/ssh/*.config")
+		fmt.Println("# Then, to open the node in your IDE:")
+		fmt.Printf("#   VS Code  → Remote-SSH: Connect to Host… → %s\n", alias)
+		fmt.Printf("#   or:  code --remote ssh-remote+%s /root/workspace\n", alias)
+		fmt.Printf("#   or:  ssh %s\n", alias)
+	}
+
+	if *printOnly {
+		fmt.Print(block)
+		printUsage()
+		return
+	}
+	cfgDir := filepath.Join(envHome(), ".pandion", "ssh")
+	must(os.MkdirAll(cfgDir, 0o700))
+	cfgPath := filepath.Join(cfgDir, *id+"-"+target.Name+".config")
+	must(os.WriteFile(cfgPath, []byte(block), 0o600))
+	fmt.Printf("wrote pinned SSH config: %s  (Host %s)\n", cfgPath, alias)
+	printUsage()
+}
+
 // pickNode returns the named node (or the first, if name is empty).
 func pickNode(nodes []nodeManifest, name string) (nodeManifest, bool) {
 	if name == "" {
