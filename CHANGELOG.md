@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-07-05
+
+Three more cloud providers (five total), a new **IDE Tier-2** debug-attach that
+puts your local debugger on a remote process over the overlay, and the fixes those
+first real-cloud runs shook out. Every cloud-facing capability is proven on real
+cloud by a self-cleaning e2e; DigitalOcean, Vultr and Scaleway were verified live.
+
 ### Added
 - **IDE Tier-2 — distributed debug-attach over the overlay (`pandion debug`)** — attach
   your **local** VS Code debugger to a **running process on a remote node**, across the
@@ -30,6 +37,16 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
     volumes so nothing keeps billing after `down`.
   - Each backed by a self-cleaning real-cloud e2e: `scripts/e2e_vultr.sh`,
     `scripts/e2e_linode.sh`, `scripts/e2e_scaleway.sh`.
+
+### Fixed
+- **Vultr provisioning** rejected raw cloud-init (`400 Invalid user_data`) — the
+  Vultr API requires `user_data` base64-encoded; the driver now encodes it.
+- **e2e teardown could leak** — the scripts' teardown `down` lacked `--yes`, so run
+  by hand (stdin is a TTY) it silently aborted and left resources billing. `--yes`
+  added across all 21 e2e scripts; teardown is now unconditional.
+- **Clearer credential errors** — Vultr's opaque `401 Unauthorized IP` now points to
+  the API Access Control allowlist (add your IPv4+IPv6); Scaleway names exactly which
+  of `SCW_ACCESS_KEY` / `SCW_DEFAULT_PROJECT_ID` is missing.
 
 ## [0.3.0] — 2026-07-04
 
@@ -93,6 +110,7 @@ self-cleaning e2e script.
 - Release pipeline: GoReleaser, signed APT/YUM repos, Homebrew cask, `.deb`/`.rpm`/
   `.apk`, per-archive SBOMs, cross-compiled binaries.
 
+[0.4.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.4.0
 [0.3.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.3.0
 [0.2.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.2.0
 [0.1.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.1.0
