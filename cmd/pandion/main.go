@@ -64,6 +64,8 @@ func main() {
 		runSSH(os.Args[2:])
 	case "cp":
 		runCP(os.Args[2:])
+	case "code":
+		runCode(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
 	case "completion":
@@ -816,13 +818,48 @@ func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
 	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean")
 	id := fs.String("id", "demo", "cluster id")
+	dryRun := fs.Bool("dry-run", false, "list what would be destroyed; destroy nothing")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
 
 	p, err := newProvider(*prov)
 	must(err)
 	o := orchestrator.New(p, mustStore())
-	must(o.Down(context.Background(), *id))
+	ctx := context.Background()
+
+	// preview against the provider (the reconcile source of truth).
+	servers, err := p.ListByTag(ctx, *id)
+	must(err)
+	if len(servers) > 0 {
+		fmt.Printf("cluster %q at %s — %d server(s) to destroy:\n", *id, p.Name(), len(servers))
+		for _, s := range servers {
+			fmt.Printf("  %-26s %-10s %-8s %s\n", s.Name, dashIfEmpty(s.Type), dashIfEmpty(s.Region), s.IP)
+		}
+	} else {
+		fmt.Printf("cluster %q at %s: no live servers (teardown will also reap keys/firewall/state).\n", *id, p.Name())
+	}
+	if *dryRun {
+		fmt.Println("dry-run: nothing destroyed.")
+		return
+	}
+	// confirm only in a terminal (scripts/CI run non-interactively — proceed).
+	if !*yes && len(servers) > 0 && isTTY() {
+		fmt.Printf("destroy %d server(s)? this is irreversible. [y/N]: ", len(servers))
+		var ans string
+		_, _ = fmt.Scanln(&ans)
+		if ans != "y" && ans != "Y" {
+			fmt.Println("aborted; nothing changed.")
+			return
+		}
+	}
+	must(o.Down(ctx, *id))
 	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
+}
+
+// isTTY reports whether stdin is an interactive terminal.
+func isTTY() bool {
+	fi, err := os.Stdin.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
 }
 
 func runDemo() {
@@ -849,13 +886,14 @@ func envHome() string {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
-	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID]")
+	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
 	fmt.Fprintln(os.Stderr, "  pandion ssh --id ID [--node NAME] [--overlay] [-- CMD]   (SSH into a node, host-key pinned)")
 	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
+	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
