@@ -2,6 +2,7 @@ package scaleway
 
 import (
 	"net"
+	"os"
 	"testing"
 	"time"
 
@@ -108,6 +109,22 @@ func TestBlockVolumeIDs_OnlyBlock(t *testing.T) {
 	got := blockVolumeIDs(srv)
 	if len(got) != 1 || got[0] != "vol-block" {
 		t.Fatalf("blockVolumeIDs = %v, want [vol-block]", got)
+	}
+}
+
+func TestConfigFileExists_HonorsSCWConfigPath(t *testing.T) {
+	// point SCW_CONFIG_PATH at a real then a missing file.
+	f := t.TempDir() + "/config.yaml"
+	if err := os.WriteFile(f, []byte("access_key: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SCW_CONFIG_PATH", f)
+	if !ConfigFileExists() {
+		t.Fatal("expected true when SCW_CONFIG_PATH points at an existing file")
+	}
+	t.Setenv("SCW_CONFIG_PATH", f+".nope")
+	if ConfigFileExists() {
+		t.Fatal("expected false when SCW_CONFIG_PATH points at a missing file")
 	}
 }
 

@@ -1,6 +1,8 @@
 package vultr
 
 import (
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +97,27 @@ func TestClassifyErrors(t *testing.T) {
 	}
 	if isNotFoundErr(errStr("rate limit exceeded")) {
 		t.Fatal("rate limit is not not-found")
+	}
+}
+
+func TestFriendlyErr_UnauthorizedIP(t *testing.T) {
+	// the real Vultr 401 body, wrapped, must gain the Access Control guidance
+	// while still preserving the original message (errors.Is-able).
+	orig := errStr(`{"error":"Unauthorized IP address: 2a01:4f8:c010:8b77::1","status":401}`)
+	got := friendlyErr(orig)
+	if !strings.Contains(got.Error(), "Access Control") {
+		t.Fatalf("expected Access Control hint, got: %v", got)
+	}
+	if !errors.Is(got, orig) {
+		t.Fatal("friendlyErr must wrap (not replace) the original error")
+	}
+	// unrelated errors pass through untouched.
+	other := errStr("some other failure")
+	if friendlyErr(other) != other {
+		t.Fatal("unrelated error should pass through unchanged")
+	}
+	if friendlyErr(nil) != nil {
+		t.Fatal("nil should stay nil")
 	}
 }
 
