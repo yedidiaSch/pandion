@@ -56,11 +56,13 @@ const pickRemoteProcess = "${command:pickRemoteProcess}"
 // remoteGDB is gdb's path on the provisioned node (installed by DefaultToolchain).
 const remoteGDB = "/usr/bin/gdb"
 
-// buildAttachConfig assembles the cppdbg attach config for one node. addr is the
-// node address to dial (overlay or public); keyPath/khPath are the persisted login
-// key and pinned known_hosts — identical to `pandion ssh`'s posture. program is the
-// remote binary (symbols); processID is a literal PID or the remote picker.
-func buildAttachConfig(id, node, addr, keyPath, khPath, program, processID string) attachCfg {
+// buildAttachConfig assembles the cppdbg attach config for one node. user is the
+// remote SSH user (root for the operator's own `debug`; the locked-down debug user
+// for a shared grant). addr is the node address to dial (overlay or public);
+// keyPath/khPath are the SSH key and pinned known_hosts — identical to `pandion
+// ssh`'s posture. gdbPath is the debugger to run on the node. program is the remote
+// binary (symbols); processID is a literal PID or the remote picker.
+func buildAttachConfig(id, node, user, addr, keyPath, khPath, gdbPath, program, processID string) attachCfg {
 	remoteWS := "/home/" + harden.DefaultRunUser + "/workspace"
 	return attachCfg{
 		Name:           "Pandion attach: " + id + "-" + node,
@@ -69,9 +71,9 @@ func buildAttachConfig(id, node, addr, keyPath, khPath, program, processID strin
 		Program:        program,
 		ProcessID:      processID,
 		MIMode:         "gdb",
-		MiDebuggerPath: remoteGDB,
+		MiDebuggerPath: gdbPath,
 		PipeTransport: pipeTransport{
-			DebuggerPath: remoteGDB,
+			DebuggerPath: gdbPath,
 			PipeProgram:  "ssh",
 			PipeArgs: []string{
 				"-i", keyPath,
@@ -79,13 +81,32 @@ func buildAttachConfig(id, node, addr, keyPath, khPath, program, processID strin
 				"-o", "StrictHostKeyChecking=yes",
 				"-o", "UserKnownHostsFile=" + khPath,
 				"-o", "BatchMode=yes",
-				"root@" + addr,
+				user + "@" + addr,
 			},
 			PipeCwd: "",
 		},
 		SourceFileMap: map[string]string{remoteWS: "${workspaceFolder}"},
 		SetupCommands: []setupCommand{{Text: "-enable-pretty-printing", IgnoreFailures: true}},
 	}
+}
+
+// runDebugDispatch routes `debug share|join|unshare` to the collaborative-debug
+// handlers (Tier-2 sharing); a bare `debug` is the operator's own attach.
+func runDebugDispatch(args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "share":
+			runDebugShare(args[1:])
+			return
+		case "join":
+			runDebugJoin(args[1:])
+			return
+		case "unshare":
+			runDebugUnshare(args[1:])
+			return
+		}
+	}
+	runDebug(args)
 }
 
 // runDebug emits a VS Code cppdbg attach config for a node so a LOCAL debugger can
@@ -151,7 +172,7 @@ func runDebug(args []string) {
 		processID = strconv.Itoa(*pid)
 	}
 
-	cfg := buildAttachConfig(*id, target.Name, addr, keyPath, khPath, prog, processID)
+	cfg := buildAttachConfig(*id, target.Name, "root", addr, keyPath, khPath, remoteGDB, prog, processID)
 
 	// Always print the config block and side-write a copy under ~/.pandion/vscode
 	// (the hands-off posture of `pandion code`), regardless of the merge outcome.
@@ -204,11 +225,12 @@ func printDebugUsage(name, addr string, pid int) {
 // appends), preserving every other config. Returns whether it created the file and
 // whether the source had comments (dropped on rewrite). An unparseable file is left
 // untouched and returned as an error, so the caller can fall back to manual paste.
-func mergeLaunchJSON(path string, cfg attachCfg) (created, droppedComments bool, err error) {
+func mergeLaunchJSON(path string, cfg any) (created, droppedComments bool, err error) {
 	cfgMap, err := toMap(cfg)
 	if err != nil {
 		return false, false, err
 	}
+	cfgName, _ := cfgMap["name"].(string)
 
 	raw, rerr := os.ReadFile(path)
 	if os.IsNotExist(rerr) {
@@ -237,7 +259,7 @@ func mergeLaunchJSON(path string, cfg attachCfg) (created, droppedComments bool,
 	if existing, ok := doc["configurations"].([]any); ok {
 		for _, c := range existing {
 			if m, ok := c.(map[string]any); ok {
-				if n, _ := m["name"].(string); n == cfg.Name {
+				if n, _ := m["name"].(string); n == cfgName {
 					continue // replace our own previous entry
 				}
 			}
