@@ -1,6 +1,7 @@
 // Command pandion is the CLI: a provision/run/teardown flow over the in-memory
 // mock provider (default, free, offline) or a real cloud backend
-// (--provider=hetzner | digitalocean), with security-hardened bootstrap.
+// (--provider=hetzner | digitalocean | vultr | linode | scaleway), with
+// security-hardened bootstrap.
 package main
 
 import (
@@ -28,7 +29,10 @@ import (
 	"github.com/yedidiaSch/pandion/internal/provider"
 	"github.com/yedidiaSch/pandion/internal/provider/digitalocean"
 	"github.com/yedidiaSch/pandion/internal/provider/hetzner"
+	"github.com/yedidiaSch/pandion/internal/provider/linode"
 	"github.com/yedidiaSch/pandion/internal/provider/mock"
+	"github.com/yedidiaSch/pandion/internal/provider/scaleway"
+	"github.com/yedidiaSch/pandion/internal/provider/vultr"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	"github.com/yedidiaSch/pandion/internal/sshkeys"
 	"github.com/yedidiaSch/pandion/internal/state"
@@ -107,15 +111,37 @@ func newProvider(name string) (provider.Provider, error) {
 			return nil, err
 		}
 		return digitalocean.New(token), nil
+	case "vultr":
+		token, err := providerToken("vultr", "VULTR_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return vultr.New(token), nil
+	case "linode", "akamai":
+		token, err := providerToken("linode", "LINODE_TOKEN")
+		if err != nil {
+			return nil, err
+		}
+		return linode.New(token), nil
+	case "scaleway", "scw":
+		// Scaleway auth is a triple: the secret key is sensitive (keychain/env), the
+		// access key and project id are non-secret identifiers taken from env.
+		secretKey, err := providerToken("scaleway", "SCW_SECRET_KEY")
+		if err != nil {
+			return nil, err
+		}
+		accessKey := strings.TrimSpace(os.Getenv("SCW_ACCESS_KEY"))
+		projectID := strings.TrimSpace(os.Getenv("SCW_DEFAULT_PROJECT_ID"))
+		return scaleway.New(secretKey, accessKey, projectID)
 	default:
-		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean)", name)
+		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway)", name)
 	}
 }
 
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean")
+	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
@@ -163,7 +189,7 @@ func runUp(args []string) {
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
-	case "hetzner", "digitalocean", "do":
+	case "hetzner", "digitalocean", "do", "vultr", "linode", "scaleway":
 		// the hardened single-node flow is provider-agnostic (it drives the
 		// orchestrator + SSH); the provider is injected via `o`.
 		var ws *syncSpec
@@ -217,7 +243,8 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 		return
 	}
 
-	if providerName == "hetzner" || providerName == "digitalocean" || providerName == "do" {
+	if providerName != "mock" && providerName != "" {
+		// the hardened multi-node mesh flow is provider-agnostic (driven through `o`).
 		upClusterHetzner(o, cl, id, maxCost, lockPath)
 		return
 	}
@@ -578,7 +605,7 @@ func runAttach(args []string) {
 
 func runReap(args []string) {
 	fs := flag.NewFlagSet("reap", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean")
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
 	olderThan := fs.Duration("older-than", 0, "only reap clusters whose oldest node is at least this age (e.g. 2h)")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
@@ -623,7 +650,7 @@ func runReap(args []string) {
 // (works with no local state). Cost is shown when the provider prices its types.
 func runLs(args []string) {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean")
+	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
 	_ = fs.Parse(args)
 
@@ -827,7 +854,7 @@ func estMoney(m provider.Money, age time.Duration) string {
 
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean")
+	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
 	id := fs.String("id", "demo", "cluster id")
 	dryRun := fs.Bool("dry-run", false, "list what would be destroyed; destroy nothing")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")

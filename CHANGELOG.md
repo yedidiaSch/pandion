@@ -4,6 +4,23 @@ All notable changes to Pandion. Format follows [Keep a Changelog](https://keepac
 versions follow [SemVer](https://semver.org). Each released version's artifacts are
 **keyless-cosign-signed** (verify per the README).
 
+## [Unreleased]
+
+### Added
+- **Three more providers — Vultr, Linode/Akamai and Scaleway** — behind the same
+  `Provider` seam, each with spec-based size discovery, first-class tags, an exact
+  live `Pricer`, and no-leak teardown (C4). Select with `--provider=vultr`,
+  `--provider=linode`, or `--provider=scaleway`; store tokens via `pandion login`.
+  Payment-flexibility motivation (H6 follow-up): Vultr (PayPal), Scaleway EU billing.
+  - Vultr & Linode authenticate with a single API token (`VULTR_API_KEY`,
+    `LINODE_TOKEN`). Scaleway uses an access-key + secret-key + project-id triple
+    (`SCW_ACCESS_KEY` / `SCW_SECRET_KEY` / `SCW_DEFAULT_PROJECT_ID`); only the secret
+    key is sensitive and stored in the keychain.
+  - Scaleway teardown terminates the server **and** deletes its detached block
+    volumes so nothing keeps billing after `down`.
+  - Each backed by a self-cleaning real-cloud e2e: `scripts/e2e_vultr.sh`,
+    `scripts/e2e_linode.sh`, `scripts/e2e_scaleway.sh`.
+
 ## [0.3.0] — 2026-07-04
 
 A second cloud provider, a full security-hardening pass, operator tooling, and
