@@ -19,7 +19,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 DOWN_IDS=()
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
-  for id in "${DOWN_IDS[@]:-}"; do [ -n "$id" ] && "$BIN" down --provider=hetzner --id "$id" >/dev/null 2>&1 || true; done
+  for id in "${DOWN_IDS[@]:-}"; do [ -n "$id" ] && "$BIN" down --provider=hetzner --id "$id" --yes >/dev/null 2>&1 || true; done
   if command -v hcloud >/dev/null 2>&1; then
     local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c 'e2e-caps' || true)
     [ "${left:-0}" = 0 ] && c_ok "teardown: no servers left" || c_no "teardown: $left left"

@@ -26,7 +26,7 @@ fw_exists(){ hcloud firewall list -o noheader 2>/dev/null | grep -q "$FW"; }
 
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
-  "$BIN" down --provider=hetzner --id "$ID" >/dev/null 2>&1 || true
+  "$BIN" down --provider=hetzner --id "$ID" --yes >/dev/null 2>&1 || true
   rm -f /tmp/nh_*.log "$HOME/.pandion/lock/$ID.json"
   if has_hcloud; then
     local left; left=$(hcloud server list -o noheader 2>/dev/null | grep -c "$ID" || true)
@@ -65,7 +65,7 @@ if has_hcloud; then
 
   # no-leak: down must delete the firewall.
   c_in "pandion down — the cloud firewall must be removed (no leak)..."
-  "$BIN" down --provider=hetzner --id "$ID" >/tmp/nh_down.log 2>&1 || true
+  "$BIN" down --provider=hetzner --id "$ID" --yes >/tmp/nh_down.log 2>&1 || true
   sleep 3
   fw_exists && c_no "cloud firewall $FW LEAKED after down" || c_ok "cloud firewall removed on down (no leak)"
 else

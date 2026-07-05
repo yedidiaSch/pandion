@@ -12,6 +12,7 @@ package vultr
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"regexp"
 	"strconv"
@@ -160,6 +161,12 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 		sshKeys = []string{id}
 	}
 	tags := []string{tagAll, clusterTag(spec.ClusterID)}
+	// Vultr requires user_data base64-encoded (unlike DO, which takes it raw);
+	// the SDK passes the field through verbatim, so we encode it here.
+	var userData string
+	if spec.UserData != "" {
+		userData = base64.StdEncoding.EncodeToString([]byte(spec.UserData))
+	}
 
 	// search (region, plan): RegionFirst — exhaust a region's cheapest plans
 	// before moving on (keeps nodes close; proximity over a marginal price delta).
@@ -177,7 +184,7 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 				OsID:     osID,
 				SSHKeys:  sshKeys,
 				Tags:     tags,
-				UserData: spec.UserData,
+				UserData: userData,
 			})
 			if cerr != nil {
 				lastErr = cerr
