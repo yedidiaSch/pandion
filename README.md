@@ -81,6 +81,7 @@ that is secure by default and leaves nothing behind.**
 | ♻️ **No-leak lifecycle** | Journaled state, tag-based reconcile, idempotent verified teardown, Ctrl+C auto-rollback |
 | 🧰 **Native or Docker** | Polyglot toolchain on the host (`pandion-run`) or a hardened container — single node and per-node in clusters |
 | 🔧 **Operator tooling** | `pandion ssh` / `pandion cp` (host-key-pinned), shell completion, offline `mock` provider |
+| 🐞 **IDE debug-attach** | `pandion debug` attaches your **local** VS Code debugger to a **remote** process over the overlay — remote `gdb` driven through the pinned SSH pipe (no new port, no agent) |
 
 ---
 
@@ -255,6 +256,8 @@ orchestrator with a readiness **barrier**, and a hardening pipeline of small, un
 | `pandion attach --id ID` | Reconnect to a running cluster's live multiplexed streams |
 | `pandion ssh --id ID [--node N] [--overlay] [-- CMD]` | Host-key-pinned SSH into a node |
 | `pandion cp --id ID [--node N] SRC DST` | scp to/from a node (prefix a node path with `:`) |
+| `pandion code --id ID [--node N] [--print]` | **IDE Tier-1:** pinned SSH config for VS Code Remote-SSH / JetBrains Gateway |
+| `pandion debug --id ID [--node N] [--public] [--pid N] [--print]` | **IDE Tier-2:** attach your **local** debugger to a **remote** process over the overlay |
 | `pandion ls` / `status [--json]` | List live clusters/nodes with uptime + **live cost** |
 | `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
 | `pandion down [--provider …] --id ID` | Idempotent, verified teardown (reconciles by tag) |
