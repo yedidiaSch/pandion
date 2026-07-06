@@ -13,8 +13,11 @@
 //   - Locations are ZONES (fr-par-1, nl-ams-1, pl-waw-1), surfaced through the seam
 //     as regions. Types and prices are per-zone, so we cache per zone.
 //   - Boot is two-phase: CreateServer yields a STOPPED server, then we attach the
-//     cloud-init user-data and power it on. The login key needs no provider-native
-//     registration — it already rides the cloud-init user-data (ssh_authorized_keys).
+//     cloud-init user-data and power it on. The login key is registered as a
+//     project-scoped IAM SSH key BEFORE boot (ensureLoginKey), so Scaleway's
+//     metadata datasource injects it into root early and reliably — the cloud-init
+//     user-data path alone did not land it on root at multi-node scale. ReapAux
+//     deletes that key on teardown so nothing leaks (C4).
 //   - Teardown must be leak-free (C4): the `terminate` action deletes local volumes
 //     but only DETACHES block (sbs) volumes, so we explicitly delete the server's
 //     leftover volumes afterwards. Dynamic IPs are released automatically on delete.
@@ -32,6 +35,7 @@ import (
 	"sync"
 	"time"
 
+	iam "github.com/scaleway/scaleway-sdk-go/api/iam/v1alpha1"
 	instance "github.com/scaleway/scaleway-sdk-go/api/instance/v1"
 	"github.com/scaleway/scaleway-sdk-go/scw"
 	"github.com/yedidiaSch/pandion/internal/provider"
@@ -61,6 +65,10 @@ const (
 	tagCIDPrefix = "pandion-cid-"
 	// defaultImage is a marketplace label; the SDK resolves it to a per-zone image.
 	defaultImage = "ubuntu_noble" // Ubuntu 24.04 LTS
+	// loginKeyName + sanitized cluster id names the project-scoped IAM SSH key we
+	// register so the login key lands in root's authorized_keys reliably (see
+	// ensureLoginKey). IAM keys carry no tags, so we match by this deterministic name.
+	loginKeyName = "pandion-login-"
 )
 
 // Scaleway tag/name chars: keep to lowercase letters, digits, dashes.
@@ -94,11 +102,15 @@ func recoverClusterID(tags []string) string {
 
 // Scaleway is a provider.Provider backed by the Scaleway Instances API.
 type Scaleway struct {
-	api   *instance.API
-	zones []string
+	api       *instance.API
+	iam       *iam.API // IAM (project SSH keys) — global, region-less
+	projectID string   // resolved default project (for scoping key list/create)
+	zones     []string
 
 	typeMu    sync.Mutex // guards the per-zone type cache
 	typeCache map[string][]typeInfo
+
+	keyMu sync.Mutex // serializes login-key find-or-create (idempotent across nodes)
 }
 
 // Option configures a Scaleway provider.
@@ -128,8 +140,16 @@ func New(secretKey, accessKey, projectID string, opts ...Option) (*Scaleway, err
 	if err != nil {
 		return nil, fmt.Errorf("scaleway client: %w", err)
 	}
+	// Resolve the effective project so we can scope IAM key list/create even when
+	// the id arrives via env/config (SCW_DEFAULT_PROJECT_ID) rather than the arg.
+	pid := projectID
+	if pid == "" {
+		pid, _ = client.GetDefaultProjectID()
+	}
 	s := &Scaleway{
 		api:       instance.NewAPI(client),
+		iam:       iam.NewAPI(client),
+		projectID: pid,
 		zones:     []string{"fr-par-1", "nl-ams-1", "pl-waw-1"},
 		typeCache: map[string][]typeInfo{},
 	}
@@ -155,6 +175,17 @@ func (s *Scaleway) CreateServer(ctx context.Context, spec provider.ServerSpec) (
 	image := spec.Image
 	if image == "" {
 		image = defaultImage
+	}
+
+	// Register the login key with IAM BEFORE the server boots. Scaleway injects
+	// project SSH keys into root's authorized_keys via the metadata datasource at
+	// boot — early and independent of our (large) cloud-init user-data, which at
+	// multi-node scale did not reliably land the key on root. Idempotent: the first
+	// node creates the project key, the rest find it.
+	if spec.LoginPubKey != "" {
+		if err := s.ensureLoginKey(ctx, spec.ClusterID, spec.LoginPubKey); err != nil {
+			return provider.Server{}, fmt.Errorf("register login ssh key: %w", err)
+		}
 	}
 
 	pref := s.zones
@@ -280,6 +311,112 @@ func (s *Scaleway) DestroyServer(ctx context.Context, id string) error {
 		}
 	}
 	return firstErr
+}
+
+// ensureLoginKey find-or-creates the cluster's project-scoped IAM SSH key so it is
+// injected into root's authorized_keys at boot. Idempotent and race-tolerant across
+// concurrent per-node callers: Scaleway rejects a duplicate public key, so on a
+// create conflict we refetch and match by name OR key material (mirrors the DO seam).
+func (s *Scaleway) ensureLoginKey(ctx context.Context, clusterID, pubKey string) error {
+	name := loginKeyName + sanitize(clusterID)
+	s.keyMu.Lock()
+	defer s.keyMu.Unlock()
+
+	if k := s.findLoginKey(ctx, name, pubKey); k != nil {
+		return nil
+	}
+	_, cerr := s.iam.CreateSSHKey(&iam.CreateSSHKeyRequest{
+		Name: name, PublicKey: pubKey, ProjectID: s.projectID,
+	}, scw.WithContext(ctx))
+	if cerr == nil {
+		return nil
+	}
+	// Lost a race, or the material already exists under another name — refetch.
+	if k := s.findLoginKey(ctx, name, pubKey); k != nil {
+		return nil
+	}
+	return cerr
+}
+
+// findLoginKey returns a registered project key matching our name or the key
+// material, or nil. Best-effort: a list error yields nil (treated as "not found").
+func (s *Scaleway) findLoginKey(ctx context.Context, name, pubKey string) *iam.SSHKey {
+	want := keyMaterial(pubKey)
+	pid := s.projectID
+	var projFilter *string
+	if pid != "" {
+		projFilter = &pid
+	}
+	page := int32(1)
+	perPage := uint32(100)
+	for {
+		resp, err := s.iam.ListSSHKeys(&iam.ListSSHKeysRequest{
+			ProjectID: projFilter, Page: &page, PageSize: &perPage,
+		}, scw.WithContext(ctx))
+		if err != nil {
+			return nil
+		}
+		for _, k := range resp.SSHKeys {
+			if k == nil {
+				continue
+			}
+			if k.Name == name || keyMaterial(k.PublicKey) == want {
+				return k
+			}
+		}
+		if len(resp.SSHKeys) < int(perPage) {
+			return nil
+		}
+		page++
+	}
+}
+
+// ReapAux deletes the cluster's login IAM key on teardown so nothing leaks (C4).
+// IAM keys carry no tags, so we match by our deterministic per-cluster name.
+// Implements provider.AuxReaper. Idempotent: no matching key is success.
+func (s *Scaleway) ReapAux(ctx context.Context, clusterID string) error {
+	name := loginKeyName + sanitize(clusterID)
+	pid := s.projectID
+	var projFilter *string
+	if pid != "" {
+		projFilter = &pid
+	}
+	var firstErr error
+	page := int32(1)
+	perPage := uint32(100)
+	for {
+		resp, err := s.iam.ListSSHKeys(&iam.ListSSHKeysRequest{
+			ProjectID: projFilter, Page: &page, PageSize: &perPage,
+		}, scw.WithContext(ctx))
+		if err != nil {
+			if firstErr == nil {
+				firstErr = err
+			}
+			break
+		}
+		for _, k := range resp.SSHKeys {
+			if k == nil || k.Name != name {
+				continue
+			}
+			if derr := s.iam.DeleteSSHKey(&iam.DeleteSSHKeyRequest{SSHKeyID: k.ID}, scw.WithContext(ctx)); derr != nil && !isNotFoundErr(derr) && firstErr == nil {
+				firstErr = derr
+			}
+		}
+		if len(resp.SSHKeys) < int(perPage) {
+			break
+		}
+		page++
+	}
+	return firstErr
+}
+
+// keyMaterial extracts the base64 body of an SSH public key so keys compare by
+// material regardless of name/comment differences.
+func keyMaterial(pub string) string {
+	if f := strings.Fields(strings.TrimSpace(pub)); len(f) >= 2 {
+		return f[1]
+	}
+	return strings.TrimSpace(pub)
 }
 
 // ListByTag returns all instances for a cluster — the reconcile source of truth (C4).
