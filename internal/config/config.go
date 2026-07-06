@@ -74,6 +74,21 @@ type Sync struct {
 	Build      string `yaml:"build"`
 }
 
+// L2 overlay defaults.
+const (
+	DefaultL2Subnet = "192.168.66.0/24"
+	DefaultL2VNI    = 100
+)
+
+// L2Overlay is the parsed `security.overlay: l2` config — an encrypted Layer-2
+// (VXLAN-over-WireGuard) segment. Profile "safe" is a spoof-resistant hardened
+// LAN; "lab" is a deliberately attackable cyber-range (Phase 2).
+type L2Overlay struct {
+	Profile string // "safe" (default) | "lab"
+	Subnet  string // default 192.168.66.0/24
+	VNI     int    // default 100
+}
+
 // Security holds the per-node hardening overrides.
 type Security struct {
 	Overlay               any      `yaml:"overlay"`
@@ -113,6 +128,9 @@ type Effective struct {
 	// engine=docker (default "ubuntu:24.04").
 	Engine         string
 	ContainerImage string
+	// L2, if set, requests an encrypted Layer-2 overlay (security.overlay: l2).
+	// nil means the default L3-only WireGuard overlay.
+	L2 *L2Overlay
 }
 
 // Effective resolves a node's effective settings against the cluster defaults.
@@ -134,6 +152,7 @@ func (c *Cluster) Effective(n Node) Effective {
 		EncryptVolumes: c.secBool(n, func(s *Security) *bool { return s.EncryptVolumes }, false),
 		Engine:         pick(n.Engine, c.Defaults.Engine),
 		ContainerImage: pick(n.ContainerImage, c.Defaults.ContainerImage),
+		L2:             c.resolveL2(n),
 	}
 	if e.Engine == "" {
 		e.Engine = "native" // unset ⇒ native (host), preserving existing behavior
@@ -193,6 +212,61 @@ func (c *Cluster) secBool(n Node, get func(*Security) *bool, fallback bool) bool
 		}
 	}
 	return fallback
+}
+
+// resolveL2 resolves the L2 overlay for a node: node override wins, else the
+// cluster defaults. nil means the default L3-only overlay.
+func (c *Cluster) resolveL2(n Node) *L2Overlay {
+	if n.Sec != nil && n.Sec.Overlay != nil {
+		if o := parseOverlay(n.Sec.Overlay); o != nil {
+			return o
+		}
+	}
+	if c.Defaults.Sec != nil && c.Defaults.Sec.Overlay != nil {
+		if o := parseOverlay(c.Defaults.Sec.Overlay); o != nil {
+			return o
+		}
+	}
+	return nil
+}
+
+// parseOverlay interprets a security.overlay value. It accepts the string form
+// "l2" (⇒ profile safe) or the object form { l2: { profile, subnet, vni } }.
+// Anything else (nil, "auto", false, an unrelated map) means "no L2 overlay".
+// The JSON schema is the source of truth for validity; this is lenient by design.
+func parseOverlay(v any) *L2Overlay {
+	def := func() *L2Overlay { return &L2Overlay{Profile: "safe", Subnet: DefaultL2Subnet, VNI: DefaultL2VNI} }
+	switch t := v.(type) {
+	case string:
+		if t == "l2" {
+			return def()
+		}
+	case map[string]any:
+		m, ok := t["l2"].(map[string]any)
+		if !ok {
+			if _, present := t["l2"]; !present {
+				return nil
+			}
+			return def() // `l2:` with no sub-fields
+		}
+		o := def()
+		if p, ok := m["profile"].(string); ok && p != "" {
+			o.Profile = p
+		}
+		if s, ok := m["subnet"].(string); ok && s != "" {
+			o.Subnet = s
+		}
+		switch vni := m["vni"].(type) {
+		case int:
+			o.VNI = vni
+		case int64:
+			o.VNI = int(vni)
+		case float64:
+			o.VNI = int(vni)
+		}
+		return o
+	}
+	return nil
 }
 
 // Validate checks raw YAML bytes against the schema without unmarshalling into

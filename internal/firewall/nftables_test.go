@@ -97,6 +97,28 @@ func TestNFTables_OverlayAndOperatorRestrictedSSH(t *testing.T) {
 	}
 }
 
+func TestNFTables_L2Overlay(t *testing.T) {
+	out := NFTables(Spec{WGPort: 51820, AllowOverlayInput: true, AllowL2Input: true, AllowDNS: true})
+	// decapsulated L2 frames accepted on vxlan0 (input).
+	if !strings.Contains(out, "iifname \"vxlan0\" accept") {
+		t.Errorf("input must accept decapsulated vxlan0 frames:\n%s", out)
+	}
+	// VXLAN egress allowed but SCOPED to the overlay subnet (no internet hole).
+	oi := strings.Index(out, "chain output")
+	if oi < 0 || !strings.Contains(out[oi:], "ip daddr 10.99.0.0/24 udp dport 4789 accept") {
+		t.Errorf("output must allow scoped VXLAN egress (10.99.0.0/24 udp 4789):\n%s", out)
+	}
+	// it must NOT be an unscoped udp 4789 accept (that would allow exfil to any host).
+	if strings.Contains(out, "\n    udp dport 4789 accept\n") {
+		t.Errorf("VXLAN egress must be scoped to the overlay, found unscoped rule:\n%s", out)
+	}
+	// disabled by default (no L2 => no vxlan/4789 rules).
+	off := NFTables(Spec{WGPort: 51820, AllowOverlayInput: true})
+	if strings.Contains(off, "vxlan0") || strings.Contains(off, "4789") {
+		t.Errorf("L2 rules must not appear when AllowL2Input is false:\n%s", off)
+	}
+}
+
 // The exfiltration-protection property from S2: with no allowlist and DNS off,
 // the only permitted outbound is loopback + established — no new connections.
 func TestNFTables_NoArbitraryEgress(t *testing.T) {

@@ -212,6 +212,15 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       root-PID refused, post-`unshare` access gone. Remaining: a **GUI smoke test** with real
       VS Code over the overlay. Next: a relay for a zero-install clickable URL, collaborative
       same-session (shared-tmux / Delve multi-client), `--lang` for Python/Go.
+- [~] **Encrypted Layer-2 overlay** (`security.overlay: l2`) — VXLAN-over-WireGuard broadcast
+      domain; orchestrator-managed static FDB (unicast + BUM flood) injected at the mesh
+      barrier; auto inner-MTU; VXLAN egress scoped to the overlay subnet; management plane
+      stays hardened. **Phase 1 (safe profile) done + live-verified** (`scripts/e2e_l2_safe.sh`:
+      reachability, dynamic ARP, large-MTU frame, **host DAI blocks a real cross-node ARP
+      spoof**, wg0 intact). Design/plan in `docs/l2-overlay-*`. **Phase 2:** the `lab`
+      cyber-range profile (attackable — `rp_filter=0`/promisc on vxlan0, no DAI, loud UX +
+      audit; e2e proving `arpspoof` MITM works + is contained). Later: gateway topology,
+      container/VM nested MACs, multicast-app validation.
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.

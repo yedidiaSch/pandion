@@ -7,6 +7,20 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **Encrypted Layer-2 overlay — `security.overlay: l2` (safe profile, Phase 1)** — an
+  opt-in VXLAN-over-WireGuard segment gives a cluster a real, encrypted, isolated
+  Ethernet broadcast domain on top of the L3 mesh. Because WireGuard carries no
+  multicast, the orchestrator manages a static FDB (unicast MAC→VTEP + per-peer
+  BUM-flood) injected at the same barrier that forms the WireGuard mesh; the `safe`
+  profile adds host-side Dynamic ARP Inspection (an nftables `arp` table pinning each
+  IP↔MAC binding) so the segment is **spoof-resistant**. Inner MTU is computed from
+  the wg0 underlay (no black-holing); VXLAN egress is scoped to the overlay subnet
+  (no internet hole); the management plane (`wg0`) stays fully hardened. One line in
+  `cluster.yaml` (`security.overlay: l2`) — the operator never touches VXLAN/FDB/MAC.
+  Verified live by `scripts/e2e_l2_safe.sh` (L2 reachability + dynamic ARP + large-MTU
+  frame + a real cross-node ARP spoof **blocked** + `wg0` posture intact). The `lab`
+  cyber-range profile (deliberately attackable) lands in Phase 2. Design +
+  implementation plan in `docs/l2-overlay-design.pdf` / `docs/l2-overlay-implementation-plan.md`.
 - **Shared debugging — `pandion debug share` / `join` / `unshare`** — hand a teammate
   **one token** that grants a scoped, expiring, revocable remote-debug attach to a running
   process, with no backend and without giving up root or your overlay. On the node the

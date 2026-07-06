@@ -558,7 +558,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 	if err := writeManifest(id, []nodeManifest{{
 		Name: node, IP: ip, OverlayIP: overlayIP, HostPub: host.PublicAuthorized,
-	}}); err != nil {
+	}}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save manifest (attach won't work): %v\n", err)
 	}
 

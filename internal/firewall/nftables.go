@@ -30,6 +30,11 @@ type Spec struct {
 	// AllowOverlayInput accepts any traffic arriving on the wg0 interface, so
 	// management/IPC over the encrypted overlay is unrestricted.
 	AllowOverlayInput bool
+	// AllowL2Input accepts traffic arriving on the vxlan0 interface — the
+	// decapsulated Layer-2 overlay (security.overlay: l2). The encapsulated VXLAN
+	// UDP itself arrives on wg0 (covered by AllowOverlayInput); this accepts the
+	// inner frames delivered to vxlan0 so L2 reachability works.
+	AllowL2Input bool
 	// IngressPorts are additional inbound TCP ports (e.g. IPC) to allow.
 	IngressPorts []int
 	// EgressAllowIPs are outbound-allowed IPv4 addresses/CIDRs (already resolved).
@@ -51,6 +56,14 @@ type Spec struct {
 // metadataIP is the cloud instance metadata endpoint (same on Hetzner, DO, AWS,
 // GCP, …). It holds instance credentials/user-data — a classic SSRF exfil target.
 const metadataIP = "169.254.169.254"
+
+// overlaySubnet is the WireGuard overlay's IP range (nodes 10.99.0.x); l2VXLANPort
+// is the VXLAN UDP transport for the L2 overlay. VXLAN egress is scoped to the
+// overlay subnet so allowing it opens no path to the public internet.
+const (
+	overlaySubnet = "10.99.0.0/24"
+	l2VXLANPort   = 4789
+)
 
 func (s Spec) normalize() Spec {
 	if s.SSHPort == 0 {
@@ -86,6 +99,9 @@ func NFTables(in Spec) string {
 	if s.AllowOverlayInput {
 		b.WriteString("    iif \"wg0\" accept\n") // trust the encrypted overlay
 	}
+	if s.AllowL2Input {
+		b.WriteString("    iifname \"vxlan0\" accept\n") // decapsulated L2 overlay frames
+	}
 	if s.WGPort != 0 {
 		b.WriteString(fmt.Sprintf("    udp dport %d accept\n", s.WGPort)) // WireGuard
 	}
@@ -120,6 +136,14 @@ func NFTables(in Spec) string {
 		// WireGuard UNDERLAY egress: encrypted packets to peers' public IPs, so
 		// the node can reach/maintain the mesh under egress-deny (F14).
 		b.WriteString(fmt.Sprintf("    udp dport %d accept\n", s.WGPort))
+	}
+	if s.AllowL2Input {
+		// L2 overlay egress. Two packets need to leave: (1) inner frames the node
+		// puts on the L2 segment (oif vxlan0), and (2) the kernel-generated VXLAN
+		// encapsulation (udp/4789 to peers' overlay IPs) — scoped to the overlay
+		// subnet so no path to the public internet opens.
+		b.WriteString("    oif \"vxlan0\" accept\n")
+		b.WriteString(fmt.Sprintf("    ip daddr %s udp dport %d accept\n", overlaySubnet, l2VXLANPort))
 	}
 	if s.AllowDNS {
 		b.WriteString("    udp dport 53 accept\n")
