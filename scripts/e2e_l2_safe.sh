@@ -15,7 +15,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-ID="e2e-l2safe"; PROV="hetzner"; BIN="./bin/pandion"
+PROV="${1:-hetzner}"; ID="e2e-l2safe-$PROV"; BIN="./bin/pandion"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"
 PASS=1
 c_ok(){ printf '\033[32m[ PASS ]\033[0m %s\n' "$*"; }

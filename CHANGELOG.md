@@ -7,6 +7,17 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **L2 overlay `lab` profile — an attackable, isolated cyber-range (Phase 2)** —
+  `security.overlay: { l2: { profile: lab } }` provisions the same encrypted L2
+  segment but *deliberately attackable*: `rp_filter=0` + promiscuous mode on `vxlan0`
+  and **no ARP inspection**, so ARP-spoof/MITM, Responder-style poisoning, etc. work —
+  for authorized labs/training/CTF. It is **loud** (a boxed warning on `up`, an
+  `L2-LAB` tag in `ls`, an audit event) and **contained**: attacks ride the private
+  overlay only (never the provider LAN or the internet), and the management plane
+  (`wg0`) stays fully hardened. Verified live by `scripts/e2e_l2_lab.sh` (real
+  cross-node **MITM: victim poisoned + attacker intercepts traffic**, then asserts
+  containment + `wg0` intact) — the exact mirror of the `safe` e2e where the same
+  spoof is blocked. Lab requires an explicit `profile: lab` (default stays `safe`).
 - **Encrypted Layer-2 overlay — `security.overlay: l2` (safe profile, Phase 1)** — an
   opt-in VXLAN-over-WireGuard segment gives a cluster a real, encrypted, isolated
   Ethernet broadcast domain on top of the L3 mesh. Because WireGuard carries no
@@ -36,6 +47,14 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
   `gdbserver` now ships in the default toolchain. **Verified live** by
   `scripts/e2e_debug_share.sh` (real symbolized backtrace over the guest grant; root-PID
   refused; post-`unshare` access gone).
+
+### Changed
+- **Longer cluster-provisioning window** for slow-boot providers — the multi-node
+  readiness ceiling is 25 min (was 12). It only bounds failures; fast providers still
+  finish early. (Note: this alone does not fix Scaleway multi-node clusters, whose
+  login key is injected only via cloud-init and does not reliably land on root at
+  scale — a deeper Scaleway-provider fix, tracked in TODO, is registering the SSH key
+  with Scaleway IAM like the other providers.)
 
 ## [0.4.0] — 2026-07-05
 
