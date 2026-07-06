@@ -266,6 +266,20 @@ func writeManifest(id string, nodes []nodeManifest, seg *l2Segment) error {
 	return os.WriteFile(manifestPath(id), b, 0o600)
 }
 
+// l2Tag returns an `ls` label suffix marking a cluster's L2 overlay: a loud
+// warning for the attackable lab profile, a quiet marker for safe. Empty when the
+// cluster has no L2 segment (or no local manifest).
+func l2Tag(id string) string {
+	m, err := loadManifest(id)
+	if err != nil || m == nil || m.L2 == nil {
+		return ""
+	}
+	if m.L2.Profile == "lab" {
+		return " ⚠L2-LAB"
+	}
+	return " [L2]"
+}
+
 // l2HostAddr returns the L2 overlay address for host number h in subnet — e.g.
 // (subnet "192.168.66.0/24", h=3) -> ("192.168.66.3", "192.168.66.3/24"). Falls
 // back to the default subnet if the configured one is unparseable.
@@ -367,7 +381,11 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		pinLock = lk
 		fmt.Printf("pinning packages from lockfile %s\n", lockPath)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Minute)
+	// Generous ceiling: it only bounds failures — every step succeeds as soon as
+	// its node is ready, so fast providers finish early. Slow-boot providers
+	// (e.g. Scaleway's two-phase boot) need the extra room to install the login
+	// key via cloud-init under concurrent multi-node provisioning.
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
 	defer cancel()
 
 	// Phase-aware Ctrl+C handling (F15): during SETUP an interrupt rolls the
@@ -400,8 +418,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	must(err)
 
 	// Layer-2 overlay (security.overlay: l2) is cluster-wide: if any node/defaults
-	// request it, every node gets a vxlan0 segment. Phase 1 supports the "safe"
-	// profile only.
+	// request it, every node gets a vxlan0 segment. "safe" is spoof-resistant
+	// (host DAI); "lab" is a deliberately ATTACKABLE cyber-range.
 	var clusterL2 *config.L2Overlay
 	for _, n := range cl.Nodes {
 		if e := cl.Effective(n).L2; e != nil {
@@ -409,9 +427,20 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			break
 		}
 	}
-	if clusterL2 != nil && clusterL2.Profile != "safe" {
-		fmt.Fprintf(os.Stderr, "up: L2 overlay profile %q is not yet available (Phase 1 supports 'safe'); the 'lab' cyber-range profile lands in Phase 2.\n", clusterL2.Profile)
-		os.Exit(2)
+	if clusterL2 != nil && clusterL2.Profile == "lab" {
+		// The lab profile deliberately weakens the L2 segment (ARP-spoof/MITM
+		// enabled). It is opt-in and explicit; make it LOUD and audited. The
+		// management plane (wg0) stays hardened; attacks are contained to the
+		// private overlay (isolated from the provider LAN and the internet).
+		fmt.Fprintln(os.Stderr, "┌──────────────────────────────────────────────────────────────┐")
+		fmt.Fprintln(os.Stderr, "│  ⚠  L2 LAB PROFILE — this cluster has an ATTACKABLE Layer-2   │")
+		fmt.Fprintln(os.Stderr, "│  segment: ARP spoofing / MITM are ENABLED on vxlan0. It is    │")
+		fmt.Fprintln(os.Stderr, "│  isolated to the encrypted overlay (not the provider LAN or   │")
+		fmt.Fprintln(os.Stderr, "│  the internet) and wg0 stays hardened. Authorized labs only.  │")
+		fmt.Fprintln(os.Stderr, "└──────────────────────────────────────────────────────────────┘")
+		audit.Event("overlay.l2", "id", id, "profile", "lab", "subnet", clusterL2.Subnet)
+	} else if clusterL2 != nil {
+		audit.Event("overlay.l2", "id", id, "profile", clusterL2.Profile, "subnet", clusterL2.Subnet)
 	}
 
 	// build per-node plans + hardened cloud-init (host key, toolchain, wg iface)

@@ -83,7 +83,7 @@ that is secure by default and leaves nothing behind.**
 | 🔧 **Operator tooling** | `pandion ssh` / `pandion cp` (host-key-pinned), shell completion, offline `mock` provider |
 | 🐞 **IDE debug-attach** | `pandion debug` attaches your **local** VS Code debugger to a **remote** process over the overlay — remote `gdb` driven through the pinned SSH pipe (no new port, no agent) |
 | 🤝 **Shared debugging** | `pandion debug share` sends a teammate **one token** for a scoped, expiring, revocable remote-debug attach — a root `gdbserver` pinned to one non-root PID, reached over the pinned SSH pipe; no shell, no port, no root RCE; `unshare`/`down` revoke it |
-| 🕸️ **Encrypted L2 overlay** | `security.overlay: l2` adds a VXLAN-over-WireGuard **Layer-2 segment** (`safe` profile) — a real broadcast domain with host-side ARP-inspection (spoof-resistant), orchestrator-managed static FDB, isolated from the provider LAN; the `lab` cyber-range profile is Phase 2 |
+| 🕸️ **Encrypted L2 overlay** | `security.overlay: l2` adds a VXLAN-over-WireGuard **Layer-2 segment**, orchestrator-managed static FDB, isolated from the provider LAN. `safe` = spoof-resistant (host-side ARP inspection); `lab` = a deliberately **attackable cyber-range** (ARP-spoof/MITM enabled, contained + loud) for authorized labs/CTF |
 
 ---
 
