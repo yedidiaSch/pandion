@@ -749,7 +749,7 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 	totNodes := 0
 	for _, c := range clusters {
 		for i, n := range c.Nodes {
-			cid := c.ClusterID
+			cid := c.ClusterID + l2Tag(c.ClusterID)
 			if i > 0 {
 				cid = "" // label the cluster only on its first row
 			}
