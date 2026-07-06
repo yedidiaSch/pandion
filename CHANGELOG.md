@@ -6,6 +6,15 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-07-06
+
+An encrypted **Layer-2 overlay** for clusters — a real, isolated Ethernet broadcast
+domain riding the WireGuard mesh — in two profiles: `safe` (spoof-resistant, Phase 1)
+and `lab` (a deliberately attackable, contained cyber-range, Phase 2). Both were
+proven on real cloud (DigitalOcean) by self-cleaning e2es, including a live
+cross-node **MITM that the `safe` profile blocks and the `lab` profile allows —
+while staying contained to the private overlay**.
+
 ### Added
 - **L2 overlay `lab` profile — an attackable, isolated cyber-range (Phase 2)** —
   `security.overlay: { l2: { profile: lab } }` provisions the same encrypted L2
@@ -160,6 +169,7 @@ self-cleaning e2e script.
 - Release pipeline: GoReleaser, signed APT/YUM repos, Homebrew cask, `.deb`/`.rpm`/
   `.apk`, per-archive SBOMs, cross-compiled binaries.
 
+[0.5.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.5.0
 [0.4.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.4.0
 [0.3.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.3.0
 [0.2.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.2.0
