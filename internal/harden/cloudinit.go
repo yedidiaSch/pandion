@@ -57,6 +57,11 @@ type CloudInit struct {
 	// persistent disk — so a stolen/imaged disk yields only ciphertext, and the
 	// volume is intentionally unrecoverable after a reboot (fine for ephemeral nodes).
 	EncryptWorkspace bool
+	// L2Script, if set, is a shell script that brings up the Layer-2 VXLAN
+	// interface (security.overlay: l2). It is written to disk and run at boot
+	// AFTER wg-quick@wg0, because vxlan0 rides wg0. The peer FDB is injected later,
+	// at the barrier (peers aren't known at boot).
+	L2Script string
 }
 
 // DefaultToolchain is Pandion's C++ toolchain per the Execution Contract (§5):
@@ -179,6 +184,13 @@ func Build(ci CloudInit) string {
 
 	if ci.WGConfig != "" {
 		runcmds = append(runcmds, "[ systemctl, enable, --now, wg-quick@wg0 ]")
+	}
+
+	// Layer-2 overlay (security.overlay: l2): bring up vxlan0 AFTER wg0 is up, since
+	// it rides wg0. Written as a script and invoked (like the encfs pattern).
+	if ci.L2Script != "" {
+		files = append(files, wf{"/usr/local/bin/pandion-l2-up", "0755", ci.L2Script})
+		runcmds = append(runcmds, "[ bash, /usr/local/bin/pandion-l2-up ]")
 	}
 
 	if len(files) > 0 {

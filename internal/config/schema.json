@@ -35,7 +35,7 @@
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
-        "name": { "enum": ["hetzner", "digitalocean", "mock"] },
+        "name": { "enum": ["hetzner", "digitalocean", "vultr", "linode", "scaleway", "mock"] },
         "credential": {
           "type": "string",
           "description": "Name of a credential in the local secret store. NEVER the token itself."
@@ -77,9 +77,29 @@
       "description": "All fields default to the hardened posture; present only to relax (with warning).",
       "properties": {
         "overlay": {
-          "oneOf": [{ "const": "auto" }, { "const": false }],
+          "oneOf": [
+            { "const": "auto" },
+            { "const": false },
+            { "const": "l2" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["l2"],
+              "properties": {
+                "l2": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "profile": { "enum": ["safe", "lab"], "default": "safe" },
+                    "subnet": { "type": "string", "default": "192.168.66.0/24" },
+                    "vni": { "type": "integer", "minimum": 1, "maximum": 16777215, "default": 100 }
+                  }
+                }
+              }
+            }
+          ],
           "default": "auto",
-          "description": "WireGuard overlay; false is NOT recommended (re-exposes public SSH)."
+          "description": "Overlay: 'auto' (default L3 WireGuard), false (NOT recommended), 'l2' (add a safe Layer-2 segment), or { l2: { profile: safe|lab, subnet, vni } }."
         },
         "egress_allow": {
           "type": "array",

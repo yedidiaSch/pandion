@@ -3,8 +3,10 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -191,6 +193,8 @@ type nodePlan struct {
 	blockMeta    bool      // block the cloud metadata endpoint (security.block_metadata_service)
 	engine       string    // "native" | "docker"
 	containerImg string    // container image for engine=docker
+	l2IP         string    // L2 overlay IP (no prefix), e.g. 192.168.66.1; empty if no L2
+	l2MAC        string    // L2 overlay MAC, e.g. 02:00:00:00:00:01
 }
 
 // resolveSync picks the node's sync config, falling back to cluster defaults.
@@ -218,37 +222,64 @@ type nodeManifest struct {
 	Name      string `json:"name"`
 	IP        string `json:"ip"`
 	OverlayIP string `json:"overlay_ip"`
-	HostPub   string `json:"host_pub"` // authorized-keys line, to pin
+	HostPub   string `json:"host_pub"`         // authorized-keys line, to pin
+	L2IP      string `json:"l2_ip,omitempty"`  // Layer-2 overlay IP (security.overlay: l2)
+	L2MAC     string `json:"l2_mac,omitempty"` // Layer-2 overlay MAC
+}
+
+// l2Segment records the cluster's Layer-2 overlay (security.overlay: l2).
+type l2Segment struct {
+	VNI     int    `json:"vni"`
+	Subnet  string `json:"subnet"`
+	Profile string `json:"profile"`
 }
 
 // clusterManifest is written to ~/.pandion/keys/<id>/manifest.json at `up`.
 type clusterManifest struct {
 	ID    string         `json:"id"`
 	Nodes []nodeManifest `json:"nodes"`
+	L2    *l2Segment     `json:"l2,omitempty"`
 }
 
 func manifestPath(id string) string {
 	return filepath.Join(envHome(), ".pandion", "keys", id, "manifest.json")
 }
 
-func saveManifest(id string, plans []*nodePlan) error {
+func saveManifest(id string, plans []*nodePlan, seg *l2Segment) error {
 	nodes := make([]nodeManifest, 0, len(plans))
 	for _, p := range plans {
 		nodes = append(nodes, nodeManifest{
 			Name: p.name, IP: p.ip, OverlayIP: p.overlayIP, HostPub: p.host.PublicAuthorized,
+			L2IP: p.l2IP, L2MAC: p.l2MAC,
 		})
 	}
-	return writeManifest(id, nodes)
+	return writeManifest(id, nodes, seg)
 }
 
 // writeManifest persists the reconnect-time view (nodes to SSH-pin) so `attach`
 // and `lockdown` work for both the single-node and cluster flows.
-func writeManifest(id string, nodes []nodeManifest) error {
-	b, err := json.MarshalIndent(clusterManifest{ID: id, Nodes: nodes}, "", "  ")
+func writeManifest(id string, nodes []nodeManifest, seg *l2Segment) error {
+	b, err := json.MarshalIndent(clusterManifest{ID: id, Nodes: nodes, L2: seg}, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(manifestPath(id), b, 0o600)
+}
+
+// l2HostAddr returns the L2 overlay address for host number h in subnet — e.g.
+// (subnet "192.168.66.0/24", h=3) -> ("192.168.66.3", "192.168.66.3/24"). Falls
+// back to the default subnet if the configured one is unparseable.
+func l2HostAddr(subnet string, h int) (ipOnly, withPrefix string) {
+	_, ipnet, err := net.ParseCIDR(subnet)
+	if err != nil {
+		_, ipnet, _ = net.ParseCIDR(config.DefaultL2Subnet)
+	}
+	base := ipnet.IP.To4()
+	var b4 [4]byte
+	binary.BigEndian.PutUint32(b4[:], binary.BigEndian.Uint32(base)+uint32(h))
+	ip := net.IP(b4[:]).String()
+	ones, _ := ipnet.Mask.Size()
+	return ip, fmt.Sprintf("%s/%d", ip, ones)
 }
 
 func loadManifest(id string) (*clusterManifest, error) {
@@ -368,6 +399,21 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	opWG, err := overlay.GenerateKeypair()
 	must(err)
 
+	// Layer-2 overlay (security.overlay: l2) is cluster-wide: if any node/defaults
+	// request it, every node gets a vxlan0 segment. Phase 1 supports the "safe"
+	// profile only.
+	var clusterL2 *config.L2Overlay
+	for _, n := range cl.Nodes {
+		if e := cl.Effective(n).L2; e != nil {
+			clusterL2 = e
+			break
+		}
+	}
+	if clusterL2 != nil && clusterL2.Profile != "safe" {
+		fmt.Fprintf(os.Stderr, "up: L2 overlay profile %q is not yet available (Phase 1 supports 'safe'); the 'lab' cyber-range profile lands in Phase 2.\n", clusterL2.Profile)
+		os.Exit(2)
+	}
+
 	// build per-node plans + hardened cloud-init (host key, toolchain, wg iface)
 	plans := make([]*nodePlan, len(cl.Nodes))
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
@@ -409,6 +455,20 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata,
 			engine: eff.Engine, containerImg: eff.ContainerImage}
 
+		// Layer-2 overlay: assign this node a deterministic L2 IP + MAC (host = i+1,
+		// matching the wg overlay host number) and render the vxlan0 bring-up script.
+		var l2Script string
+		if clusterL2 != nil {
+			host := i + 1
+			l2ip, l2addr := l2HostAddr(clusterL2.Subnet, host)
+			mac := fmt.Sprintf("02:00:00:00:00:%02x", host)
+			plans[i].l2IP, plans[i].l2MAC = l2ip, mac
+			l2Script = strings.Join(overlay.VXLANBringUp(overlay.L2NodeSpec{
+				VNI: clusterL2.VNI, LocalWG: oip, Addr: l2addr, MAC: mac,
+				MTU: overlay.MTUFor(overlay.DefaultWGMTU), Profile: clusterL2.Profile,
+			}), "\n") + "\n"
+		}
+
 		windows[i] = parseTTL(eff.TTLRaw)
 		ci := harden.CloudInit{
 			HostPrivKeyPEM:   host.PrivatePEM,
@@ -422,6 +482,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			AuditLog:         eff.AuditLog,       // on-node audit trail (S-F; security.audit_log)
 			SysctlHardening:  true,               // CIS-lite kernel network baseline (P1)
 			EncryptWorkspace: eff.EncryptVolumes, // LUKS at rest (S-E; security.encrypt_volumes)
+			L2Script:         l2Script,           // vxlan0 bring-up (security.overlay: l2)
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
@@ -559,6 +620,27 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		}
 	}
 
+	// Layer-2 overlay: inject the static FDB (unicast MAC->VTEP + BUM flood) so the
+	// vxlan0 broadcast domain works without multicast. FDB is kernel state, so it
+	// survives the firewall's `flush ruleset` below; the DAI nft rules do NOT, so
+	// they are applied AFTER the firewall (see below).
+	if clusterL2 != nil {
+		fmt.Println("injecting L2 overlay FDB...")
+		for _, p := range plans {
+			var cmds []string
+			for _, q := range plans {
+				if q.name == p.name {
+					continue
+				}
+				cmds = append(cmds, overlay.FDBInject(q.l2MAC, q.overlayIP)...)
+			}
+			if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, joinAmp(cmds)); err != nil {
+				fmt.Fprintf(os.Stderr, "L2 FDB setup failed on %s: %v (cluster left up)\n", p.name, err)
+				return
+			}
+		}
+	}
+
 	// verify mutual reachability over the overlay (each node pings the next)
 	fmt.Println("verifying mesh reachability...")
 	meshOK := true
@@ -583,12 +665,32 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
 			WGPort: overlay.DefaultPort, AllowOverlayInput: true,
-			EgressAllowIPs: p.egressAllow, // cluster.yaml egress_allow / security (P0-2)
-			BlockMetadata:  p.blockMeta,   // S-F (honors security.block_metadata_service)
+			AllowL2Input:   clusterL2 != nil, // accept decapsulated vxlan0 frames
+			EgressAllowIPs: p.egressAllow,    // cluster.yaml egress_allow / security (P0-2)
+			BlockMetadata:  p.blockMeta,      // S-F (honors security.block_metadata_service)
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
 			fmt.Fprintf(os.Stderr, "firewall apply failed on %s: %v\n", p.name, err)
+		}
+	}
+
+	// Layer-2 overlay (safe profile): apply host-side Dynamic ARP Inspection — an
+	// nftables arp table pinning each IP<->MAC binding, so a forged ARP cannot
+	// poison a neighbor. Applied AFTER the firewall (which flushes the ruleset) as
+	// a SEPARATE table, and re-applied idempotently.
+	if clusterL2 != nil && clusterL2.Profile == "safe" {
+		fmt.Println("applying L2 ARP-inspection (safe profile)...")
+		bindings := make([]overlay.L2Binding, 0, len(plans))
+		for _, p := range plans {
+			bindings = append(bindings, overlay.L2Binding{L2IP: p.l2IP, MAC: p.l2MAC, WGIP: p.overlayIP})
+		}
+		dai := overlay.DAIRules(bindings)
+		cmd := "nft delete table arp pandion_dai 2>/dev/null; echo " + b64(dai) + " | base64 -d | nft -f -"
+		for _, p := range plans {
+			if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
+				fmt.Fprintf(os.Stderr, "L2 ARP-inspection apply failed on %s: %v\n", p.name, err)
+			}
 		}
 	}
 
@@ -620,7 +722,11 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	must(os.WriteFile(confPath, []byte(opConf), 0o600))
 
 	// persist the manifest so `lockdown`/`attach` can reconnect (pin + overlay)
-	if err := saveManifest(id, plans); err != nil {
+	var seg *l2Segment
+	if clusterL2 != nil {
+		seg = &l2Segment{VNI: clusterL2.VNI, Subnet: clusterL2.Subnet, Profile: clusterL2.Profile}
+	}
+	if err := saveManifest(id, plans, seg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save cluster manifest: %v\n", err)
 	}
 
