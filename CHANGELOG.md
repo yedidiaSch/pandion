@@ -6,6 +6,18 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Fixed
+- **Scaleway multi-node clusters now provision reliably** — multi-node `up` used to
+  time out with *"login key not yet on root"*: Scaleway received the login key only
+  through the (large) cloud-init user-data, which did not land on root reliably at
+  concurrent multi-node scale (the longer provisioning window did not fix it). The
+  Scaleway provider now registers the login key as a **project-scoped IAM SSH key**
+  before boot, so Scaleway's metadata datasource injects it into root early and
+  independently of cloud-init timing; the key is deleted on teardown (`ReapAux`) so
+  nothing leaks. Verified live by `scripts/e2e_scaleway_cluster.sh` (a 3-node cluster
+  forms its mesh, root login succeeds on all three nodes, and the IAM key is reaped
+  on `down`).
+
 ## [0.5.0] — 2026-07-06
 
 An encrypted **Layer-2 overlay** for clusters — a real, isolated Ethernet broadcast
