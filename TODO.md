@@ -226,12 +226,14 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       attacker intercepts) and is **contained**; wg0 intact. Verified on DigitalOcean.
       Later: gateway topology, container/VM nested MACs, multicast-app validation, a wider
       cross-provider lab sweep.
-- [ ] **Scaleway multi-node provisioning** — single-node works, but multi-node clusters
-      time out with "login key not yet on root": Scaleway injects the login key ONLY via
-      cloud-init user-data (no provider SSH-key registration like DO/Vultr/Hetzner), and at
-      concurrent multi-node scale it doesn't land reliably. A longer provisioning window (now
-      25 min) doesn't fix it. Real fix: register the login key with **Scaleway IAM/project
-      SSH keys** in the Scaleway provider so it's installed independent of cloud-init timing.
+- [x] **Scaleway multi-node provisioning** — was timing out with "login key not yet on
+      root" (Scaleway injected the login key ONLY via cloud-init user-data, which didn't land
+      reliably at concurrent multi-node scale; the longer window didn't fix it). **Fixed:** the
+      Scaleway provider now registers the login key as a **project-scoped IAM SSH key** before
+      boot (`ensureLoginKey`, idempotent across nodes) so Scaleway's metadata datasource injects
+      it into root early, independent of cloud-init timing; `ReapAux` deletes the key on teardown
+      (no leak). **Live-verified** by `scripts/e2e_scaleway_cluster.sh` — a 3-node cluster comes
+      up + mesh forms, root login succeeds on all 3/3 nodes, and the IAM key is reaped on `down`.
 - [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
       the per-OS operator overlay join; consider userspace `wireguard-go` so the
       operator side needs no admin install.

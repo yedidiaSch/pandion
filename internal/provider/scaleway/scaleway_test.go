@@ -11,12 +11,13 @@ import (
 	"github.com/yedidiaSch/pandion/internal/provider"
 )
 
-// compile-time: Scaleway satisfies the core seam plus the Pricer. It does NOT
-// implement AuxReaper — the login key rides the cloud-init user-data, and volumes
-// are cleaned up inline by DestroyServer, so there is no auxiliary resource to reap.
+// compile-time: Scaleway satisfies the core seam, the Pricer, and — now that the
+// login key is registered as a project-scoped IAM SSH key (reliable root injection
+// at multi-node scale) — the AuxReaper that deletes that key on teardown.
 var (
-	_ provider.Provider = (*Scaleway)(nil)
-	_ provider.Pricer   = (*Scaleway)(nil)
+	_ provider.Provider  = (*Scaleway)(nil)
+	_ provider.Pricer    = (*Scaleway)(nil)
+	_ provider.AuxReaper = (*Scaleway)(nil)
 )
 
 func TestSelectTypes_CheapestFirst_FiltersSpecGPUEOS(t *testing.T) {
@@ -134,6 +135,36 @@ func TestIsNotFoundErr(t *testing.T) {
 	}
 	if isNotFoundErr(&scw.ResponseError{StatusCode: 429, Message: "rate limited"}) {
 		t.Fatal("429 is not not-found")
+	}
+}
+
+func TestKeyMaterial_ComparesByBodyNotComment(t *testing.T) {
+	body := "AAAAC3NzaC1lZDI1NTE5AAAAIExampleExampleExampleExampleExampleExam"
+	cases := []string{
+		"ssh-ed25519 " + body + " pandion@laptop",
+		"  ssh-ed25519 " + body + "   different-comment  ",
+		"ssh-ed25519 " + body,
+	}
+	for _, c := range cases {
+		if got := keyMaterial(c); got != body {
+			t.Fatalf("keyMaterial(%q) = %q, want %q", c, got, body)
+		}
+	}
+	// A bare body (no type/comment) is returned as-is (trimmed).
+	if got := keyMaterial("  " + body + "  "); got != body {
+		t.Fatalf("bare material = %q, want %q", got, body)
+	}
+}
+
+func TestLoginKeyName_PerClusterAndSanitized(t *testing.T) {
+	// The reap/find name must be deterministic and share the sanitize() rule so
+	// ReapAux matches exactly what ensureLoginKey created — including for ids with
+	// characters Scaleway names disallow.
+	if got := loginKeyName + sanitize("Build-01"); got != "pandion-login-build-01" {
+		t.Fatalf("login key name = %q", got)
+	}
+	if a, b := loginKeyName+sanitize("alpha"), loginKeyName+sanitize("beta"); a == b {
+		t.Fatal("distinct clusters must derive distinct login-key names")
 	}
 }
 
