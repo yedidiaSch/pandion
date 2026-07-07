@@ -7,6 +7,14 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **macOS/Windows CLI validation (M7, partial)** — CI now runs an **offline CLI smoke**
+  (`scripts/ci_smoke.sh`) on the `macos-latest` and `windows-latest` runners in addition to
+  build + unit tests: config validation, mock provisioning, dry-run pricing, and completion —
+  proving the binary *runs* on each OS (path handling + state I/O), not just compiles. A new
+  **`scripts/mac_smoke.sh`** covers the real-hardware bits on a Mac (the macOS Keychain, the
+  openssh shell-out, and an opt-in real cloud + `wg-quick` overlay-join loop). Documented the
+  operator platform story: **macOS is first-class native; on Windows use WSL2** (native `ssh`
+  + `wg-quick`), with the native `.exe` supported for the core provision/SSH/debug flow.
 - **`setup:` — install non-apt software declaratively** — a list of shell commands run
   on a node (as root) in the egress-open build window, **after** apt packages and **before**
   your build, so software apt can't install (pip/npm/cargo, a vendor repo, a curl'd binary)

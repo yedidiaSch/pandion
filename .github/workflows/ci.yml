@@ -36,9 +36,11 @@ jobs:
       - name: go build
         run: go build ./...
 
-  # Validate the pure-Go core builds + unit-tests pass on macOS and Windows (M7).
-  # Real-cloud e2e from those hosts still needs the machines + tokens; the CLI is
-  # pure Go (work happens over SSH on the Linux nodes), so this covers the core.
+  # Validate the pure-Go core on macOS and Windows (M7): build, unit tests, AND an
+  # offline CLI smoke that proves the binary RUNS on each host OS (config validation,
+  # mock provisioning, dry-run, completion — path handling + state I/O). A full cloud
+  # + overlay-join run from real Mac/Windows hardware is covered by scripts/mac_smoke.sh
+  # (manual, once); this covers the automatable core on every push.
   cross-platform:
     strategy:
       fail-fast: false
@@ -59,3 +61,7 @@ jobs:
 
       - name: go test
         run: go test ./...
+
+      - name: offline CLI smoke
+        shell: bash
+        run: bash scripts/ci_smoke.sh
