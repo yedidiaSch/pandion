@@ -309,10 +309,16 @@ Selected `up` flags: `--dry-run` (preview plan + cost), `--max-cost N` (budget c
 
 | | Status |
 |---|---|
-| **CLI on Linux** | ✅ Built **and** e2e-validated on real cloud |
-| **CLI on macOS / Windows** | ⚙️ Cross-compiled & released, **not yet validated** (see roadmap **M7**). Pure-Go core; the operator-side overlay join uses `wg-quick` (Linux/macOS) or the WireGuard app (Windows) |
-| **Provisioned nodes** | 🐧 **Ubuntu Linux** (by design — cloud-init/apt/nftables/systemd) |
+| **CLI on Linux** | ✅ Built + unit-tested + **e2e-validated on real cloud** |
+| **CLI on macOS** | ✅ Built, unit-tested **and offline-smoke-tested on every push** (macOS CI runner). The full cloud + overlay-join loop is validated on a real Mac with `scripts/mac_smoke.sh` (needs `brew install wireguard-tools`) |
+| **CLI on Windows** | ✅ Built + unit-tested + offline-smoke-tested in CI. **Recommended path: WSL2** — the Linux binary runs with native `ssh` + `wg-quick` (the full experience). The native `.exe` works for provisioning/SSH; the overlay join needs the WireGuard Windows app to import the `.conf` |
+| **Provisioned nodes** | 🐧 **Ubuntu Linux** (by design — cloud-init/apt/nftables/systemd), whatever your operator OS |
 | **Providers** | **Hetzner Cloud**, **DigitalOcean**, **Vultr**, **Linode/Akamai** and **Scaleway** (a `mock` provider backs offline testing; AWS/GCP deferred) |
+
+> **Operators on Windows:** use **WSL2**. Pandion drives the openssh client and (for
+> the overlay) `wg-quick`; both are native under WSL2, so `brew`/`apt`-install and go.
+> A native `.exe` is shipped and works for the core provision/SSH/debug flow, but the
+> overlay join is smoother under WSL2. **macOS is a first-class native operator OS.**
 
 ---
 
