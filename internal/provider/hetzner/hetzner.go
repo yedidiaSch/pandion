@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package hetzner implements provider.Provider against the Hetzner Cloud API
 // using hcloud-go. It encodes the spike findings: server types are discovered by
 // SPEC at runtime (never hardcoded — S1/F3), and creation searches type x location

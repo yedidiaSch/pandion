@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package audit emits a structured (JSON) trail of Pandion's OWN infrastructure
 // actions — provision, teardown, lockdown, reap — for debugging Pandion itself
 // and as an after-the-fact record (L3). It is deliberately separate from the

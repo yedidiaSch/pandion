@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package linode implements provider.Provider against the Linode (Akamai) API
 // using linodego. It mirrors the DigitalOcean backend's discipline — types are
 // discovered by SPEC at runtime (never hardcoded), creation searches type x region

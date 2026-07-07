@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml/badge.svg)](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yedidiaSch/pandion?sort=semver)](https://github.com/yedidiaSch/pandion/releases)
-[![License](https://img.shields.io/badge/license-BSL--1.1-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 [![Go](https://img.shields.io/github/go-mod/go-version/yedidiaSch/pandion)](go.mod)
 
 </div>
@@ -311,8 +311,12 @@ your work.
 
 ## License
 
-Pandion is source-available under the [Business Source License 1.1](LICENSE): free for
-individuals, non-commercial use, small organizations (under $1M/yr revenue), and internal
-evaluation, development, and testing by anyone. Larger organizations using it commercially need a
-[commercial license](COMMERCIAL.md). Each version becomes Apache-2.0 four years after its release.
-© 2026 Yedidya Schwartz.
+Pandion is free and open source under the [GNU Affero General Public License v3.0](LICENSE)
+(AGPL-3.0). Run, study, modify, and share it freely; if you distribute a modified Pandion — or
+offer one to others over a network — the AGPL asks you to share your changes under the same terms.
+Running the CLI as-is against your own infrastructure carries no such obligation, at any scale.
+
+Want to embed Pandion in a proprietary product or a modified hosted service without the AGPL's
+source-sharing terms? A [commercial license](COMMERCIAL.md) is available. Contributions are made
+under the [CLA](CLA.md), which keeps this dual-licensing possible while you retain copyright of
+your work. © 2026 Yedidya Schwartz.

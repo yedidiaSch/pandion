@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package stream multiplexes per-node stdout/stderr into one local view:
 // color-coded, line-prefixed by node, and tee'd to per-node log files (M4).
 //

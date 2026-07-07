@@ -6,6 +6,18 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Changed
+- **Relicensed from BSL 1.1 to AGPL-3.0 (open source), with a commercial dual-license.**
+  Pandion is now free and open source under the **GNU Affero General Public License v3.0**
+  (an OSI-approved license) instead of the source-available Business Source License. Running
+  the CLI as-is against your own infrastructure carries no obligation, at any scale; the AGPL's
+  copyleft applies only if you distribute a modified Pandion or offer a modified one over a
+  network. A **commercial license** (see `COMMERCIAL.md`) remains available for embedding in
+  proprietary products or closed hosted services — the CLA is retained so this dual-licensing
+  stays possible. SPDX `AGPL-3.0-or-later` headers were added to all source files; the vestigial
+  BSL change-license artifact was removed. Versions already published under BSL 1.1 keep their
+  original terms (including their four-year Apache-2.0 conversion); everything from here is AGPL.
+
 ### Added
 - **Runnable example — `examples/zmq-cluster` (broker + 2 workers)** — a ready-to-run
   ZeroMQ ventilator/worker cluster so a newcomer can see Pandion work on real cloud

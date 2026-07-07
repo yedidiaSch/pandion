@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package sshkeys generates ed25519 SSH key pairs for Pandion.
 //
 // Two pairs are used per node (spike S1):

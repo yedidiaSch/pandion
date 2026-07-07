@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package state is the journaled, on-disk cluster state store. It is a CACHE,
 // not the source of truth — the provider (queried by tag) is authoritative (C4).
 // Every transition is written atomically so a crash is always resumable.

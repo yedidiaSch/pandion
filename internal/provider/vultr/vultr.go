@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package vultr implements provider.Provider against the Vultr API using govultr.
 // It mirrors the DigitalOcean backend's discipline — plans are discovered by SPEC
 // at runtime (never hardcoded), creation searches plan x region for an available

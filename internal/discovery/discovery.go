@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package discovery builds the service-discovery environment injected into every
 // cluster node (C5/H1). Each node learns its siblings' OVERLAY IPs via env vars
 // (e.g. $PANDION_BROKER_IP), so run commands need no hardcoded IPs. IPC flows over

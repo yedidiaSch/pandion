@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package secret stores provider API tokens in the OS keychain (macOS Keychain,
 // Linux Secret Service / libsecret, Windows Credential Manager) via go-keyring,
 // so a token need not sit in an environment variable (H6).

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Command pandion is the CLI: a provision/run/teardown flow over the in-memory
 // mock provider (default, free, offline) or a real cloud backend
 // (--provider=hetzner | digitalocean | vultr | linode | scaleway), with
