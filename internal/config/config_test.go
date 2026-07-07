@@ -218,3 +218,21 @@ func TestEffective_ToolchainAdditiveAndNoDefault(t *testing.T) {
 		t.Fatalf("node b should override with no_default: %+v", eb)
 	}
 }
+
+func TestEffective_SetupAdditiveDefaultsThenNode(t *testing.T) {
+	c := &Cluster{
+		Defaults: NodeCommon{Setup: []string{"pip install -r /req.txt"}},
+		Nodes: []Node{
+			{Name: "a", NodeCommon: NodeCommon{Setup: []string{"curl -sSL https://x | sh"}}},
+			{Name: "b"}, // only the defaults' setup
+		},
+	}
+	ea := c.Effective(c.Nodes[0])
+	if len(ea.Setup) != 2 || ea.Setup[0] != "pip install -r /req.txt" || ea.Setup[1] != "curl -sSL https://x | sh" {
+		t.Fatalf("node a setup should be defaults-then-node: %v", ea.Setup)
+	}
+	eb := c.Effective(c.Nodes[1])
+	if len(eb.Setup) != 1 || eb.Setup[0] != "pip install -r /req.txt" {
+		t.Fatalf("node b should inherit only defaults' setup: %v", eb.Setup)
+	}
+}

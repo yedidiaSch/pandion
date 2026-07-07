@@ -168,6 +168,7 @@ func runUp(args []string) {
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
 	packages := fs.String("packages", "", "comma-separated apt packages/libraries to install (e.g. libzmq3-dev,libboost-dev); added to the toolchain")
+	setup := fs.String("setup", "", "shell command run on the node (as root) in the build window, before your build — for non-apt software (pip/npm/curl; chain with &&)")
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
@@ -226,7 +227,8 @@ func runUp(args []string) {
 		}
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
-			toolchain: !*noToolchain, packages: splitCSV(*packages), firewall: !*noFirewall, overlay: !*noOverlay,
+			toolchain: !*noToolchain, packages: splitCSV(*packages), setup: setupCmds(*setup),
+			firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
@@ -238,6 +240,7 @@ type hetznerUpOpts struct {
 	id, node, runCmd string
 	toolchain        bool
 	packages         []string // extra apt packages/libraries (--packages), added to the toolchain
+	setup            []string // setup commands run (as root) in the build window (--setup)
 	firewall         bool
 	overlay          bool
 	egressAllow      []string
@@ -340,6 +343,16 @@ func splitCSV(s string) []string {
 		}
 	}
 	return out
+}
+
+// setupCmds wraps a single-node --setup command as a one-element list (or nil).
+// It is NOT comma-split — a setup command may legitimately contain commas; chain
+// multiple steps with `&&`. The cluster path takes a real list via `setup:`.
+func setupCmds(s string) []string {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return []string{s}
 }
 
 func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
@@ -466,6 +479,13 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	failNode := func(err error) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
 		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+	}
+	// setup commands (non-apt software) run first — after apt packages, before the
+	// build — while egress is open. A failure is fail-fast: report it, leave the node
+	// up for debugging, and exit NON-ZERO so scripts/CI notice.
+	if err := runSetup(ctx, addr, login.Signer, host.Public, node, opt.setup); err != nil {
+		failNode(err)
+		os.Exit(1)
 	}
 	if opt.engine == "docker" {
 		// pull the image NOW (egress is still open); the post-lockdown `docker run`

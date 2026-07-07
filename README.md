@@ -178,6 +178,21 @@ In a cluster, use `toolchain.packages` per node or under `defaults:` (add
 `no_default: true` for a minimal node with only your packages). A requested
 package that doesn't install is reported by a loud warning at `up` time.
 
+**Install non-apt software** (pip/npm/cargo, a vendor repo, a curl'd binary) with
+`setup:` — shell commands run on the node (as root) in the build window, before
+your build, while egress is still open:
+```yaml
+nodes:
+  - name: web
+    toolchain: { packages: [python3-pip] }
+    setup:
+      - "pip3 install -r requirements.txt"
+      - "curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && apt-get install -y nodejs"
+    run: node server.js
+```
+Single-node: `pandion up --setup 'pip3 install -r requirements.txt' -- ./app`.
+A failing setup command stops `up` (the node is left up for debugging).
+
 **A multi-node IPC cluster** — write `cluster.yaml`:
 ```yaml
 apiVersion: pandion/v1
