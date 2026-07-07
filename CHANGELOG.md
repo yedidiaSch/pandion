@@ -7,6 +7,18 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **Install libraries on a node — `--packages`, additive `toolchain.packages`, and
+  install verification** — declaring libraries is now first-class and safe. Single-node
+  `up` gains **`--packages libzmq3-dev,libboost-dev`** (comma-separated apt packages), and
+  a cluster's `toolchain.packages` (per node or under `defaults:`) now **adds to** the
+  built-in C++ toolchain instead of replacing it — previously, declaring a library silently
+  dropped `gcc`/`clang`/`cmake`/`gdb` (footgun). Set `toolchain.no_default: true` (or
+  `--no-toolchain`) for a minimal node with only your packages. And a requested package that
+  doesn't install (typo'd or unavailable name) — which cloud-init logs but boots past, so the
+  node looks healthy while the library is missing — is now caught by a **loud warning at `up`
+  time**, checked in the egress-open build window. Verified live by `scripts/e2e_packages.sh`
+  (DigitalOcean): requested libs install, the built-in toolchain is preserved, and a bogus
+  package name is reported.
 - **Account-signup pointer for newcomers (with disclosed DigitalOcean referral)** — when
   a command needs a provider token but none is found, and on `pandion login` with no token
   entered, Pandion now points first-timers at how to open an account. For DigitalOcean this

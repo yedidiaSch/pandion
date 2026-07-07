@@ -77,6 +77,30 @@ func DefaultToolchain() []string {
 	return []string{"build-essential", "clang", "cmake", "gdb", "gdbserver", "tmux"}
 }
 
+// ResolveToolchain returns the apt packages to install on a node: the built-in
+// C++ toolchain PLUS the caller's declared extras (libraries/tools), de-duplicated
+// and order-preserving. When noDefault is set the built-in toolchain is omitted and
+// only the declared extras are returned (a minimal node). This is the single place
+// that decides "what libraries land on the node", shared by the single-node and
+// cluster paths so `--packages` and `toolchain.packages` behave identically.
+func ResolveToolchain(declared []string, noDefault bool) []string {
+	var base []string
+	if !noDefault {
+		base = DefaultToolchain()
+	}
+	seen := make(map[string]bool, len(base)+len(declared))
+	out := make([]string, 0, len(base)+len(declared))
+	for _, p := range append(base, declared...) {
+		p = strings.TrimSpace(p)
+		if p == "" || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
+	}
+	return out
+}
+
 // Build produces cloud-init user-data.
 //
 // Host key injection uses the cloud-init `ssh_keys:` module — NOT `write_files`

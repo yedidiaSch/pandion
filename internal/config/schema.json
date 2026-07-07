@@ -57,7 +57,11 @@
         "packages": {
           "type": "array",
           "items": { "type": "string" },
-          "description": "Version-pinned packages (e.g. gcc=4:13.2.0-7ubuntu1) for reproducibility."
+          "description": "Extra apt packages/libraries to install (e.g. libzmq3-dev, or version-pinned gcc=4:13.2.0-7ubuntu1). ADDED to the built-in C++ toolchain and installed in the egress-open build window."
+        },
+        "no_default": {
+          "type": "boolean",
+          "description": "Install ONLY the packages above, omitting Pandion's built-in C++ toolchain (a minimal node). Default false."
         }
       }
     },

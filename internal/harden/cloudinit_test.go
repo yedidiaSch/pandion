@@ -239,3 +239,57 @@ func TestBuild_NoDeadmanWhenZero(t *testing.T) {
 		t.Errorf("no deadman expected when IdleTTL=0:\n%s", out)
 	}
 }
+
+func TestResolveToolchain_AddsToDefaultAndDedups(t *testing.T) {
+	got := ResolveToolchain([]string{"libzmq3-dev", "cmake", " libboost-dev "}, false)
+	// built-in toolchain present...
+	for _, p := range DefaultToolchain() {
+		if !containsStr(got, p) {
+			t.Errorf("built-in package %q dropped: %v", p, got)
+		}
+	}
+	// ...plus the declared libraries (trimmed)...
+	for _, p := range []string{"libzmq3-dev", "libboost-dev"} {
+		if !containsStr(got, p) {
+			t.Errorf("declared package %q missing: %v", p, got)
+		}
+	}
+	// ...and "cmake" (already in the default) appears exactly once.
+	n := 0
+	for _, p := range got {
+		if p == "cmake" {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Errorf("cmake should be de-duplicated, appears %d times: %v", n, got)
+	}
+}
+
+func TestResolveToolchain_NoDefaultInstallsOnlyDeclared(t *testing.T) {
+	got := ResolveToolchain([]string{"libzmq3-dev"}, true)
+	if len(got) != 1 || got[0] != "libzmq3-dev" {
+		t.Fatalf("no_default should install only declared packages, got: %v", got)
+	}
+	if containsStr(got, "build-essential") {
+		t.Error("no_default must omit the built-in toolchain")
+	}
+}
+
+func TestResolveToolchain_EmptyCases(t *testing.T) {
+	if got := ResolveToolchain(nil, false); len(got) != len(DefaultToolchain()) {
+		t.Errorf("no extras ⇒ just the default toolchain, got: %v", got)
+	}
+	if got := ResolveToolchain(nil, true); len(got) != 0 {
+		t.Errorf("no_default + no extras ⇒ empty, got: %v", got)
+	}
+}
+
+func containsStr(ss []string, s string) bool {
+	for _, x := range ss {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
