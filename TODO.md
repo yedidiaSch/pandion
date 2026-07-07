@@ -90,8 +90,9 @@ with **no** referral claim.
 - **Signing key:** fingerprint `8A19045A2466ED368AA23868988E9FA033620E2F`
   (`Pandion Packages`). Private half is the `GPG_PRIVATE_KEY` secret; rotate per
   `packaging/README.md`.
-- **macOS/Windows CLI** is built + released but **unvalidated** — that's roadmap
-  **M7** (`../plan/pandion-roadmap.md` in the design set), not part of this checklist.
+- **macOS/Windows CLI** is built, unit-tested and **offline-smoke-tested in CI** on both
+  OSes every push; the real-hardware bits are covered by `scripts/mac_smoke.sh` (run once on
+  a Mac). Windows operators: **use WSL2**. Full details in the README "Platform support".
 - After all three are green, every channel is live: `brew` · `apt` · `dnf` ·
   direct download · `go install`. Then delete this section.
 
@@ -249,9 +250,14 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
       it into root early, independent of cloud-init timing; `ReapAux` deletes the key on teardown
       (no leak). **Live-verified** by `scripts/e2e_scaleway_cluster.sh` — a 3-node cluster comes
       up + mesh forms, root login succeeds on all 3/3 nodes, and the IAM key is reaped on `down`.
-- [ ] **macOS/Windows CLI validation** (M7) — run tests + a real e2e on each; document
-      the per-OS operator overlay join; consider userspace `wireguard-go` so the
-      operator side needs no admin install.
+- [~] **macOS/Windows CLI validation** (M7) — CI now builds, unit-tests **and offline-smoke-
+      tests** (`scripts/ci_smoke.sh`) the CLI on `macos-latest` + `windows-latest` every push
+      (config validation, mock provisioning, dry-run, completion — path handling + state I/O).
+      `scripts/mac_smoke.sh` validates the real-hardware bits on a Mac (Keychain, ssh, and an
+      opt-in cloud + `wg-quick` overlay loop). **Windows: WSL2 is the recommended operator
+      path** (native `ssh` + `wg-quick`); the native `.exe` works for provision/SSH/debug, the
+      overlay join uses the WireGuard app. Remaining: run `mac_smoke.sh --cloud` on a real Mac
+      once; optionally `wireguard-go` (userspace) so the operator side needs no admin install.
 - [x] **`--dry-run`** (L4) — preview the plan **+ projected cost** (per-node size/region/
       TTL, rolled-up hourly & over-TTL spend) and exit; creates nothing. Works on any
       pricing provider incl. mock (offline). *(done: this branch)*
