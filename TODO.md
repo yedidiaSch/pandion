@@ -71,6 +71,21 @@ is set; public key in `packaging/`).
 
 ---
 
+## 4. Add the DigitalOcean referral code  →  turns the signup pointer into a referral
+The signup-suggestion flow is wired and disclosed (shown on a missing token / empty
+`pandion login`). Until a code is set it points at DigitalOcean's plain signup page
+with **no** referral claim.
+
+1. Get your DigitalOcean referral code (Account ▸ Refer & Earn / affiliate program).
+2. Set it: edit `doRefcode` in `cmd/pandion/referral.go` (or ship `PANDION_DO_REFCODE`).
+3. Verify: `env -u DIGITALOCEAN_TOKEN PANDION_DO_REFCODE=<code> pandion up --provider=do --id x -- true`
+   should print the `?refcode=<code>` URL **with** the "referral link" disclosure.
+
+- [ ] Referral code obtained
+- [ ] `doRefcode` set (or `PANDION_DO_REFCODE` shipped) and disclosure verified
+
+---
+
 ## Notes / caveats
 - **Signing key:** fingerprint `8A19045A2466ED368AA23868988E9FA033620E2F`
   (`Pandion Packages`). Private half is the `GPG_PRIVATE_KEY` secret; rotate per
