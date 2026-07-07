@@ -8,7 +8,7 @@ import (
 )
 
 func TestValidate_ValidFixtures(t *testing.T) {
-	for _, name := range []string{"valid_minimal.yaml", "valid_cluster.yaml"} {
+	for _, name := range []string{"valid_minimal.yaml", "valid_cluster.yaml", "valid_deploy_only.yaml"} {
 		data, err := os.ReadFile(filepath.Join("testdata", name))
 		if err != nil {
 			t.Fatalf("read %s: %v", name, err)
@@ -22,7 +22,6 @@ func TestValidate_ValidFixtures(t *testing.T) {
 func TestValidate_InvalidFixturesRejected(t *testing.T) {
 	for _, name := range []string{
 		"invalid_apiversion.yaml",
-		"invalid_missing_run.yaml",
 		"invalid_unknown_field.yaml",
 		"invalid_badname.yaml",
 	} {
@@ -66,12 +65,30 @@ func TestLoad_TypedFields(t *testing.T) {
 }
 
 func TestLoad_InvalidReturnsError(t *testing.T) {
-	_, err := Load(filepath.Join("testdata", "invalid_missing_run.yaml"))
+	_, err := Load(filepath.Join("testdata", "invalid_badname.yaml"))
 	if err == nil {
 		t.Fatal("expected load error for invalid cluster")
 	}
-	if !strings.Contains(err.Error(), "invalid_missing_run.yaml") {
+	if !strings.Contains(err.Error(), "invalid_badname.yaml") {
 		t.Errorf("error should name the file, got: %v", err)
+	}
+}
+
+// A node may omit `run:` — that is a DEPLOY-ONLY node (provision + sync + build,
+// started later with `pandion start`). It must validate and load with an empty Run.
+func TestLoad_DeployOnlyNodeAllowed(t *testing.T) {
+	c, err := Load(filepath.Join("testdata", "valid_deploy_only.yaml"))
+	if err != nil {
+		t.Fatalf("deploy-only cluster should load, got: %v", err)
+	}
+	if len(c.Nodes) != 2 {
+		t.Fatalf("want 2 nodes, got %d", len(c.Nodes))
+	}
+	if c.Nodes[0].Name != "target" || c.Nodes[0].Run != "" {
+		t.Fatalf("first node should be deploy-only (empty run): %+v", c.Nodes[0])
+	}
+	if c.Nodes[1].Run != "./exploit" {
+		t.Fatalf("second node run not parsed: %+v", c.Nodes[1])
 	}
 }
 

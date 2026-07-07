@@ -255,6 +255,8 @@ orchestrator with a readiness **barrier**, and a hardening pipeline of small, un
 |---|---|
 | `pandion up [--provider mock\|hetzner\|digitalocean\|vultr\|linode\|scaleway] [--id ID] [flags] -- <cmd>` | Provision + harden + run a **single** node |
 | `pandion up --provider … -f cluster.yaml --id ID` | Provision a **multi-node** cluster + mesh |
+| `pandion up … --no-run` | **Deploy only:** provision + sync + build, but don't launch the run command |
+| `pandion start --id ID [--node N] [--detach]` | Launch the run command(s) on a deployed cluster/node (e.g. after `--no-run`) |
 | `pandion attach --id ID` | Reconnect to a running cluster's live multiplexed streams |
 | `pandion ssh --id ID [--node N] [--overlay] [-- CMD]` | Host-key-pinned SSH into a node |
 | `pandion cp --id ID [--node N] SRC DST` | scp to/from a node (prefix a node path with `:`) |

@@ -1,4 +1,0 @@
-apiVersion: pandion/v1
-name: bad
-nodes:
-  - name: dev

@@ -1,0 +1,7 @@
+apiVersion: pandion/v1
+name: staged
+nodes:
+  - name: target
+    role: victim
+  - name: attacker
+    run: ./exploit

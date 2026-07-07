@@ -6,6 +6,18 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Added
+- **Deploy-only nodes + `pandion start` — separate "deploy" from "run"** — `run:` is now
+  **optional** in `cluster.yaml`: a node without it is *deployed* (provisioned + hardened +
+  workspace synced + built) but nothing is launched. `up --no-run` does the same for a whole
+  cluster or single node. Launch the workloads later, on demand, with **`pandion start --id ID
+  [--node NAME] [--detach]`** — it works entirely from the persisted manifest (which now records
+  each node's run spec), streams like `attach`, and skips deploy-only nodes with a helpful error
+  if one is named explicitly. Good for staged cyber-ranges (stand up the nodes, start exercises
+  when ready) and iterative dev (sync + build once, then run/re-run over SSH). Verified live by
+  `scripts/e2e_deploy_start.sh` (DigitalOcean): `--no-run` launches nothing, `start` runs exactly
+  the runnable node and skips the deploy-only one.
+
 ### Fixed
 - **Scaleway multi-node clusters now provision reliably** — multi-node `up` used to
   time out with *"login key not yet on root"*: Scaleway received the login key only
