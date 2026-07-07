@@ -65,6 +65,8 @@ func main() {
 		runReap(os.Args[2:])
 	case "attach":
 		runAttach(os.Args[2:])
+	case "start":
+		runStart(os.Args[2:])
 	case "ssh":
 		runSSH(os.Args[2:])
 	case "cp":
@@ -176,6 +178,7 @@ func runUp(args []string) {
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
 	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
+	noRun := fs.Bool("no-run", false, "deploy only: provision + sync + build but do NOT launch the run command (start it later with `pandion start`)")
 	lock := fs.String("lock", "", "reproducibility: pin toolchain versions from this lockfile (H2)")
 	encWorkspace := fs.Bool("encrypt-workspace", false, "encrypt the workspace at rest with LUKS (ephemeral key; S-E)")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
@@ -193,7 +196,7 @@ func runUp(args []string) {
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun)
 		return
 	}
 
@@ -225,7 +228,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
-			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace,
+			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 		})
 	}
 }
@@ -245,12 +248,13 @@ type hetznerUpOpts struct {
 	maxCost          float64 // budget cap (projected spend); 0 = off
 	lockPath         string  // reproducibility: pin toolchain from this lockfile (H2)
 	encryptWorkspace bool    // LUKS-encrypt the workspace at rest (S-E)
+	noRun            bool    // deploy only: don't launch the run command (start later)
 }
 
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
@@ -265,7 +269,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 
 	if providerName != "mock" && providerName != "" {
 		// the hardened multi-node mesh flow is provider-agnostic (driven through `o`).
-		upClusterHetzner(o, cl, id, maxCost, lockPath)
+		upClusterHetzner(o, cl, id, maxCost, lockPath, noRun)
 		return
 	}
 
@@ -558,8 +562,19 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 	if err := writeManifest(id, []nodeManifest{{
 		Name: node, IP: ip, OverlayIP: overlayIP, HostPub: host.PublicAuthorized,
+		Run: runCmd, Engine: opt.engine, ContainerImg: opt.containerImage,
+		Workdir: workdir, RunUser: opt.runUser, Caps: opt.caps,
 	}}, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save manifest (attach won't work): %v\n", err)
+	}
+
+	// --no-run: DEPLOY only (provision + sync + build), leave the workload unstarted.
+	if opt.noRun {
+		audit.Event("up.complete", "id", id, "node", node, "provider", prov, "ip", ip, "no_run", true)
+		fmt.Printf("node deployed — nothing started (--no-run).\n")
+		fmt.Printf("  start:    pandion start --id %s\n", id)
+		fmt.Printf("  teardown: pandion down --provider=%s --id %s\n", prov, id)
+		return
 	}
 
 	var runShell string
@@ -964,12 +979,13 @@ func initAudit() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
 	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
 	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
+	fmt.Fprintln(os.Stderr, "  pandion start --id ID [--node NAME] [--detach]   (launch run commands on a deployed cluster/node)")
 	fmt.Fprintln(os.Stderr, "  pandion ssh --id ID [--node NAME] [--overlay] [-- CMD]   (SSH into a node, host-key pinned)")
 	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
 	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")

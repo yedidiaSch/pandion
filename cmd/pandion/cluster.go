@@ -225,6 +225,15 @@ type nodeManifest struct {
 	HostPub   string `json:"host_pub"`         // authorized-keys line, to pin
 	L2IP      string `json:"l2_ip,omitempty"`  // Layer-2 overlay IP (security.overlay: l2)
 	L2MAC     string `json:"l2_mac,omitempty"` // Layer-2 overlay MAC
+	// Run spec — persisted so `pandion start` can launch the workload later
+	// (e.g. after `up --no-run`, or a node with no `run:` started on demand) from
+	// the manifest alone, without re-reading cluster.yaml.
+	Run          string   `json:"run,omitempty"`
+	Engine       string   `json:"engine,omitempty"`        // "native" | "docker"
+	ContainerImg string   `json:"container_img,omitempty"` // engine=docker image
+	Workdir      string   `json:"workdir,omitempty"`       // remote cwd (synced workspace), if any
+	RunUser      string   `json:"run_user,omitempty"`      // unprivileged user to run as
+	Caps         []string `json:"caps,omitempty"`          // capabilities to grant back
 }
 
 // l2Segment records the cluster's Layer-2 overlay (security.overlay: l2).
@@ -251,6 +260,8 @@ func saveManifest(id string, plans []*nodePlan, seg *l2Segment) error {
 		nodes = append(nodes, nodeManifest{
 			Name: p.name, IP: p.ip, OverlayIP: p.overlayIP, HostPub: p.host.PublicAuthorized,
 			L2IP: p.l2IP, L2MAC: p.l2MAC,
+			Run: p.run, Engine: p.engine, ContainerImg: p.containerImg,
+			Workdir: p.workdir, RunUser: p.runUser, Caps: p.caps,
 		})
 	}
 	return writeManifest(id, nodes, seg)
@@ -372,7 +383,7 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) 
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
-func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string) {
+func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string, noRun bool) {
 	prov := o.P.Name()         // hetzner | digitalocean — used in teardown hints
 	var pinLock *lockfile.Lock // reproducibility (H2): pin toolchain from this lock
 	if lockPath != "" {
@@ -771,8 +782,16 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	// run per-node commands with MULTIPLEXED streaming (M4): color-coded, prefixed
 	// by node, tee'd to per-node logs. From here Ctrl+C detaches (streaming=true),
 	// leaving infra up (C3); a crash (non-zero exit) is reported without auto-
-	// restart (§5 fail-fast).
+	// restart (§5 fail-fast). With --no-run we DEPLOY only (provision + sync +
+	// build) and leave the workloads unstarted — launch them later with `start`.
 	streaming.Store(true)
+	if noRun {
+		audit.Event("up.complete", "id", id, "provider", prov, "nodes", len(plans), "no_run", true)
+		fmt.Printf("deployed %d node(s) — nothing started (--no-run).\n", len(plans))
+		fmt.Printf("  start:    pandion start --id %s [--node NAME]\n", id)
+		fmt.Printf("  teardown: pandion down --provider=%s --id %s\n", prov, id)
+		return
+	}
 	streamCluster(streamCtx, id, plans, login)
 
 	audit.Event("up.complete", "id", id, "provider", prov, "nodes", len(plans))

@@ -153,13 +153,13 @@
     },
     "node": {
       "type": "object",
-      "required": ["name", "run"],
+      "required": ["name"],
       "allOf": [{ "$ref": "#/$defs/nodeCommon" }],
       "unevaluatedProperties": false,
       "properties": {
         "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,40}$" },
         "role": { "type": "string", "description": "Free-form role label (broker, worker, ...)." },
-        "run": { "type": "string", "description": "User-defined run command (the §5 contract)." },
+        "run": { "type": "string", "description": "User-defined run command (the §5 contract). Optional: omit it to DEPLOY the node (provision + sync + build) without launching anything — start it later with `pandion start`." },
         "ipc_ports": {
           "type": "array",
           "items": { "$ref": "#/$defs/portSpec" },
