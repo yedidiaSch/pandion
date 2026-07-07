@@ -7,6 +7,16 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **Runnable example — `examples/zmq-cluster` (broker + 2 workers)** — a ready-to-run
+  ZeroMQ ventilator/worker cluster so a newcomer can see Pandion work on real cloud
+  *before writing any code*: `cd examples/zmq-cluster && pandion up -f cluster.yaml`.
+  It exercises the whole tool in one command — `libzmq3-dev` via `toolchain.packages`,
+  workspace `sync` + `build: make`, service discovery (`$PANDION_BROKER_IP`,
+  `$PANDION_SELF_NAME`), the WireGuard mesh, multiplexed streaming, and no-leak
+  teardown — and you watch the load split across both workers. Kept honest by
+  `scripts/e2e_example.sh` (verified live on DigitalOcean: 15/15 task split, clean
+  exit). The workers check in on a readiness socket so the broker splits work
+  reliably regardless of connect order (and any number of workers).
 - **macOS/Windows CLI validation (M7, partial)** — CI now runs an **offline CLI smoke**
   (`scripts/ci_smoke.sh`) on the `macos-latest` and `windows-latest` runners in addition to
   build + unit tests: config validation, mock provisioning, dry-run pricing, and completion —
