@@ -166,7 +166,8 @@ func runUp(args []string) {
 	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
-	noToolchain := fs.Bool("no-toolchain", false, "skip installing the C++ toolchain (faster)")
+	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
+	packages := fs.String("packages", "", "comma-separated apt packages/libraries to install (e.g. libzmq3-dev,libboost-dev); added to the toolchain")
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
@@ -225,7 +226,7 @@ func runUp(args []string) {
 		}
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
-			toolchain: !*noToolchain, firewall: !*noFirewall, overlay: !*noOverlay,
+			toolchain: !*noToolchain, packages: splitCSV(*packages), firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
@@ -236,6 +237,7 @@ func runUp(args []string) {
 type hetznerUpOpts struct {
 	id, node, runCmd string
 	toolchain        bool
+	packages         []string // extra apt packages/libraries (--packages), added to the toolchain
 	firewall         bool
 	overlay          bool
 	egressAllow      []string
@@ -372,9 +374,8 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	case "docker":
 		ci.Packages = []string{"docker.io"} // the image provides the toolchain
 	default: // native
-		if toolchain {
-			ci.Packages = harden.DefaultToolchain()
-		}
+		// built-in toolchain (unless --no-toolchain) + declared --packages, deduped.
+		ci.Packages = harden.ResolveToolchain(opt.packages, !toolchain)
 	}
 	if opt.firewall {
 		ci.Packages = append(ci.Packages, "nftables") // needed to apply the lockdown
@@ -500,6 +501,13 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			return
 		}
 		workdir = wd
+	}
+
+	// 5c) verify requested packages actually installed (native): a typo'd/unavailable
+	//     apt name is logged by cloud-init but doesn't stop boot, so surface it now —
+	//     while egress is still open — rather than as a confusing runtime failure.
+	if opt.engine != "docker" {
+		warnMissingPackages(ctx, addr, login.Signer, host.Public, node, ci.Packages)
 	}
 
 	// 6) overlay: the node's wg0 came up at boot. Detect the operator's public IP
