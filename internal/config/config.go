@@ -47,6 +47,11 @@ type NodeCommon struct {
 	Toolchain      *Toolchain `yaml:"toolchain"`
 	Sync           *Sync      `yaml:"sync"`
 	Sec            *Security  `yaml:"security"`
+	// Setup is a list of shell commands run on the node (as root) in the
+	// egress-open build window — for software apt can't install: pip/npm/cargo,
+	// a vendor repo, a binary fetched by curl, etc. Defaults' setup runs first,
+	// then the node's own (additive).
+	Setup []string `yaml:"setup"`
 }
 
 // Toolchain is the extra apt packages (libraries/tools) installed on a node. By
@@ -119,10 +124,13 @@ type Effective struct {
 	// are added to the built-in toolchain unless NoDefaultToolchain is set.
 	Packages           []string
 	NoDefaultToolchain bool
-	Region             string
-	RunUser            string   // security.run_as; empty means "use the default"
-	TTLRaw             string   // ttl string ("60m" | "false" | ""); "" means "use the default"
-	EgressAllow        []string // union of node + security + defaults egress allowlists
+	// Setup are shell commands run on the node (as root) in the build window,
+	// after packages and before the workspace build — for non-apt software.
+	Setup       []string
+	Region      string
+	RunUser     string   // security.run_as; empty means "use the default"
+	TTLRaw      string   // ttl string ("60m" | "false" | ""); "" means "use the default"
+	EgressAllow []string // union of node + security + defaults egress allowlists
 	// Security defaults are ON (secure by default); a cluster.yaml `security:`
 	// false explicitly opts out.
 	BlockMetadata bool // block the cloud metadata endpoint (S-F)
@@ -182,6 +190,8 @@ func (c *Cluster) Effective(n Node) Effective {
 	case c.Defaults.Sec != nil:
 		e.RunUser = c.Defaults.Sec.RunAs
 	}
+	// Setup commands are additive: cluster defaults first, then the node's own.
+	e.Setup = append(append([]string{}, c.Defaults.Setup...), n.Setup...)
 	return e
 }
 

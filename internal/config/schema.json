@@ -151,6 +151,11 @@
           "default": "60m"
         },
         "toolchain": { "$ref": "#/$defs/toolchain" },
+        "setup": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Shell commands run on the node (as root) in the egress-open build window, for software apt can't install (pip/npm/cargo, a vendor repo, a curl'd binary). Defaults' setup runs first, then the node's own; each command must succeed."
+        },
         "sync": { "$ref": "#/$defs/sync" },
         "security": { "$ref": "#/$defs/security" }
       }

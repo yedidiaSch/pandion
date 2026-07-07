@@ -7,6 +7,15 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **`setup:` — install non-apt software declaratively** — a list of shell commands run
+  on a node (as root) in the egress-open build window, **after** apt packages and **before**
+  your build, so software apt can't install (pip/npm/cargo, a vendor repo, a curl'd binary)
+  lands while the network is still reachable. In `cluster.yaml` per node or under `defaults:`
+  (additive — defaults' setup runs first, then the node's); single-node via
+  `--setup '<command>'`. Fail-fast: a failing setup command reports the error, leaves the
+  node up for debugging, and exits non-zero so scripts/CI notice. Verified live by
+  `scripts/e2e_setup.sh` (DigitalOcean): a real pip install + network fetch land on the node,
+  and a failing setup command aborts `up`.
 - **Install libraries on a node — `--packages`, additive `toolchain.packages`, and
   install verification** — declaring libraries is now first-class and safe. Single-node
   `up` gains **`--packages libzmq3-dev,libboost-dev`** (comma-separated apt packages), and

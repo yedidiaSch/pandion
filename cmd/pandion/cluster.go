@@ -136,6 +136,24 @@ func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gos
 	return remote, nil
 }
 
+// runSetup runs a node's setup commands (as root) in the egress-open build window,
+// in order — for software apt can't install (pip/npm/cargo, a vendor repo, a curl'd
+// binary). Each command must succeed; the first failure returns an error (the caller
+// leaves the node up for debugging, like a build failure). Egress is still open here,
+// so commands can fetch from the network.
+func runSetup(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, node string, cmds []string) error {
+	for _, c := range cmds {
+		if strings.TrimSpace(c) == "" {
+			continue
+		}
+		fmt.Printf("[%s] setup: %s\n", node, c)
+		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, c); err != nil {
+			return fmt.Errorf("setup command failed: %s\n%v\n%s", c, err, out)
+		}
+	}
+	return nil
+}
+
 // missingPackages returns the requested apt packages that did NOT install on the
 // node (best-effort). It turns a SILENT cloud-init package failure — a typo'd or
 // unavailable name is logged but boot continues, so the node looks healthy while
@@ -245,6 +263,7 @@ type nodePlan struct {
 	blockMeta    bool      // block the cloud metadata endpoint (security.block_metadata_service)
 	engine       string    // "native" | "docker"
 	containerImg string    // container image for engine=docker
+	setup        []string  // setup commands run (as root) in the build window
 	l2IP         string    // L2 overlay IP (no prefix), e.g. 192.168.66.1; empty if no L2
 	l2MAC        string    // L2 overlay MAC, e.g. 02:00:00:00:00:01
 }
@@ -543,7 +562,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
 			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image,
 			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata,
-			engine: eff.Engine, containerImg: eff.ContainerImage}
+			engine: eff.Engine, containerImg: eff.ContainerImage, setup: eff.Setup}
 
 		// Layer-2 overlay: assign this node a deterministic L2 IP + MAC (host = i+1,
 		// matching the wg overlay host number) and render the vxlan0 bring-up script.
@@ -634,6 +653,18 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fmt.Fprintf(os.Stderr, "warning: could not write lockfile: %v\n", err)
 	} else {
 		fmt.Printf("wrote reproducibility lockfile: %s\n", lockfile.Path(envHome(), id))
+	}
+
+	// setup commands (non-apt software) run FIRST in the build window — after the
+	// apt packages (installed at boot) and before the workspace build, so a build
+	// can use what setup installed. Egress is still open here. Fail-fast: a failure
+	// leaves the cluster up for debugging and exits NON-ZERO so scripts/CI notice.
+	for _, p := range plans {
+		if err := runSetup(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, p.setup); err != nil {
+			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
+			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+			os.Exit(1)
+		}
 	}
 
 	// sync workspaces + remote build, in the egress build-window (before the
