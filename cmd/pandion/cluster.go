@@ -136,6 +136,58 @@ func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gos
 	return remote, nil
 }
 
+// missingPackages returns the requested apt packages that did NOT install on the
+// node (best-effort). It turns a SILENT cloud-init package failure — a typo'd or
+// unavailable name is logged but boot continues, so the node looks healthy while
+// the library is absent — into a loud, actionable signal, checked while the node
+// is still in the egress-open build window. Version pins ("pkg=ver") and apt
+// alternatives ("pkg/suite") are compared by package name. A transport error
+// yields no missing set (never blocks provisioning on the check itself).
+func missingPackages(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, pkgs []string) []string {
+	var names []string
+	for _, p := range pkgs {
+		n := strings.TrimSpace(p)
+		if i := strings.IndexAny(n, "=/"); i > 0 {
+			n = n[:i] // strip a version pin or suite qualifier
+		}
+		if n != "" {
+			names = append(names, n)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	cmd := "dpkg-query -W -f='${Package} ${db:Status-Status}\\n' " + strings.Join(names, " ") + " 2>/dev/null || true"
+	out, err := envssh.Run(ctx, addr, "root", signer, pinned, cmd)
+	if err != nil {
+		return nil // don't fail provisioning because the check couldn't run
+	}
+	installed := map[string]bool{}
+	for _, line := range strings.Split(out, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && f[1] == "installed" {
+			installed[f[0]] = true
+		}
+	}
+	var missing []string
+	for _, n := range names {
+		if !installed[n] {
+			missing = append(missing, n)
+		}
+	}
+	return missing
+}
+
+// warnMissingPackages prints a prominent warning naming any requested package that
+// did not install, so a missing library is visible now rather than as a confusing
+// runtime failure later. Best-effort — never blocks the run.
+func warnMissingPackages(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, node string, pkgs []string) {
+	if m := missingPackages(ctx, addr, signer, pinned, pkgs); len(m) > 0 {
+		fmt.Fprintf(os.Stderr, "⚠ [%s] requested package(s) did NOT install: %s\n", node, strings.Join(m, ", "))
+		fmt.Fprintf(os.Stderr, "    check the apt name(s); packages install in the build window (egress is locked after).\n")
+	}
+}
+
 // syncWorkspace syncs files and runs the optional build on the host as runUser
 // (native engine).
 func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
@@ -471,10 +523,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if eff.Engine == "docker" {
 			pkgs = []string{"docker.io"} // the container image provides the toolchain
 		} else {
-			pkgs = eff.Packages
-			if len(pkgs) == 0 {
-				pkgs = harden.DefaultToolchain() // C++ default when none specified
-			}
+			// built-in toolchain + declared libraries (toolchain.packages), deduped.
+			pkgs = harden.ResolveToolchain(eff.Packages, eff.NoDefaultToolchain)
 		}
 		pkgs = append(append([]string{}, pkgs...), "nftables", "wireguard", "tmux") // always needed (tmux: durable run + attach)
 		if pinLock != nil {
@@ -630,6 +680,14 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			return
 		}
 		p.workdir = wd
+	}
+
+	// verify requested packages installed on each node (native), while egress is
+	// still open — a missing library is reported loudly now, not as a later crash.
+	for _, p := range plans {
+		if p.engine != "docker" {
+			warnMissingPackages(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, p.pkgs)
+		}
 	}
 
 	// detect operator public IP (as node 0 sees our SSH source)

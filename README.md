@@ -167,6 +167,17 @@ pandion up --provider=hetzner --id build -- 'gcc --version && cmake --version'
 pandion down --provider=hetzner --id build
 ```
 
+**Install libraries on the node.** Pandion installs a built-in C++ toolchain
+(`build-essential`, `clang`, `cmake`, `gdb`, `tmux`). Add your own apt packages —
+they install in the egress-open build window and are **added to** the toolchain
+(you can't `apt install` after the firewall locks down):
+```bash
+pandion up --provider=hetzner --id build --packages libzmq3-dev,libboost-dev -- ./app
+```
+In a cluster, use `toolchain.packages` per node or under `defaults:` (add
+`no_default: true` for a minimal node with only your packages). A requested
+package that doesn't install is reported by a loud warning at `up` time.
+
 **A multi-node IPC cluster** — write `cluster.yaml`:
 ```yaml
 apiVersion: pandion/v1

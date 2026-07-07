@@ -198,3 +198,23 @@ func TestEffective_EgressAllowUnionAndSecurityDefaults(t *testing.T) {
 		t.Fatalf("node c (defaults) should be on: %+v", cc)
 	}
 }
+
+func TestEffective_ToolchainAdditiveAndNoDefault(t *testing.T) {
+	c := &Cluster{
+		Defaults: NodeCommon{Toolchain: &Toolchain{Packages: []string{"libdefault-dev"}}},
+		Nodes: []Node{
+			{Name: "a"}, // inherits defaults' toolchain
+			{Name: "b", NodeCommon: NodeCommon{Toolchain: &Toolchain{Packages: []string{"libzmq3-dev"}, NoDefault: true}}},
+		},
+	}
+	// node a: inherits the defaults' extras, NoDefault stays false (additive).
+	ea := c.Effective(c.Nodes[0])
+	if len(ea.Packages) != 1 || ea.Packages[0] != "libdefault-dev" || ea.NoDefaultToolchain {
+		t.Fatalf("node a should inherit defaults' extras additively: %+v", ea)
+	}
+	// node b: its own toolchain wins, NoDefault carried through (minimal node).
+	eb := c.Effective(c.Nodes[1])
+	if len(eb.Packages) != 1 || eb.Packages[0] != "libzmq3-dev" || !eb.NoDefaultToolchain {
+		t.Fatalf("node b should override with no_default: %+v", eb)
+	}
+}

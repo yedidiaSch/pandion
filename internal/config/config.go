@@ -49,9 +49,12 @@ type NodeCommon struct {
 	Sec            *Security  `yaml:"security"`
 }
 
-// Toolchain is the set of packages installed on a node.
+// Toolchain is the extra apt packages (libraries/tools) installed on a node. By
+// default these are ADDED to Pandion's built-in C++ toolchain; set NoDefault to
+// install ONLY this list (a minimal node).
 type Toolchain struct {
-	Packages []string `yaml:"packages"`
+	Packages  []string `yaml:"packages"`
+	NoDefault bool     `yaml:"no_default"`
 }
 
 // Node is one host in the topology.
@@ -110,13 +113,16 @@ type Lifecycle struct {
 // Effective is a node's settings after merging cluster defaults with its own
 // overrides (node wins). It's what the orchestrator should consume.
 type Effective struct {
-	Size        string
-	Image       string
-	Packages    []string
-	Region      string
-	RunUser     string   // security.run_as; empty means "use the default"
-	TTLRaw      string   // ttl string ("60m" | "false" | ""); "" means "use the default"
-	EgressAllow []string // union of node + security + defaults egress allowlists
+	Size  string
+	Image string
+	// Packages are the node's EXTRA apt packages (declared libraries/tools). They
+	// are added to the built-in toolchain unless NoDefaultToolchain is set.
+	Packages           []string
+	NoDefaultToolchain bool
+	Region             string
+	RunUser            string   // security.run_as; empty means "use the default"
+	TTLRaw             string   // ttl string ("60m" | "false" | ""); "" means "use the default"
+	EgressAllow        []string // union of node + security + defaults egress allowlists
 	// Security defaults are ON (secure by default); a cluster.yaml `security:`
 	// false explicitly opts out.
 	BlockMetadata bool // block the cloud metadata endpoint (S-F)
@@ -160,11 +166,15 @@ func (c *Cluster) Effective(n Node) Effective {
 	if e.Engine == "docker" && e.ContainerImage == "" {
 		e.ContainerImage = "ubuntu:24.04"
 	}
+	// Toolchain resolution: a node's toolchain wins over defaults. Packages are the
+	// user's EXTRA libraries/tools (added to the built-in toolchain unless NoDefault).
 	switch {
-	case n.Toolchain != nil && len(n.Toolchain.Packages) > 0:
+	case n.Toolchain != nil:
 		e.Packages = n.Toolchain.Packages
+		e.NoDefaultToolchain = n.Toolchain.NoDefault
 	case c.Defaults.Toolchain != nil:
 		e.Packages = c.Defaults.Toolchain.Packages
+		e.NoDefaultToolchain = c.Defaults.Toolchain.NoDefault
 	}
 	switch {
 	case n.Sec != nil && n.Sec.RunAs != "":
