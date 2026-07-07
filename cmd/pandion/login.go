@@ -41,7 +41,13 @@ func providerToken(provider, env string) (string, error) {
 	if t, err := secret.Get(provider); err == nil && t != "" {
 		return t, nil
 	}
-	return "", fmt.Errorf("%s not set and no stored token — set the env var or run `pandion login --provider %s`", env, provider)
+	base := fmt.Errorf("%s not set and no stored token — set the env var or run `pandion login --provider %s`", env, provider)
+	// If the user likely has no account yet, offer a signup pointer (a disclosed
+	// referral link when one is configured — see referral.go).
+	if s := signupSuggestion(provider, resolveDORefcode()); s != "" {
+		return "", fmt.Errorf("%w\n%s", base, s)
+	}
+	return "", base
 }
 
 // readToken obtains a token WITHOUT it appearing in argv/history: the env var if
@@ -80,6 +86,7 @@ func runLogin(args []string) {
 	token := readToken(env)
 	if token == "" {
 		fmt.Fprintln(os.Stderr, "login: no token provided")
+		printSignupSuggestion(name)
 		os.Exit(2)
 	}
 	if err := secret.Set(name, token); err != nil {

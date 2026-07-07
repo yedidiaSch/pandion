@@ -7,6 +7,15 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **Account-signup pointer for newcomers (with disclosed DigitalOcean referral)** — when
+  a command needs a provider token but none is found, and on `pandion login` with no token
+  entered, Pandion now points first-timers at how to open an account. For DigitalOcean this
+  can use a **referral link** — shown only ever with a clear **affiliate disclosure**
+  (*"referral link — helps support Pandion's development"*) and the sign-up credit, per FTC
+  guidance and to keep trust. Until a referral code is configured it falls back to
+  DigitalOcean's plain signup page with **no** referral claim. Other providers get no such
+  pointer. Set the code via the `doRefcode` constant (`cmd/pandion/referral.go`) or the
+  `PANDION_DO_REFCODE` env var. Purely a suggestion — nothing is sent anywhere.
 - **Deploy-only nodes + `pandion start` — separate "deploy" from "run"** — `run:` is now
   **optional** in `cluster.yaml`: a node without it is *deployed* (provisioned + hardened +
   workspace synced + built) but nothing is launched. `up --no-run` does the same for a whole
