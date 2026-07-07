@@ -1,0 +1,3 @@
+# compiled demo binaries (built on the node, or locally if you test the build)
+/broker
+/worker

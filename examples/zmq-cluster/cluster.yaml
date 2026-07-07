@@ -1,0 +1,22 @@
+# Pandion demo — a ZeroMQ ventilator/worker cluster.
+#
+# One broker fans tasks out to two workers over the encrypted overlay, then
+# collects the results. Nothing to write: `cd` into this directory and run it
+# (see README.md). Pandion installs libzmq, syncs + builds this code on every
+# node, wires the WireGuard mesh, injects $PANDION_BROKER_IP, and streams the
+# output — then `down` leaves nothing behind.
+apiVersion: pandion/v1
+name: zmq-demo
+defaults:
+  toolchain:
+    packages: [libzmq3-dev]     # the ZeroMQ system library (added to the C++ toolchain)
+  sync:
+    path: .                     # sync this directory to every node...
+    build: make                 # ...and compile broker + worker there
+nodes:
+  - name: broker
+    run: ./broker
+  - name: worker-1
+    run: ./worker tcp://$PANDION_BROKER_IP:5557 tcp://$PANDION_BROKER_IP:5558 tcp://$PANDION_BROKER_IP:5559
+  - name: worker-2
+    run: ./worker tcp://$PANDION_BROKER_IP:5557 tcp://$PANDION_BROKER_IP:5558 tcp://$PANDION_BROKER_IP:5559

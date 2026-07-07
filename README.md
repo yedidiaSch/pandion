@@ -140,6 +140,14 @@ Run the full lifecycle offline, at zero cost, with the `mock` provider:
 pandion demo
 ```
 
+See a real cluster before writing any code — a ready-to-run ZeroMQ broker with two
+workers lives in [`examples/zmq-cluster`](examples/zmq-cluster) (a few cents,
+self-cleaning):
+
+```bash
+cd examples/zmq-cluster && pandion up --provider=hetzner -f cluster.yaml --id zmq-demo
+```
+
 A single hardened cloud box:
 
 ```bash
