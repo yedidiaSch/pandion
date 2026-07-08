@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package firewall generates nftables rulesets for host-level network hardening.
 //
 // M2 increment 1 implements the egress build-window validated by spike S2:

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package provider defines the single seam between Pandion's orchestration and
 // any cloud backend. v1 implements `hetzner`; `mock` backs the tests.
 //

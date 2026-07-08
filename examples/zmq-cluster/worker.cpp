@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // worker — pulls tasks from the broker's ventilator, "processes" each, and pushes
 // a result back to the broker's sink, all over the encrypted overlay.
 //

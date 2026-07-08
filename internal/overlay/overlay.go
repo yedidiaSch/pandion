@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package overlay builds WireGuard configuration for the management overlay.
 //
 // Design (validated by spike S3): each node runs a wg0 interface; the operator's

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // broker — a ZeroMQ ventilator + sink.
 //
 // It fans TASKS work items out to the workers (PUSH, fair-queued) and collects

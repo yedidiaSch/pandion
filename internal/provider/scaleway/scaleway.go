@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package scaleway implements provider.Provider against the Scaleway Instances
 // API. It mirrors the DigitalOcean/Hetzner backends' discipline — commercial types
 // are discovered by SPEC at runtime (never hardcoded), creation searches type x

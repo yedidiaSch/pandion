@@ -5,7 +5,7 @@ requests are welcome.
 
 ## Contributor License Agreement (required)
 
-Pandion is offered under multiple licenses — the [Business Source License 1.1](LICENSE)
+Pandion is offered under multiple licenses — the open-source [AGPL-3.0](LICENSE)
 and paid [commercial licenses](COMMERCIAL.md). To keep that possible, every
 contributor must agree to the [Contributor License Agreement (CLA)](CLA.md)
 before their contribution can be merged. The CLA lets the Maintainer include your

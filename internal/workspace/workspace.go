@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package workspace syncs the local project to remote nodes by streaming a
 // gzip'd tar over Pandion's existing pinned SSH connection (no rsync, no external
 // ssh, no key files — consistent with the security model). Honors an ignore file

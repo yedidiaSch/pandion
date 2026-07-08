@@ -1,36 +1,50 @@
 # Commercial licensing
 
-Pandion is **source-available** under the [Business Source License 1.1](LICENSE).
-It is **free** for individuals, non-commercial use, and small organizations, and
-for internal evaluation/development/testing by anyone. Larger organizations that
-use it commercially need a **commercial license** — that's what funds ongoing
-development.
+Pandion is **free and open source** under the [GNU Affero General Public License
+v3.0](LICENSE) (AGPL-3.0). Anyone — individuals and companies of any size — may
+run, study, modify, and share it at no cost under those terms.
 
-> ⚠️ **Before relying on this:** have a lawyer review this file and `LICENSE`
-> (especially the Additional Use Grant). Nothing here is legal advice.
+A **commercial license** is an alternative to the AGPL for cases where the AGPL's
+obligations don't fit. It funds ongoing development.
+
+> ⚠️ **Before relying on this:** have a lawyer review this file and the
+> [`LICENSE`](LICENSE) (AGPL-3.0). Nothing here is legal advice.
 
 ---
 
 ## Do I need a commercial license?
 
-| You are… | Using Pandion for… | License |
-|---|---|---|
-| An individual | Personal / non-commercial projects | ✅ Free (BSL) |
-| Anyone | Evaluating / developing / testing it internally | ✅ Free (BSL) |
-| An organization with **< $1M/yr** revenue (a "Small User") | Anything, including production | ✅ Free (BSL) |
-| An organization with **≥ $1M/yr** revenue | Any production or commercial use | 💼 **Commercial license required** |
-| Anyone | Offering Pandion (or a hosted/modified version) to third parties | 💼 **Commercial license required** |
+Using Pandion **as-is** — the CLI, run against your own infrastructure — is fully
+covered by the AGPL and needs **no commercial license**, regardless of your
+company's size or whether the use is commercial. Distributing it unmodified is
+also fine under the AGPL.
 
-If you're unsure whether your use qualifies, email us — we're happy to clarify.
+You should consider a commercial license if you want to do something the AGPL
+would otherwise require you to open-source, for example:
+
+| You want to… | AGPL requires | Commercial license |
+|---|---|---|
+| Run Pandion as-is, internally or in production | Nothing extra | Not needed — AGPL covers it |
+| Modify Pandion for your own internal use | Nothing extra (no distribution) | Not needed |
+| **Embed Pandion (or its code) in a proprietary/closed-source product** | You must release your product's corresponding source under AGPL | 💼 **Commercial license** |
+| **Offer a modified Pandion to others over a network** (SaaS) | You must offer users the modified source (AGPL §13) | 💼 **Commercial license** (to keep modifications closed) |
+| Ship Pandion inside a product whose license is incompatible with AGPL | Not permitted | 💼 **Commercial license** |
+
+If you're unsure whether your use triggers the AGPL, email us — we're happy to
+clarify.
 
 ---
 
 ## What a commercial license gives you
 
-- The right to use Pandion in production / commercially beyond the free grant.
-- Freedom from the BSL restrictions for the covered versions.
-- *(Optional, define per tier)* priority support, security-response SLAs, and
-  early access to new releases.
+- The right to use, modify, and distribute Pandion **without** the AGPL's
+  copyleft and network-source-disclosure obligations — so you can embed it in a
+  closed-source product or hosted service and keep your changes private.
+- *(Optional, defined per engagement)* priority support, security-response SLAs,
+  and early access to releases.
+
+Every contribution is made under our [CLA](CLA.md), so the maintainer holds the
+rights needed to offer this alternative license alongside the AGPL.
 
 ## Pricing
 
@@ -39,15 +53,15 @@ Pandion. Commercial licenses are typically **annual, per company**.
 
 | Tier | Who | Price |
 |---|---|---|
-| **Startup** | Orgs $1M–$10M revenue | Contact us |
-| **Business** | Orgs $10M–$100M revenue | Contact us |
-| **Enterprise** | Orgs > $100M, custom terms, support SLA | Contact us |
+| **Startup** | Small teams / early-stage | Contact us |
+| **Business** | Mid-size organizations | Contact us |
+| **Enterprise** | Large organizations, custom terms, support SLA | Contact us |
 
 ## How to buy
 
 Email **`didisc123@gmail.com`** with:
-1. Your company name and approximate size (revenue or headcount),
-2. How you intend to use Pandion,
+1. Your company name and approximate size,
+2. How you intend to use Pandion (and what triggers the need — embedding, SaaS, etc.),
 3. Roughly how many people / teams will use it.
 
 We'll reply with a quote and a commercial license agreement.
@@ -57,24 +71,25 @@ We'll reply with a quote and a commercial license agreement.
 ## FAQ
 
 **Is Pandion open source?**
-Not by the OSI definition — BSL is *source-available*. But every version
-automatically becomes **Apache-2.0** four years after its release, so it becomes
-fully open source over time.
+Yes — genuinely. AGPL-3.0 is an [OSI-approved](https://opensource.org/licenses/AGPL-3.0)
+open-source license and a [GNU](https://www.gnu.org/licenses/agpl-3.0.html) copyleft
+license. You can read, build, run, fork, and modify it freely.
 
-**Can I read, build, and modify the source?**
-Yes. You can read, build, fork, and modify it freely. The restriction is only on
-**commercial/production use** beyond the free grant above.
+**Can I use it commercially without paying?**
+Yes. Commercial *use* of the tool as-is is fine under the AGPL. A commercial
+license is only about escaping the AGPL's **source-sharing** obligations — mainly
+embedding Pandion in a closed-source product or a modified hosted service.
 
-**We're a big company but only use it for internal dev/test — do we pay?**
-Internal evaluation/development/testing is free for everyone. If Pandion becomes
-part of how your business operates in production, or you're above the revenue
-threshold using it commercially, you need a commercial license. Email us if the
-line is unclear for your case.
+**We're a big company running it internally against our own cloud — do we pay?**
+No. Running the CLI as-is, however large you are, is covered by the AGPL.
 
-**What happens after the 4-year Change Date?**
-That specific version becomes available under Apache-2.0 — no restrictions, no
-payment. Newer versions remain under BSL until their own Change Dates.
+**Does the AGPL "infect" my code just because I use the CLI?**
+Running a program does not subject your other software to the AGPL. The AGPL's
+obligations attach when you **distribute a modified Pandion** or **offer a
+modified Pandion to others over a network** — not to code that merely invokes the
+CLI as a separate program.
 
-**Do older releases (v0.1.x) change?**
-No. Anything already published under Apache-2.0 stays Apache-2.0 forever. The BSL
-applies to versions released under it going forward.
+**Do older releases (published under BSL 1.1) change?**
+No. Versions already published under the Business Source License remain under
+their original terms (and keep their four-year Apache-2.0 conversion). Everything
+from the relicensing forward is AGPL-3.0.

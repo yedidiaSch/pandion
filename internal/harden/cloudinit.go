@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package harden builds the provision-time hardening artifacts. M1 ships the
 // cloud-init builder for SSH host-key injection and C++ toolchain install;
 // firewall/overlay/LUKS land in M2.

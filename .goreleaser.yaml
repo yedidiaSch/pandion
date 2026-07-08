@@ -47,7 +47,7 @@ nfpms:
     homepage: "https://github.com/yedidiaSch/pandion"
     maintainer: "Pandion authors <noreply@github.com>"
     description: "Provision, harden & orchestrate C++/IPC dev & test environments"
-    license: "Apache-2.0"
+    license: "AGPL-3.0-or-later"
     formats: [deb, rpm, apk]
     bindir: /usr/bin
 
