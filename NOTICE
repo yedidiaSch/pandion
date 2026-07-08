@@ -1,5 +1,13 @@
 Pandion
-Copyright 2026 Pandion authors
+Copyright (C) 2026 Yedidya Schwartz and the Pandion authors.
 
-This product includes software developed by the Pandion authors.
-Licensed under the Apache License, Version 2.0 (see LICENSE).
+This program is free software: you can redistribute it and/or modify it under
+the terms of the GNU Affero General Public License, version 3, as published by
+the Free Software Foundation (see LICENSE).
+
+This program is distributed in the hope that it will be useful, but WITHOUT ANY
+WARRANTY; without even the implied warranty of MERCHANTABILITY or FITNESS FOR A
+PARTICULAR PURPOSE. See the GNU Affero General Public License for more details.
+
+A commercial license is available for uses that cannot meet the terms of the
+AGPL (see COMMERCIAL.md).

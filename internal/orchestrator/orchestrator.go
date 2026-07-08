@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package orchestrator is the provider-agnostic state machine + reconcile loop.
 // M0 scope: single-node Up, and a Down that reconciles to empty using the
 // provider as the source of truth (so it works even if local state is lost).

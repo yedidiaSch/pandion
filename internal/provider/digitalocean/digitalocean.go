@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package digitalocean implements provider.Provider against the DigitalOcean API
 // using godo. It mirrors the Hetzner backend's discipline — sizes are discovered
 // by SPEC at runtime (never hardcoded), creation searches size x region for an

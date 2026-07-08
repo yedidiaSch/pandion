@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package ssh runs commands on a node over SSH with a PINNED host key.
 //
 // Security (spike S1): the host key is one Pandion generated and injected via

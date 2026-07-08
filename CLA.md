@@ -6,8 +6,8 @@ Yedidya Schwartz (the "Maintainer", "we", "us").
 This Contributor License Agreement (the "Agreement") clarifies the intellectual
 property rights granted with Contributions from any person or entity. It exists
 so the Maintainer can offer the Project under **multiple licenses** — including
-the Business Source License 1.1 and paid **commercial licenses** — while
-protecting You, the Maintainer, and the Project's users.
+the GNU Affero General Public License v3.0 (AGPL-3.0) and paid **commercial
+licenses** — while protecting You, the Maintainer, and the Project's users.
 
 **By submitting a Contribution to the Project (for example, opening a pull
 request), You accept and agree to the following terms** for Your present and
@@ -30,8 +30,8 @@ Maintainer, a **perpetual, worldwide, non-exclusive, royalty-free, irrevocable**
 copyright license to reproduce, prepare derivative works of, publicly display,
 publicly perform, **sublicense**, and distribute Your Contributions and such
 derivative works **under any license terms** — including, without limitation,
-open-source, source-available (such as the Business Source License), and
-**proprietary or commercial** license terms.
+open-source (such as the AGPL-3.0), source-available, and **proprietary or
+commercial** license terms.
 
 This grant expressly includes the right of the Maintainer to **relicense and
 sublicense** Your Contributions as part of the Project under different license

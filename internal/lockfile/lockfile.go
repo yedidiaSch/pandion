@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package lockfile records and replays the resolved toolchain of a cluster, for
 // reproducibility (H2). `up` writes ~/.pandion/lock/<id>.json capturing the exact
 // package versions (and OS/kernel/image) that landed on each node; a later

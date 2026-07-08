@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package mock is an in-memory Provider used for fast, free, offline tests.
 // Per the roadmap it is built in M0 and KEPT FOREVER as the CI backbone — the
 // orchestrator's logic is validated here without ever touching a cloud or spending money.

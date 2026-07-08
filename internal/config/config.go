@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
 // Package config loads and validates cluster.yaml against the published JSON
 // Schema (draft 2020-12). Validation is pure and offline: it is the M3 foundation
 // that every orchestration slice builds on, and backs `pandion validate`.
