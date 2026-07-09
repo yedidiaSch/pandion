@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/yedidiaSch/pandion/internal/secret"
 	"github.com/yedidiaSch/pandion/internal/userconfig"
@@ -19,12 +20,14 @@ import (
 // with no flags. Interactive on a terminal; fully scriptable with flags
 // (--provider/--token/--region) for automation.
 //
-//	pandion init [--provider NAME] [--token TOK] [--region R] [--force]
+//	pandion init [--provider NAME] [--token TOK] [--region R] [--size S] [--ttl D] [--force]
 func runInit(args []string) {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	provider := fs.String("provider", "", "default cloud provider (hetzner|digitalocean|vultr|linode|scaleway|mock)")
 	token := fs.String("token", "", "API token to store (else prompted on a terminal)")
 	region := fs.String("region", "", "default region (optional)")
+	size := fs.String("size", "", "default server size/type, e.g. cpx21 (optional)")
+	ttl := fs.String("ttl", "", "default idle-poweroff TTL, e.g. 2h (optional)")
 	force := fs.Bool("force", false, "overwrite an existing config without asking")
 	_ = fs.Parse(args)
 
@@ -83,16 +86,38 @@ func runInit(args []string) {
 		}
 	}
 
-	// 3) optional region.
+	// 3) optional defaults: region, size, ttl (used to fill `up` when a flag is omitted).
 	reg := strings.TrimSpace(*region)
-	if reg == "" && isTTY() && canonical != "mock" {
-		reg = promptLine("default region (optional, press Enter to skip): ")
+	siz := strings.TrimSpace(*size)
+	tl := strings.TrimSpace(*ttl)
+	if isTTY() && canonical != "mock" {
+		if reg == "" {
+			reg = promptLine("default region (optional, press Enter to skip): ")
+		}
+		if siz == "" {
+			siz = promptLine("default server size/type, e.g. cpx21 (optional, Enter to auto-select): ")
+		}
+		if tl == "" {
+			tl = promptLine("default idle-poweroff TTL, e.g. 2h (optional, Enter to skip): ")
+		}
+	}
+	if tl != "" {
+		if _, err := time.ParseDuration(tl); err != nil {
+			fmt.Fprintf(os.Stderr, "init: invalid --ttl %q (want a Go duration like 90m or 2h): %v\n", tl, err)
+			os.Exit(2)
+		}
 	}
 
 	// 4) write the config.
 	cfg.DefaultProvider = canonical
 	if reg != "" {
 		cfg.Defaults.Region = reg
+	}
+	if siz != "" {
+		cfg.Defaults.Size = siz
+	}
+	if tl != "" {
+		cfg.Defaults.TTL = tl
 	}
 	if err := userconfig.Save(home, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "init: could not write config: %v\n", err)
@@ -102,6 +127,12 @@ func runInit(args []string) {
 	fmt.Printf("\n✔ configured: default provider = %s", canonical)
 	if reg != "" {
 		fmt.Printf(", region = %s", reg)
+	}
+	if siz != "" {
+		fmt.Printf(", size = %s", siz)
+	}
+	if tl != "" {
+		fmt.Printf(", ttl = %s", tl)
 	}
 	fmt.Printf("  (%s)\n", userconfig.Path(home))
 	fmt.Println("\nTry it:")

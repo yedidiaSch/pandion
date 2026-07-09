@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Added
+- **`up` honors `defaults.{region,size,ttl}` from `~/.pandion/config.yaml`** — a new `--size`
+  and `--region` on `up` (joining `--ttl`) plus config seeding: an `up` that omits these fills
+  them from your `pandion init` defaults (an explicit flag always wins; `--no-ttl` still
+  disables the dead-man's-switch). `pandion init` now prompts for / accepts `--size` and
+  `--ttl` alongside `--region`.
+
 ### Changed
 - **`down` reads the provider from the cluster manifest** — teardown (`pandion down --id ID`)
   no longer needs `--provider`; it uses the provider recorded when the cluster was created,
