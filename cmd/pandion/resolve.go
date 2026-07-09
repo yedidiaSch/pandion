@@ -82,6 +82,17 @@ func resolveProvider(explicit string) string {
 	return ""
 }
 
+// resolveProviderOrExit resolves the provider and exits with guidance if it cannot
+// (used by commands that always need a provider, e.g. ls/reap).
+func resolveProviderOrExit(explicit string) string {
+	p := resolveProvider(explicit)
+	if p == "" {
+		fmt.Fprintln(os.Stderr, "no provider set. Run `pandion init`, or pass --provider=<name>.")
+		os.Exit(2)
+	}
+	return p
+}
+
 // promptProvider disambiguates among the credentialed providers on a terminal.
 // With no credentials at all, prompting to pick one is pointless — it returns the
 // "run `pandion init`" guidance (and ""), letting the caller error cleanly.
