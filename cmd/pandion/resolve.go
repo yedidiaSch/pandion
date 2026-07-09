@@ -25,7 +25,7 @@ func hasCreds(canonical string) bool {
 	if strings.TrimSpace(os.Getenv(env)) != "" {
 		return true
 	}
-	if t, err := secret.Get(canonical); err == nil && t != "" {
+	if t, err := secret.Get(credName(canonical)); err == nil && t != "" {
 		return true
 	}
 	return false
@@ -65,7 +65,7 @@ func pickProvider(explicit, configDefault string, creds []string, tty bool) (pro
 // using the operator config, available credentials, and — on a terminal — a prompt.
 // Returns "" if it cannot resolve without a terminal (the caller should error).
 func resolveProvider(explicit string) string {
-	cfg, _ := userconfig.Load(envHome())
+	cfg, _ := userconfig.LoadProfile(envHome(), activeProfile)
 	creds := credProviders()
 	prov, prompt := pickProvider(explicit, cfg.DefaultProvider, creds, isTTY())
 	if prov != "" {
