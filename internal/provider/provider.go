@@ -33,7 +33,31 @@ type ServerSpec struct {
 	// into root's authorized_keys reliably (validated path, spike S1). cloud-init
 	// default-user semantics are NOT relied upon for the login key.
 	LoginPubKey string
+	// GPU is an optional GPU requirement. A zero GPU (Count == 0) means CPU-only —
+	// CPU providers ignore it, so existing backends are unaffected (G0).
+	GPU GPUReq
 }
+
+// GPUReq is an optional GPU requirement on a ServerSpec. A zero GPUReq
+// (Count == 0) means "no GPU". A GPUProvider maps it to a concrete SKU.
+type GPUReq struct {
+	Model   string // normalized model, e.g. "a100", "h100", "rtx4090"; "" = any
+	Count   int    // number of GPUs; 0 = none
+	MinVRAM int    // minimum VRAM per GPU in GB; 0 = don't care
+}
+
+// Wanted reports whether a GPU was actually requested.
+func (g GPUReq) Wanted() bool { return g.Count > 0 }
+
+// GPUInfo is the realized GPU on a provisioned Server (for `ls` + receipts).
+type GPUInfo struct {
+	Model string
+	Count int
+	VRAM  int // GB per GPU
+}
+
+// Present reports whether the server actually has a GPU.
+func (g GPUInfo) Present() bool { return g.Count > 0 }
 
 // Server is a provisioned host.
 type Server struct {
@@ -44,6 +68,7 @@ type Server struct {
 	Region    string
 	IP        string
 	Created   time.Time // when the server was created (for `reap --older-than`)
+	GPU       GPUInfo   // zero for CPU nodes
 }
 
 // Provider is the cloud backend contract.
@@ -105,4 +130,30 @@ type Pricer interface {
 	// it — resolving an auto-selected type the same way CreateServer does — for
 	// the `--max-cost` preflight. A zero Money (nil error) means "couldn't price".
 	EstimateHourly(ctx context.Context, spec ServerSpec) (Money, error)
+}
+
+// GPUProvider is an optional Provider capability: it can serve GPU instances.
+// A backend implements it only if it offers GPUs; the CLI uses it to answer
+// "can this provider satisfy --gpu?", to price a --gpu request, and to enumerate
+// offerings for `pandion list-gpus`. CPU-only backends do not implement it, so
+// `--gpu` against them fails with a clear "no GPU offerings" error (G0).
+type GPUProvider interface {
+	// GPUOfferings lists the GPU SKUs this provider can serve, priced. Powers
+	// `list-gpus` and --gpu resolution. Results SHOULD be cached by the provider
+	// (this may hit a live pricing/availability API).
+	GPUOfferings(ctx context.Context) ([]GPUOffering, error)
+	// ResolveGPUType maps a GPUReq to a concrete server type + region (the GPU
+	// analog of CPU spec discovery). Returns an error if the request cannot be
+	// satisfied. MUST be deterministic and cheapest-first for a given req, so
+	// `--dry-run` and `up` agree on the SKU.
+	ResolveGPUType(ctx context.Context, req GPUReq, regionPref []string) (serverType, region string, err error)
+}
+
+// GPUOffering is one purchasable GPU SKU.
+type GPUOffering struct {
+	ServerType string  // provider type name, e.g. "gpu_1x_a100"
+	GPU        GPUInfo // model/count/vram of ONE unit of this SKU
+	Regions    []string
+	Hourly     Money
+	Image      string // recommended CUDA-native image for this SKU ("" = provider default)
 }
