@@ -91,6 +91,8 @@ func main() {
 		runLs(args)
 	case "profiles":
 		runProfiles(args)
+	case "list-gpus":
+		runListGPUs(args)
 	case "completion":
 		runCompletion(args)
 	case "login":
@@ -216,6 +218,7 @@ func runUp(args []string) {
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	size := fs.String("size", "", "provider server type/size (e.g. cpx21); default: `pandion init` default, else auto-select")
 	region := fs.String("region", "", "preferred region/location, comma-separated fallbacks (e.g. nbg1,fsn1); default: config default, else provider's choice")
+	gpu := fs.String("gpu", "", "provision a GPU node: MODEL[:COUNT], e.g. a100 or a100:2 (the provider must offer GPUs; see `pandion list-gpus`)")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
@@ -251,6 +254,21 @@ func runUp(args []string) {
 	initAudit()
 	audit.Event("up.start", "provider", p.Name(), "id", *id, "cluster_file", *file)
 
+	// --gpu: parse MODEL[:COUNT] and require a GPU-capable provider (G0). The
+	// multi-node -f path gets a per-node gpu: key later; reject the combo for now.
+	gpuReq, err := parseGPUFlag(*gpu)
+	must(err)
+	if gpuReq.Wanted() {
+		if *file != "" {
+			fmt.Fprintln(os.Stderr, "--gpu is not yet supported with -f cluster.yaml (use a single-node `up`)")
+			os.Exit(2)
+		}
+		if _, ok := p.(provider.GPUProvider); !ok {
+			fmt.Fprintf(os.Stderr, "provider %q has no GPU offerings — pick a GPU provider (see `pandion list-gpus`)\n", p.Name())
+			os.Exit(2)
+		}
+	}
+
 	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
 	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
 	if *file != "" {
@@ -260,13 +278,14 @@ func runUp(args []string) {
 
 	// dry-run works for any pricing provider, incl. mock (offline preview).
 	if *dryRun {
-		dryRunSingle(o, *id, *node, *size, splitCSV(*region), ttlOrZero(*ttl, *noTTL))
+		dryRunSingle(o, *id, *node, *size, splitCSV(*region), ttlOrZero(*ttl, *noTTL), gpuReq)
 		return
 	}
 
 	switch p.Name() {
 	case "mock":
-		c, err := o.Up(context.Background(), *id, *node, "#cloud-config\n", "")
+		c, err := o.UpSpec(context.Background(), *id,
+			orchestrator.NodeSpec{Name: *node, GPU: gpuReq}, "#cloud-config\n", "")
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
@@ -290,7 +309,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, packages: splitCSV(*packages), setup: setupCmds(*setup),
 			firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
-			size: *size, regionPref: splitCSV(*region),
+			size: *size, regionPref: splitCSV(*region), gpu: gpuReq,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 		})
@@ -308,9 +327,10 @@ type hetznerUpOpts struct {
 	sync             *syncSpec
 	runUser          string
 	idleTTL          time.Duration
-	size             string   // provider server type (--size); empty = auto-select
-	regionPref       []string // preferred regions (--region); empty = provider's choice
-	engine           string   // native | docker
+	size             string          // provider server type (--size); empty = auto-select
+	regionPref       []string        // preferred regions (--region); empty = provider's choice
+	gpu              provider.GPUReq // optional GPU request (--gpu); zero = CPU-only
+	engine           string          // native | docker
 	containerImage   string
 	caps             []string
 	maxCost          float64 // budget cap (projected spend); 0 = off
@@ -485,14 +505,14 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 
 	// --max-cost preflight (before spending a cent): the single node auto-discovers
 	// its type; project its hourly × TTL and refuse if it exceeds the cap.
-	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node, Type: opt.size, RegionPref: opt.regionPref}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
+	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(6)
 	}
 
 	// 3) provision (tagged; journaled state machine). The login key is registered
 	//    with the provider so it lands on root (validated path, S1).
-	c, err := o.UpSpec(ctx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref}, userData, login.PublicAuthorized)
+	c, err := o.UpSpec(ctx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
 	must(err)
 	ip := c.Nodes[0].IP
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
@@ -916,13 +936,79 @@ func ttlOrZero(ttl time.Duration, noTTL bool) time.Duration {
 	return ttl
 }
 
-// dryRunSingle previews the single-node `up` (spec-discovered type) and exits.
-func dryRunSingle(o *orchestrator.Orchestrator, id, node, size string, regionPref []string, window time.Duration) {
+// runListGPUs prints the GPU SKUs a provider can serve, priced — offline for the
+// mock provider, so the GPU catalog is browsable without spending a cent (G0).
+func runListGPUs(args []string) {
+	fs := flag.NewFlagSet("list-gpus", flag.ExitOnError)
+	prov := fs.String("provider", "", "provider to query (default: from `pandion init` or your credentials)")
+	asJSON := fs.Bool("json", false, "machine-readable output")
+	_ = fs.Parse(args)
+
+	provName := resolveProvider(*prov)
+	if provName == "" {
+		fmt.Fprintln(os.Stderr, "no provider set. Run `pandion init`, or pass --provider=<name>.")
+		os.Exit(2)
+	}
+	p, err := newProvider(provName)
+	must(err)
+	gp, ok := p.(provider.GPUProvider)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "provider %q has no GPU offerings.\n", p.Name())
+		os.Exit(2)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node, Type: size, RegionPref: regionPref}}, []time.Duration{window})
+	offers, err := gp.GPUOfferings(ctx)
+	must(err)
+
+	if *asJSON {
+		must(json.NewEncoder(os.Stdout).Encode(offers))
+		return
+	}
+	if len(offers) == 0 {
+		fmt.Printf("%s: no GPU offerings available.\n", p.Name())
+		return
+	}
+	fmt.Printf("GPU offerings (%s):\n", p.Name())
+	tw := tabwriter.NewWriter(os.Stdout, 0, 2, 2, ' ', 0)
+	fmt.Fprintln(tw, "MODEL\tVRAM\tTYPE\tREGIONS\tPRICE/hr")
+	for _, o := range offers {
+		fmt.Fprintf(tw, "%s\t%dG\t%s\t%s\t%s %s\n",
+			o.GPU.Model, o.GPU.VRAM, o.ServerType, strings.Join(o.Regions, ","),
+			money(o.Hourly), o.Hourly.Currency)
+	}
+	tw.Flush()
+}
+
+// dryRunSingle previews the single-node `up` (spec-discovered type) and exits.
+func dryRunSingle(o *orchestrator.Orchestrator, id, node, size string, regionPref []string, window time.Duration, gpu provider.GPUReq) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node, Type: size, RegionPref: regionPref, GPU: gpu}}, []time.Duration{window})
 	must(err)
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
+}
+
+// parseGPUFlag parses --gpu "MODEL[:COUNT]" into a GPUReq. Empty = no GPU.
+// COUNT defaults to 1 and must be a positive integer.
+func parseGPUFlag(s string) (provider.GPUReq, error) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return provider.GPUReq{}, nil
+	}
+	model, count := s, 1
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		model = strings.TrimSpace(s[:i])
+		n, err := strconv.Atoi(strings.TrimSpace(s[i+1:]))
+		if err != nil || n < 1 {
+			return provider.GPUReq{}, fmt.Errorf("invalid --gpu count in %q (want MODEL[:COUNT] with COUNT >= 1)", s)
+		}
+		count = n
+	}
+	if model == "" {
+		return provider.GPUReq{}, fmt.Errorf("invalid --gpu %q (a model is required, e.g. a100 or a100:2)", s)
+	}
+	return provider.GPUReq{Model: model, Count: count}, nil
 }
 
 // renderDryRun writes the `--dry-run` plan + projected cost. Separated so the
@@ -935,10 +1021,10 @@ func renderDryRun(w io.Writer, providerName, clusterID string, nodes []orchestra
 	fmt.Fprintf(w, "DRY RUN — pandion up (provider=%s): nothing will be created.\n", providerName)
 	fmt.Fprintf(w, "cluster: %s\n", clusterID)
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "NODE\tSIZE\tREGION\tTTL\t%s/hr\t~%s (over TTL)\n", cur, cur)
+	fmt.Fprintf(tw, "NODE\tSIZE\tGPU\tREGION\tTTL\t%s/hr\t~%s (over TTL)\n", cur, cur)
 	for _, n := range nodes {
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-			n.Name, autoIf(n.Size), autoIf(n.Region), ttlLabel(n.Window),
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+			n.Name, autoIf(n.Size), gpuLabel(n.GPU), autoIf(n.Region), ttlLabel(n.Window),
 			money(n.Hourly), projMoney(n.Hourly, n.Window))
 	}
 	tw.Flush()
@@ -955,6 +1041,22 @@ func autoIf(s string) string {
 		return "auto"
 	}
 	return s
+}
+
+// gpuLabel renders a GPU request for the plan table: "—" for CPU, "a100" for a
+// single GPU, "a100×2" for several.
+func gpuLabel(g provider.GPUReq) string {
+	if !g.Wanted() {
+		return "—"
+	}
+	model := g.Model
+	if model == "" {
+		model = "any"
+	}
+	if g.Count > 1 {
+		return fmt.Sprintf("%s×%d", model, g.Count)
+	}
+	return model
 }
 
 func ttlLabel(d time.Duration) string {
@@ -1086,7 +1188,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion [--profile NAME] <cmd> …   ($PANDION_PROFILE also accepted)")
 	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  pandion init   (set up a default provider + credentials so bare commands work)")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--size TYPE] [--region R] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--size TYPE] [--region R] [--gpu MODEL[:N]] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion build [dir] [up-flags…] [-- <run cmd>]   (auto-detect toolchain, upload + build the project in the cloud)")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
@@ -1104,6 +1206,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion relay up --id ID [--node NAME] [--port 8443]   (deploy the browser-SSH relay on a node)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
+	fmt.Fprintln(os.Stderr, "  pandion list-gpus [--provider …] [--json]   (list the GPU SKUs a provider can serve, priced)")
 	fmt.Fprintln(os.Stderr, "  pandion profiles   (list configured profiles; * = active)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")

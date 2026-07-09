@@ -13,7 +13,7 @@ import (
 var completionCommands = []string{
 	"init", "up", "build", "down", "ls", "status", "start", "attach",
 	"ssh", "cp", "code", "debug", "relay", "validate", "lockdown", "reap",
-	"login", "logout", "profiles", "demo", "version", "completion",
+	"login", "logout", "profiles", "list-gpus", "demo", "version", "completion",
 }
 
 // completionProviders are the values suggested after --provider.
@@ -59,7 +59,7 @@ _pandion() {
     COMPREPLY=( $(compgen -W "` + cmds + `" -- "$cur") ); return
   fi
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--profile --provider --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--profile --provider --gpu --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
   fi
 }
 complete -F _pandion pandion
@@ -82,7 +82,7 @@ _pandion() {
     --provider) compadd ` + provs + ` ;;
     --profile) compadd $(pandion profiles 2>/dev/null | tail -n +2 | awk '{print $1}') ;;
     -f|--lock|--workspace) _files ;;
-    *) _arguments '--profile[operator profile]' '--provider[cloud backend]' '--id[cluster id]' '--node[node name]' \
+    *) _arguments '--profile[operator profile]' '--provider[cloud backend]' '--gpu[GPU model[:count]]' '--id[cluster id]' '--node[node name]' \
          '--dry-run[preview only]' '--lock[reproducibility lockfile]' '--max-cost[budget cap]' \
          '--ttl[idle poweroff]' '--no-ttl[disable ttl]' '-f[cluster.yaml]' '--json[machine-readable]' ;;
   esac
