@@ -205,6 +205,16 @@ pandion lockdown --id pipeline                               # verifies overlay 
 You don't ship a machine image or a container to run your own program — Pandion gets
 your code onto each node for you. There are three ways, depending on what you have:
 
+> **Shortcut — `pandion build [dir]`.** For a standard project, skip the flags: `pandion build`
+> auto-detects the toolchain (CMake, Meson, Cargo, Go, npm, Python, or Make), uploads the
+> directory, and builds it in the cloud. Add `-- <cmd>` to run the result, or omit it to
+> build-only and `pandion ssh`/`start`/`debug` afterwards. It's sugar over way **2** below;
+> any `up` flag (`--provider`, `--size`, `--id`, …) passes straight through.
+>
+> ```bash
+> pandion build ./my-app -- ./build/app     # detect + upload + build + run
+> ```
+
 **1. A command that needs no code of yours.** Anything already on the node (the toolchain,
 your `--packages`, whatever `setup:` installed) just runs:
 
@@ -318,6 +328,7 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 | Command | What it does |
 |---|---|
 | `pandion init` | First-run setup: pick a default provider, log in, write `~/.pandion/config.yaml` |
+| `pandion build [dir] [flags] [-- <cmd>]` | Auto-detect the toolchain, upload the project, and build it in the cloud |
 | `pandion up [--provider …] [--id ID] [flags] -- <cmd>` | Provision, harden, and run a single node |
 | `pandion up --provider … -f cluster.yaml --id ID` | Provision a multi-node cluster and mesh |
 | `pandion up … --no-run` | Deploy only: provision, sync, and build, but do not launch the run command |
