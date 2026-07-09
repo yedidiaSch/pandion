@@ -162,3 +162,49 @@ func TestServer_WS_RejectsUnknownToken(t *testing.T) {
 		t.Fatal("ws with an unknown token must be rejected")
 	}
 }
+
+func TestServer_ReadOnly_DropsInput(t *testing.T) {
+	ts, store, _ := testServer(t)
+	defer ts.Close()
+	tok, _ := NewToken()
+	_ = store.Put(&Session{ID: "ro", Token: tok, Node: "n", Target: "1.2.3.4",
+		HostPub: "ssh-ed25519 AAAA h", User: "u", SSHKeyPEM: "x",
+		Expiry: time.Now().Add(time.Hour).UTC(), ReadOnly: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/"+tok, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "done")
+
+	// keystrokes must be dropped — the echoing fake PTY should produce nothing back.
+	_ = c.Write(ctx, websocket.MessageBinary, []byte("hello"))
+	rctx, rcancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+	defer rcancel()
+	if _, data, rerr := c.Read(rctx); rerr == nil && strings.Contains(string(data), "HELLO") {
+		t.Fatal("read-only session must not feed keystrokes to the PTY")
+	}
+}
+
+func TestServer_RateLimitsUnknownTokens(t *testing.T) {
+	ts, _, _ := testServer(t)
+	defer ts.Close()
+	got429 := false
+	for i := 0; i < badTokenPerMin+5; i++ {
+		resp, err := http.Get(ts.URL + "/s/PRLY1-nope")
+		if err != nil {
+			t.Fatal(err)
+		}
+		code := resp.StatusCode
+		resp.Body.Close()
+		if code == http.StatusTooManyRequests {
+			got429 = true
+			break
+		}
+	}
+	if !got429 {
+		t.Fatalf("expected a 429 after >%d unknown-token requests", badTokenPerMin)
+	}
+}

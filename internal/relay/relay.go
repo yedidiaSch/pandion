@@ -34,15 +34,16 @@ const tokenBytes = 32
 // Session is a single scoped browser-SSH grant. The relay holds SSHKeyPEM
 // server-side; the participant holds only Token (in the URL).
 type Session struct {
-	ID        string    `json:"id"`         // share id (stable, for revoke/status)
-	Token     string    `json:"token"`      // opaque bearer capability (URL secret)
-	ClusterID string    `json:"cluster_id"` // owning cluster
-	Node      string    `json:"node"`       // target node name (display)
-	Target    string    `json:"target"`     // target overlay IP, e.g. 10.99.0.2
-	HostPub   string    `json:"host_pub"`   // target's pinned authorized_keys host line
-	User      string    `json:"user"`       // scoped, NON-root user on the target
-	SSHKeyPEM string    `json:"ssh_key"`    // scoped private key (reaches only User@Target)
-	Expiry    time.Time `json:"expiry"`     // hard expiry (UTC)
+	ID        string    `json:"id"`                  // share id (stable, for revoke/status)
+	Token     string    `json:"token"`               // opaque bearer capability (URL secret)
+	ClusterID string    `json:"cluster_id"`          // owning cluster
+	Node      string    `json:"node"`                // target node name (display)
+	Target    string    `json:"target"`              // target overlay IP, e.g. 10.99.0.2
+	HostPub   string    `json:"host_pub"`            // target's pinned authorized_keys host line
+	User      string    `json:"user"`                // scoped, NON-root user on the target
+	SSHKeyPEM string    `json:"ssh_key"`             // scoped private key (reaches only User@Target)
+	Expiry    time.Time `json:"expiry"`              // hard expiry (UTC)
+	ReadOnly  bool      `json:"read_only,omitempty"` // view-only: browser input is ignored
 }
 
 // Expired reports whether the grant is past its expiry as of now.

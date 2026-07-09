@@ -24,7 +24,7 @@ c_in(){ printf '\033[36m[ e2e  ]\033[0m %s\n' "$*"; }
 teardown(){
   local code=$?; echo; c_in "cleaning up..."
   "$BIN" down --provider="$PROV" --id "$ID" --yes >/dev/null 2>&1 || true
-  rm -f "$YAML" /tmp/relayshare_up.log /tmp/relayshare_relayup.log /tmp/relayshare_share.log /tmp/relayshare_unshare.log
+  rm -f "$YAML" /tmp/relayshare_up.log /tmp/relayshare_relayup.log /tmp/relayshare_share.log /tmp/relayshare_ro.log /tmp/relayshare_unshare.log
   [ -n "$PROBE" ] && rm -rf "$PROBE"
   c_in "done (exit $code)"
 }
@@ -109,6 +109,28 @@ OUT=$(go run "$PROBE/main.go" "$WSS" "RELAY_MARKER_OK" 2>&1 || true)
 echo "$OUT" | sed 's/^/    /'
 echo "$OUT" | grep -q "MARKER_SEEN" && c_ok "browser terminal bridged to the node (PTY round-trip)" || c_no "no PTY round-trip over the relay"
 echo "$OUT" | grep -q "USER_OK" && c_ok "logged in as the scoped non-root user (pandion-lab) on node B" || c_no "not the scoped user"
+
+c_in "[4b] read-only share: participant connects + sees output but cannot type..."
+NO_COLOR=1 "$BIN" relay share --id "$ID" --node victim --read-only --expires 30m >/tmp/relayshare_ro.log 2>&1
+URL_RO=$(grep -oE 'https://[0-9.]+:[0-9]+/s/PRLY1-[A-Za-z0-9_-]+' /tmp/relayshare_ro.log | head -1)
+WSS_RO=$(echo "$URL_RO" | sed 's#^https://#wss://#; s#/s/#/ws/#')
+OUT_RO=$(go run "$PROBE/main.go" "$WSS_RO" "RO_MARKER_OK" 2>&1 || true)
+if echo "$OUT_RO" | grep -q "DIAL_FAIL"; then
+  c_no "read-only link failed to connect: $OUT_RO"
+elif echo "$OUT_RO" | grep -q "NO_MARKER"; then
+  c_ok "read-only: connected, but keystrokes were dropped (command never ran)"
+else
+  c_no "read-only session accepted input (should be view-only): $OUT_RO"
+fi
+
+c_in "[4c] rate-limit: flooding unknown tokens gets throttled (429)..."
+BASE="${URL%/s/*}"
+got429=no
+for i in $(seq 1 30); do
+  code=$(curl -sk --max-time 8 "$BASE/s/PRLY1-bruteforce$i" -o /dev/null -w '%{http_code}' 2>/dev/null || echo 000)
+  [ "$code" = 429 ] && { got429=yes; break; }
+done
+[ "$got429" = yes ] && c_ok "unknown-token flood throttled with 429" || c_no "no 429 after 30 bad-token requests"
 
 c_in "[5] unshare → the link is dead..."
 NO_COLOR=1 "$BIN" relay unshare --id "$ID" --all >/tmp/relayshare_unshare.log 2>&1
