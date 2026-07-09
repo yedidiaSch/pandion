@@ -17,7 +17,7 @@ var completionCommands = []string{
 }
 
 // completionProviders are the values suggested after --provider.
-var completionProviders = []string{"mock", "hetzner", "digitalocean"}
+var completionProviders = []string{"mock", "hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda"}
 
 // runCompletion prints a shell completion script for pandion. Install with e.g.
 //
