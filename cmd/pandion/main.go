@@ -39,6 +39,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/sshkeys"
 	"github.com/yedidiaSch/pandion/internal/state"
 	"github.com/yedidiaSch/pandion/internal/stream"
+	"github.com/yedidiaSch/pandion/internal/userconfig"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". Defaults to
@@ -166,6 +167,29 @@ func newProvider(name string) (provider.Provider, error) {
 	}
 }
 
+// applyUpDefaults seeds unspecified up knobs (size/region/ttl) from the operator's
+// `pandion init` defaults. An explicit flag always wins: size/region are considered
+// explicit when non-empty; ttl is explicit when ttlSet (it has a non-empty flag
+// default, so emptiness cannot signal "unset"). --no-ttl suppresses the ttl default.
+// Returns a non-empty warn string when the config's defaults.ttl is unparseable.
+func applyUpDefaults(size, region string, ttl time.Duration, ttlSet, noTTL bool, d userconfig.Defaults) (outSize, outRegion string, outTTL time.Duration, warn string) {
+	outSize, outRegion, outTTL = size, region, ttl
+	if outSize == "" {
+		outSize = d.Size
+	}
+	if outRegion == "" {
+		outRegion = d.Region
+	}
+	if !ttlSet && !noTTL && d.TTL != "" {
+		if dd, err := time.ParseDuration(d.TTL); err == nil {
+			outTTL = dd
+		} else {
+			warn = fmt.Sprintf("warning: ignoring invalid defaults.ttl %q in config: %v", d.TTL, err)
+		}
+	}
+	return
+}
+
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
@@ -183,6 +207,8 @@ func runUp(args []string) {
 	buildCmd := fs.String("build", "", "build command to run on the node after sync (source mode)")
 	syncMode := fs.String("sync-mode", "source", "workspace sync: source (build on node) | binaries (upload prebuilt as-is, no .gitignore filtering, no build)")
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
+	size := fs.String("size", "", "provider server type/size (e.g. cpx21); default: `pandion init` default, else auto-select")
+	region := fs.String("region", "", "preferred region/location, comma-separated fallbacks (e.g. nbg1,fsn1); default: config default, else provider's choice")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
@@ -195,6 +221,17 @@ func runUp(args []string) {
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
+
+	// seed unspecified knobs from the operator's `pandion init` defaults (an explicit
+	// flag always wins; --ttl needs the fs.Visit check because it has a non-empty default).
+	cfg, _ := userconfig.Load(envHome())
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	var warn string
+	*size, *region, *ttl, warn = applyUpDefaults(*size, *region, *ttl, set["ttl"], *noTTL, cfg.Defaults)
+	if warn != "" {
+		fmt.Fprintln(os.Stderr, warn)
+	}
 
 	provName := resolveProvider(*prov)
 	if provName == "" {
@@ -216,7 +253,7 @@ func runUp(args []string) {
 
 	// dry-run works for any pricing provider, incl. mock (offline preview).
 	if *dryRun {
-		dryRunSingle(o, *id, *node, ttlOrZero(*ttl, *noTTL))
+		dryRunSingle(o, *id, *node, *size, splitCSV(*region), ttlOrZero(*ttl, *noTTL))
 		return
 	}
 
@@ -246,6 +283,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, packages: splitCSV(*packages), setup: setupCmds(*setup),
 			firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
+			size: *size, regionPref: splitCSV(*region),
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 		})
@@ -263,7 +301,9 @@ type hetznerUpOpts struct {
 	sync             *syncSpec
 	runUser          string
 	idleTTL          time.Duration
-	engine           string // native | docker
+	size             string   // provider server type (--size); empty = auto-select
+	regionPref       []string // preferred regions (--region); empty = provider's choice
+	engine           string   // native | docker
 	containerImage   string
 	caps             []string
 	maxCost          float64 // budget cap (projected spend); 0 = off
@@ -438,14 +478,14 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 
 	// --max-cost preflight (before spending a cent): the single node auto-discovers
 	// its type; project its hourly × TTL and refuse if it exceeds the cap.
-	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
+	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node, Type: opt.size, RegionPref: opt.regionPref}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(6)
 	}
 
 	// 3) provision (tagged; journaled state machine). The login key is registered
 	//    with the provider so it lands on root (validated path, S1).
-	c, err := o.Up(ctx, id, node, userData, login.PublicAuthorized)
+	c, err := o.UpSpec(ctx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref}, userData, login.PublicAuthorized)
 	must(err)
 	ip := c.Nodes[0].IP
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
@@ -870,10 +910,10 @@ func ttlOrZero(ttl time.Duration, noTTL bool) time.Duration {
 }
 
 // dryRunSingle previews the single-node `up` (spec-discovered type) and exits.
-func dryRunSingle(o *orchestrator.Orchestrator, id, node string, window time.Duration) {
+func dryRunSingle(o *orchestrator.Orchestrator, id, node, size string, regionPref []string, window time.Duration) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node}}, []time.Duration{window})
+	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node, Type: size, RegionPref: regionPref}}, []time.Duration{window})
 	must(err)
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
