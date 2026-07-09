@@ -65,6 +65,11 @@ func tokenKey(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// SpoolFilename is the file a session is stored under for a given token — so the
+// CLI (writing a session to the relay node over SSH) and the server (reading it)
+// agree without either exposing the token as a filename.
+func SpoolFilename(token string) string { return tokenKey(token) + ".json" }
+
 // Store persists sessions as one 0600 JSON file per token (named by tokenKey) under
 // a 0700 spool dir on the relay node.
 type Store struct{ dir string }
