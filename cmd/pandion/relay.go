@@ -16,6 +16,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/relay"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
+	"github.com/yedidiaSch/pandion/internal/sshkeys"
 )
 
 // runRelayDispatch routes `pandion relay <subcommand>`.
@@ -27,10 +28,241 @@ func runRelayDispatch(args []string) {
 	switch args[0] {
 	case "up":
 		runRelayUp(args[1:])
+	case "share":
+		runRelayShare(args[1:])
+	case "unshare":
+		runRelayUnshare(args[1:])
+	case "status":
+		runRelayStatus(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "relay: unknown subcommand %q (share/unshare/status land in the next slice)\n", args[0])
+		fmt.Fprintf(os.Stderr, "relay: unknown subcommand %q (up|share|unshare|status)\n", args[0])
 		os.Exit(2)
 	}
+}
+
+const relayShareMarker = "pandion-rshare-" // + shareID, the authorized_keys comment
+
+// relayShareRecord is the local bookkeeping unshare/down need to revoke a grant.
+type relayShareRecord struct {
+	ShareID      string `json:"share_id"`
+	Node         string `json:"node"`           // target node
+	NodeIP       string `json:"node_ip"`        // target public IP (to remove the user's key)
+	NodeHostPub  string `json:"node_host_pub"`  // target pinned host key
+	User         string `json:"user"`           // scoped login user on the target
+	Token        string `json:"token"`          // to locate the relay spool file
+	RelayIP      string `json:"relay_ip"`       // relay node public IP (to remove the spool file)
+	RelayHostPub string `json:"relay_host_pub"` // relay node pinned host key
+	RelayPort    int    `json:"relay_port"`
+	Expiry       string `json:"expiry"` // RFC3339
+}
+
+func relaySharesDir(id string) string {
+	return filepath.Join(envHome(), ".pandion", "keys", id, "relay-shares")
+}
+
+// runRelayShare mints a scoped, expiring, browser-SSH grant to a node and prints a
+// clickable URL. It provisions a scoped, non-root login user on the target (with an
+// expiring key), writes the session to the relay node's spool, and records the grant
+// locally for revocation.
+//
+//	pandion relay share --id ID --node TARGET [--expires 4h] [--user pandion-lab]
+func runRelayShare(args []string) {
+	fs := flag.NewFlagSet("relay share", flag.ExitOnError)
+	id := fs.String("id", "demo", "cluster id")
+	node := fs.String("node", "", "target node to share (required)")
+	expires := fs.Duration("expires", 4*time.Hour, "how long the link is valid")
+	user := fs.String("user", "pandion-lab", "scoped non-root login user on the target")
+	_ = fs.Parse(args)
+	initAudit()
+
+	if *node == "" {
+		fmt.Fprintln(os.Stderr, "relay share: --node TARGET is required")
+		os.Exit(2)
+	}
+	rec, err := loadRelayRecord(*id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "relay share: no relay for %q — run `pandion relay up --id %s` first\n", *id, *id)
+		os.Exit(1)
+	}
+	man, err := loadManifest(*id)
+	must(err)
+	var target *nodeManifest
+	for i := range man.Nodes {
+		if man.Nodes[i].Name == *node {
+			target = &man.Nodes[i]
+		}
+	}
+	if target == nil {
+		fmt.Fprintf(os.Stderr, "relay share: no node %q in cluster %q\n", *node, *id)
+		os.Exit(1)
+	}
+	signer, err := loadLoginSigner(*id)
+	must(err)
+
+	shareID := randID()
+	scoped, err := sshkeys.Generate("pandion-relay-" + shareID)
+	must(err)
+	expiry := time.Now().Add(*expires).UTC()
+	token, err := relay.NewToken()
+	must(err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	// 1) provision the scoped, expiring login user on the TARGET node.
+	targetPinned, err := parsePinned(target.HostPub)
+	must(err)
+	if out, err := envssh.Run(ctx, target.IP+":22", "root", signer, targetPinned,
+		relayShareProvisionScript(*user, scoped.PublicAuthorized, expiry, shareID)); err != nil {
+		fmt.Fprintf(os.Stderr, "relay share: provision on target failed: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+
+	// 2) write the session to the relay node's spool (reachable only by the relay).
+	sess := relay.Session{
+		ID: shareID, Token: token, ClusterID: *id, Node: target.Name,
+		Target: target.OverlayIP, HostPub: target.HostPub, User: *user,
+		SSHKeyPEM: scoped.PrivatePEM, Expiry: expiry,
+	}
+	data, err := json.Marshal(sess)
+	must(err)
+	// the relay node's pinned host key (to SSH the session into its spool).
+	var relayNode *nodeManifest
+	for i := range man.Nodes {
+		if man.Nodes[i].Name == rec.Node {
+			relayNode = &man.Nodes[i]
+		}
+	}
+	if relayNode == nil {
+		fmt.Fprintf(os.Stderr, "relay share: relay node %q not in manifest\n", rec.Node)
+		os.Exit(1)
+	}
+	relayPinned, err := parsePinned(relayNode.HostPub)
+	must(err)
+	spool := "/var/lib/pandion-relay/sessions/" + relay.SpoolFilename(token)
+	writeCmd := "cat > " + spool + " && chown pandion-relay:pandion-relay " + spool + " && chmod 600 " + spool
+	if out, err := envssh.RunWithInput(ctx, rec.IP+":22", "root", signer, relayPinned, writeCmd, bytes.NewReader(data)); err != nil {
+		fmt.Fprintf(os.Stderr, "relay share: writing session to relay failed: %v\n%s\n", err, out)
+		os.Exit(1)
+	}
+
+	// 3) record locally for revoke.
+	must(os.MkdirAll(relaySharesDir(*id), 0o700))
+	sr := relayShareRecord{
+		ShareID: shareID, Node: target.Name, NodeIP: target.IP, NodeHostPub: target.HostPub,
+		User: *user, Token: token, RelayIP: rec.IP, RelayHostPub: relayNode.HostPub,
+		RelayPort: rec.Port, Expiry: expiry.Format(time.RFC3339),
+	}
+	b, _ := json.MarshalIndent(sr, "", "  ")
+	_ = os.WriteFile(filepath.Join(relaySharesDir(*id), shareID+".json"), b, 0o600)
+	audit.Event("relay.share", "id", *id, "node", target.Name, "share", shareID, "user", *user, "expiry", expiry.Format(time.RFC3339))
+
+	url := fmt.Sprintf("https://%s:%d/s/%s", rec.IP, rec.Port, token)
+	fmt.Printf("shared %q/%s as %s (expires %s):\n\n", *id, target.Name, *user, expiry.Format("2006-01-02 15:04 MST"))
+	fmt.Println("  " + url)
+	fmt.Printf("\n# send that link. TLS is self-signed (fingerprint %s) — the browser will warn.\n", rec.Fingerprint)
+	fmt.Printf("# revoke:  pandion relay unshare --id %s --share %s   (or --all)\n", *id, shareID)
+}
+
+// relayShareProvisionScript creates the scoped, non-root login user (idempotent) and
+// appends an EXPIRING authorized_keys entry for the scoped key — a real shell (so the
+// browser terminal works), but time-boxed and tagged for revoke. No forced command.
+func relayShareProvisionScript(user, scopedPub string, expiry time.Time, shareID string) string {
+	ak := "/home/" + user + "/.ssh/authorized_keys"
+	line := fmt.Sprintf(`expiry-time="%s" %s %s%s`, expiry.Format("20060102150405"), scopedPub, relayShareMarker, shareID)
+	return "set -e\n" +
+		"id -u " + user + " >/dev/null 2>&1 || useradd -m -s /bin/bash " + user + "\n" +
+		"install -d -m700 -o " + user + " -g " + user + " /home/" + user + "/.ssh\n" +
+		"touch " + ak + "\n" +
+		"sed -i '/" + relayShareMarker + shareID + "/d' " + ak + "\n" +
+		"echo " + b64(line) + " | base64 -d >> " + ak + "\n" +
+		"chown " + user + ":" + user + " " + ak + " && chmod 600 " + ak + "\n"
+}
+
+// runRelayUnshare revokes one or all relay grants: remove the target's authorized_keys
+// entry and the relay's spool session, then delete the local record.
+func runRelayUnshare(args []string) {
+	fs := flag.NewFlagSet("relay unshare", flag.ExitOnError)
+	id := fs.String("id", "demo", "cluster id")
+	share := fs.String("share", "", "share id to revoke")
+	all := fs.Bool("all", false, "revoke every relay grant for this cluster")
+	_ = fs.Parse(args)
+	initAudit()
+
+	recs := loadRelayShareRecords(*id)
+	if len(recs) == 0 {
+		fmt.Println("no relay grants to revoke.")
+		return
+	}
+	signer, err := loadLoginSigner(*id)
+	must(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	n := 0
+	for _, r := range recs {
+		if !*all && r.ShareID != *share {
+			continue
+		}
+		// remove the scoped key line on the target
+		if tp, perr := parsePinned(r.NodeHostPub); perr == nil {
+			ak := "/home/" + r.User + "/.ssh/authorized_keys"
+			_, _ = envssh.Run(ctx, r.NodeIP+":22", "root", signer, tp,
+				"[ -f "+ak+" ] && sed -i '/"+relayShareMarker+r.ShareID+"/d' "+ak+" || true")
+		}
+		// remove the relay spool session
+		if rp, perr := parsePinned(r.RelayHostPub); perr == nil {
+			_, _ = envssh.Run(ctx, r.RelayIP+":22", "root", signer, rp,
+				"rm -f /var/lib/pandion-relay/sessions/"+relay.SpoolFilename(r.Token))
+		}
+		_ = os.Remove(filepath.Join(relaySharesDir(*id), r.ShareID+".json"))
+		audit.Event("relay.unshare", "id", *id, "share", r.ShareID)
+		fmt.Printf("revoked %s (%s)\n", r.ShareID, r.Node)
+		n++
+	}
+	if n == 0 {
+		fmt.Printf("no matching relay grant (share %q)\n", *share)
+	}
+}
+
+// runRelayStatus lists live relay grants for a cluster.
+func runRelayStatus(args []string) {
+	fs := flag.NewFlagSet("relay status", flag.ExitOnError)
+	id := fs.String("id", "demo", "cluster id")
+	_ = fs.Parse(args)
+	recs := loadRelayShareRecords(*id)
+	if rec, err := loadRelayRecord(*id); err == nil {
+		fmt.Printf("relay: https://%s:%d/  (node %q)\n", rec.IP, rec.Port, rec.Node)
+	} else {
+		fmt.Println("relay: not deployed (pandion relay up)")
+	}
+	if len(recs) == 0 {
+		fmt.Println("no active grants.")
+		return
+	}
+	for _, r := range recs {
+		fmt.Printf("  %s  node=%s  user=%s  expires=%s\n  https://%s:%d/s/%s\n",
+			r.ShareID, r.Node, r.User, r.Expiry, r.RelayIP, r.RelayPort, r.Token)
+	}
+}
+
+func loadRelayShareRecords(id string) []relayShareRecord {
+	entries, err := os.ReadDir(relaySharesDir(id))
+	if err != nil {
+		return nil
+	}
+	var out []relayShareRecord
+	for _, e := range entries {
+		b, err := os.ReadFile(filepath.Join(relaySharesDir(id), e.Name()))
+		if err != nil {
+			continue
+		}
+		var r relayShareRecord
+		if json.Unmarshal(b, &r) == nil {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // relayRecord is persisted locally so `relay share`/`down` know where the relay is.
