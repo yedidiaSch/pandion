@@ -14,7 +14,9 @@ import (
 )
 
 // cloudProviders is the canonical set (mock is offline and always available).
-var cloudProviders = []string{"hetzner", "digitalocean", "vultr", "linode", "scaleway"}
+// lambda is GPU-only: it resolves for `--gpu`/`list-gpus` and errors clearly on a
+// plain CPU `up`.
+var cloudProviders = []string{"hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda"}
 
 // hasCreds reports whether a token for a provider is available (env or keychain).
 func hasCreds(canonical string) bool {

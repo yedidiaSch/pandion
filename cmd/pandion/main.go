@@ -31,6 +31,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/provider"
 	"github.com/yedidiaSch/pandion/internal/provider/digitalocean"
 	"github.com/yedidiaSch/pandion/internal/provider/hetzner"
+	"github.com/yedidiaSch/pandion/internal/provider/lambda"
 	"github.com/yedidiaSch/pandion/internal/provider/linode"
 	"github.com/yedidiaSch/pandion/internal/provider/mock"
 	"github.com/yedidiaSch/pandion/internal/provider/scaleway"
@@ -171,8 +172,14 @@ func newProvider(name string) (provider.Provider, error) {
 			}
 		}
 		return scaleway.New(secretKey, accessKey, projectID)
+	case "lambda", "lambdalabs":
+		token, err := providerToken("lambda", "LAMBDA_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		return lambda.New(token), nil
 	default:
-		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway)", name)
+		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway|lambda)", name)
 	}
 }
 
@@ -202,7 +209,7 @@ func applyUpDefaults(size, region string, ttl time.Duration, ttlSet, noTTL bool,
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway (default: from `pandion init` or your credentials)")
+	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway|lambda (default: from `pandion init` or your credentials)")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
