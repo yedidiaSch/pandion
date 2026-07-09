@@ -60,6 +60,8 @@ func main() {
 		runDemo()
 	case "up":
 		runUp(os.Args[2:])
+	case "build":
+		runBuild(os.Args[2:])
 	case "down":
 		runDown(os.Args[2:])
 	case "validate":
@@ -1077,7 +1079,8 @@ func initAudit() {
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
 	fmt.Fprintln(os.Stderr, "  pandion init   (set up a default provider + credentials so bare commands work)")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--size TYPE] [--region R] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
+	fmt.Fprintln(os.Stderr, "  pandion build [dir] [up-flags…] [-- <run cmd>]   (auto-detect toolchain, upload + build the project in the cloud)")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
 	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
