@@ -122,8 +122,16 @@ sha256sum -c checksums.txt --ignore-missing
 
 ## Quickstart
 
-Authenticate once with a project-scoped API token for your provider — either an environment
-variable, or the OS keychain (never passed on the command line):
+The quickest way to get set up is the interactive wizard — it picks a default provider, stores
+your token in the OS keychain, and writes `~/.pandion/config.yaml` so bare commands work with no
+flags:
+
+```bash
+pandion init
+```
+
+After that, `pandion up -- ./app` needs no `--provider`. Prefer to do it by hand (or automate)?
+Authenticate with a project-scoped API token — an environment variable, or the OS keychain:
 
 ```bash
 export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY / LINODE_TOKEN
@@ -131,8 +139,9 @@ pandion login --provider hetzner        # alternatively, store it in the OS keyc
 ```
 
 Scaleway uses a triple (`SCW_SECRET_KEY`, `SCW_ACCESS_KEY`, `SCW_DEFAULT_PROJECT_ID`); only the
-secret key is sensitive. Resolution is environment variable first, then keychain, so scripts and
-CI are unchanged.
+secret key is sensitive. Provider resolution follows `--provider` flag → `~/.pandion/config.yaml`
+default → the only provider you have credentials for → (on a terminal) a prompt; automation stays
+explicit and never prompts.
 
 Run the full lifecycle offline, at zero cost, with the `mock` provider:
 
