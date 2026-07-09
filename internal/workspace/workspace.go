@@ -10,6 +10,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"debug/elf"
 	"io"
 	"os"
 	"path/filepath"
@@ -99,6 +100,68 @@ func (ig *Ignore) Match(rel string, isDir bool) bool {
 		}
 	}
 	return false
+}
+
+// elfGoArch maps an ELF machine type to the Go arch name Pandion reports
+// ("amd64", "arm64", "arm", "386"), or "" for a recognized-ELF-but-unmapped
+// machine. Kept small: these are the architectures Pandion's providers offer.
+func elfGoArch(m elf.Machine) string {
+	switch m {
+	case elf.EM_X86_64:
+		return "amd64"
+	case elf.EM_AARCH64:
+		return "arm64"
+	case elf.EM_ARM:
+		return "arm"
+	case elf.EM_386:
+		return "386"
+	default:
+		return ""
+	}
+}
+
+// ELFArchScan walks root (honoring ig, like Archive) and returns, for each
+// regular file that is a Linux ELF binary, its Go arch ("amd64", "arm64", ...).
+// Non-ELF files (scripts, data, Mach-O/PE) are skipped. Used to warn before a
+// prebuilt binary built for one architecture is deployed to a node of another.
+// Pure and offline — parses ELF headers locally via debug/elf.
+func ELFArchScan(root string, ig *Ignore) (map[string]string, error) {
+	if ig == nil {
+		ig = NewIgnore(nil)
+	}
+	out := map[string]string{}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(root, path)
+		if rerr != nil {
+			return rerr
+		}
+		if rel == "." {
+			return nil
+		}
+		if ig.Match(rel, d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		f, oerr := elf.Open(path)
+		if oerr != nil {
+			return nil // not an ELF file — skip
+		}
+		defer f.Close()
+		out[filepath.ToSlash(rel)] = elfGoArch(f.Machine)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 // Archive builds a gzip'd tar of root, excluding ignored paths. Regular files

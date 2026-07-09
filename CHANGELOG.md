@@ -7,6 +7,13 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **Architecture guard for prebuilt binaries** — when uploading with `sync.mode: binaries`,
+  Pandion now checks each ELF binary's CPU architecture (parsed locally via `debug/elf`)
+  against the node's (`uname -m`) and prints a loud warning naming any mismatch — turning a
+  later, cryptic `Exec format error` into an actionable message (e.g. "this node is amd64,
+  but you're uploading app (built for arm64); rebuild for linux/amd64"). Best-effort and
+  non-blocking (source mode builds on the node, so it's unaffected). Verified by
+  `scripts/e2e_binaries.sh` (a cross-built arm64 binary on an amd64 node trips the warning).
 - **Deploy prebuilt binaries — `sync.mode: binaries` now works (+ `--sync-mode`)** — you can
   ship a prebuilt artifact to nodes as-is, with no remote build: `sync: { mode: binaries, path:
   ./dist }` in `cluster.yaml`, or `pandion up --workspace ./dist --sync-mode binaries -- ./dist/app`
