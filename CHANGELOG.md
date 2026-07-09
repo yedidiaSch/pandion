@@ -7,6 +7,12 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **`pandion build [dir]` — one-liner "upload this project and build it in the cloud"** — auto-
+  detects the toolchain (CMake, Meson, Cargo, Go, npm, Python, or Make), syncs the directory, and
+  builds it on a hardened node; add `-- <cmd>` to run the result, or omit it to build-only. It's a
+  thin wrapper over `up` (way 2 / `sync: source`) — every `up` flag passes through, and detected
+  knobs only fill what you didn't set. Non-C++ stacks skip the built-in C++ toolchain for a faster
+  boot.
 - **`up` honors `defaults.{region,size,ttl}` from `~/.pandion/config.yaml`** — a new `--size`
   and `--region` on `up` (joining `--ttl`) plus config seeding: an `up` that omits these fills
   them from your `pandion init` defaults (an explicit flag always wins; `--no-ttl` still
