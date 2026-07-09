@@ -6,7 +6,29 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-07-09
+
+The headline is the **Relay** — self-hosted, zero-install browser terminals to your nodes — and
+a **relicense to AGPL-3.0**, making Pandion genuinely open source. Plus a friendlier on-ramp
+(`pandion init` + a defaults config), first-class dependency and prebuilt-binary handling, a
+runnable example, deploy/run separation, a reliable Scaleway multi-node fix, and macOS/Windows CI
+coverage. Every cloud-facing capability is proven on real cloud by a self-cleaning e2e; releases
+are keyless-cosign-signed.
+
 ### Added
+- **Relay — zero-install browser terminals to your nodes (`pandion relay …`)** — a self-hosted
+  bridge that turns a clickable `https://` link into a live, in-browser shell on a Pandion node,
+  with no WireGuard, SSH client, or install for the participant — built for cyber-ranges,
+  training, CTF, and collaboration. `relay up` deploys a hardened, non-root `systemd` service on
+  a node you designate (one public port; everything else stays default-deny); `relay share --node
+  T` mints a scoped, expiring, revocable link to one node as a restricted non-root user; the
+  participant opens it and the relay bridges a WebSocket to a host-key-pinned SSH PTY over the
+  overlay (embedded xterm.js). The scoped key stays server-side; tokens are 256-bit, hash-looked-
+  up (no oracle), and rate-limited. TLS is **browser-trusted via Let's Encrypt** with `--domain`,
+  else self-signed with a printed fingerprint. Also: `--read-only` (view-only), `--record` +
+  `relay recordings --fetch` (session capture), `relay unshare`/`status`. No Pandion service in
+  the path — it runs on your own node. Every path proven live on DigitalOcean (incl. a real
+  Let's Encrypt issuance validated with system roots). See `docs/pandion-relay.pdf`.
 - **`pandion init` + a defaults config (`~/.pandion/config.yaml`) — bare one-liners that just
   work.** A first-run wizard picks a default provider, logs you in (token → OS keychain, with the
   disclosed signup pointer), and writes your defaults, so `pandion up -- ./app` needs no
@@ -280,6 +302,7 @@ self-cleaning e2e script.
 - Release pipeline: GoReleaser, signed APT/YUM repos, Homebrew cask, `.deb`/`.rpm`/
   `.apk`, per-archive SBOMs, cross-compiled binaries.
 
+[0.6.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.6.0
 [0.5.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.5.0
 [0.4.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.4.0
 [0.3.0]: https://github.com/yedidiaSch/pandion/releases/tag/v0.3.0
