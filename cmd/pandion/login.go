@@ -29,6 +29,8 @@ func providerEnv(provider string) (name, env string, ok bool) {
 		// only the secret key is stored in the keychain; SCW_ACCESS_KEY and
 		// SCW_DEFAULT_PROJECT_ID are non-secret identifiers kept in the environment.
 		return "scaleway", "SCW_SECRET_KEY", true
+	case "lambda", "lambdalabs":
+		return "lambda", "LAMBDA_API_KEY", true
 	}
 	return "", "", false
 }

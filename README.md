@@ -136,9 +136,13 @@ needs no `--provider`, and no size/region either. Prefer to do it by hand (or au
 Authenticate with a project-scoped API token — an environment variable, or the OS keychain:
 
 ```bash
-export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY / LINODE_TOKEN
+export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY / LINODE_TOKEN / LAMBDA_API_KEY
 pandion login --provider hetzner        # alternatively, store it in the OS keychain
 ```
+
+For GPU work, Lambda Cloud (`--provider lambda`) serves on-demand A100/H100 instances —
+browse them with `pandion list-gpus --provider lambda`, then `pandion up --gpu a100 -- ./train.sh`.
+Lambda is GPU-only and its image is CUDA-native (Lambda Stack), so no driver setup is needed.
 
 Scaleway uses a triple (`SCW_SECRET_KEY`, `SCW_ACCESS_KEY`, `SCW_DEFAULT_PROJECT_ID`); only the
 secret key is sensitive. Provider resolution follows `--provider` flag → `~/.pandion/config.yaml`
