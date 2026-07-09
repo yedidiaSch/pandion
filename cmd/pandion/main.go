@@ -51,47 +51,52 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	// resolve the global --profile / $PANDION_PROFILE selector once and strip it from
+	// the args before per-command parsing (it applies to every command).
+	args := initProfile(os.Args[2:])
 	switch os.Args[1] {
 	case "init":
-		runInit(os.Args[2:])
+		runInit(args)
 	case "version":
 		fmt.Println("pandion", version)
 	case "demo":
 		runDemo()
 	case "up":
-		runUp(os.Args[2:])
+		runUp(args)
 	case "build":
-		runBuild(os.Args[2:])
+		runBuild(args)
 	case "down":
-		runDown(os.Args[2:])
+		runDown(args)
 	case "validate":
-		runValidate(os.Args[2:])
+		runValidate(args)
 	case "lockdown":
-		runLockdown(os.Args[2:])
+		runLockdown(args)
 	case "reap":
-		runReap(os.Args[2:])
+		runReap(args)
 	case "attach":
-		runAttach(os.Args[2:])
+		runAttach(args)
 	case "start":
-		runStart(os.Args[2:])
+		runStart(args)
 	case "ssh":
-		runSSH(os.Args[2:])
+		runSSH(args)
 	case "cp":
-		runCP(os.Args[2:])
+		runCP(args)
 	case "code":
-		runCode(os.Args[2:])
+		runCode(args)
 	case "debug":
-		runDebugDispatch(os.Args[2:])
+		runDebugDispatch(args)
 	case "relay":
-		runRelayDispatch(os.Args[2:])
+		runRelayDispatch(args)
 	case "ls", "status":
-		runLs(os.Args[2:])
+		runLs(args)
+	case "profiles":
+		runProfiles(args)
 	case "completion":
-		runCompletion(os.Args[2:])
+		runCompletion(args)
 	case "login":
-		runLogin(os.Args[2:])
+		runLogin(args)
 	case "logout":
-		runLogout(os.Args[2:])
+		runLogout(args)
 	default:
 		usage()
 		os.Exit(2)
@@ -226,7 +231,7 @@ func runUp(args []string) {
 
 	// seed unspecified knobs from the operator's `pandion init` defaults (an explicit
 	// flag always wins; --ttl needs the fs.Visit check because it has a non-empty default).
-	cfg, _ := userconfig.Load(envHome())
+	cfg, _ := userconfig.LoadProfile(envHome(), activeProfile)
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	var warn string

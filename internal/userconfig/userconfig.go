@@ -13,6 +13,7 @@ package userconfig
 import (
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -32,14 +33,27 @@ type Defaults struct {
 	TTL    string `yaml:"ttl,omitempty"`
 }
 
-// Path is where the config lives (home is the value of envHome — usually $HOME).
-func Path(home string) string {
-	return filepath.Join(home, ".pandion", "config.yaml")
+// Path is where the default profile's config lives (home is the value of
+// envHome — usually $HOME).
+func Path(home string) string { return PathFor(home, "") }
+
+// PathFor is Path for a named profile: the default profile ("") is
+// ~/.pandion/config.yaml; a named profile is ~/.pandion/profiles/<name>.yaml,
+// so `--profile work` and `--profile personal` keep separate defaults.
+func PathFor(home, profile string) string {
+	if profile == "" {
+		return filepath.Join(home, ".pandion", "config.yaml")
+	}
+	return filepath.Join(home, ".pandion", "profiles", profile+".yaml")
 }
 
-// Load reads the config, returning an empty (non-nil) Config if the file is absent.
-func Load(home string) (*Config, error) {
-	b, err := os.ReadFile(Path(home))
+// Load reads the default profile's config (empty, non-nil, if absent).
+func Load(home string) (*Config, error) { return LoadProfile(home, "") }
+
+// LoadProfile reads a named profile's config, returning an empty (non-nil)
+// Config if the file is absent.
+func LoadProfile(home, profile string) (*Config, error) {
+	b, err := os.ReadFile(PathFor(home, profile))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return &Config{}, nil
@@ -53,11 +67,15 @@ func Load(home string) (*Config, error) {
 	return &c, nil
 }
 
-// Save writes the config (creating ~/.pandion if needed) with 0600 perms — it may
-// name a provider but never holds secrets (tokens live in the OS keychain).
-func Save(home string, c *Config) error {
-	dir := filepath.Join(home, ".pandion")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+// Save writes the default profile's config.
+func Save(home string, c *Config) error { return SaveProfile(home, "", c) }
+
+// SaveProfile writes a named profile's config (creating the parent dir if
+// needed) with 0600 perms — it may name a provider but never holds secrets
+// (tokens live in the OS keychain).
+func SaveProfile(home, profile string, c *Config) error {
+	path := PathFor(home, profile)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
 	b, err := yaml.Marshal(c)
@@ -66,5 +84,27 @@ func Save(home string, c *Config) error {
 	}
 	header := "# Pandion operator defaults. Edit freely; tokens are NOT stored here\n" +
 		"# (they live in your OS keychain via `pandion login`).\n"
-	return os.WriteFile(Path(home), append([]byte(header), b...), 0o600)
+	return os.WriteFile(path, append([]byte(header), b...), 0o600)
+}
+
+// List returns the names of the named profiles under ~/.pandion/profiles (the
+// default profile is not included). A missing dir yields an empty list.
+func List(home string) ([]string, error) {
+	dir := filepath.Join(home, ".pandion", "profiles")
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var out []string
+	for _, e := range ents {
+		n := e.Name()
+		if e.IsDir() || !strings.HasSuffix(n, ".yaml") {
+			continue
+		}
+		out = append(out, strings.TrimSuffix(n, ".yaml"))
+	}
+	return out, nil
 }
