@@ -32,6 +32,17 @@ func LoadIgnore(root string) *Ignore {
 	return NewIgnore(nil)
 }
 
+// LoadIgnoreStrict reads .pandionignore only — it does NOT fall back to
+// .gitignore. Used for binary uploads (sync mode "binaries"), where the artifacts
+// to ship (build output like ./dist or ./build) are commonly gitignored and must
+// still be included. .git is always excluded.
+func LoadIgnoreStrict(root string) *Ignore {
+	if b, err := os.ReadFile(filepath.Join(root, ".pandionignore")); err == nil {
+		return NewIgnore(strings.Split(string(b), "\n"))
+	}
+	return NewIgnore(nil)
+}
+
 // NewIgnore builds a matcher from raw pattern lines.
 func NewIgnore(lines []string) *Ignore {
 	ig := &Ignore{patterns: []string{".git", ".git/"}} // always exclude VCS metadata
