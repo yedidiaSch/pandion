@@ -395,16 +395,17 @@ type l2Segment struct {
 
 // clusterManifest is written to ~/.pandion/keys/<id>/manifest.json at `up`.
 type clusterManifest struct {
-	ID    string         `json:"id"`
-	Nodes []nodeManifest `json:"nodes"`
-	L2    *l2Segment     `json:"l2,omitempty"`
+	ID       string         `json:"id"`
+	Provider string         `json:"provider,omitempty"` // the backend that created it (so `down` needs no --provider)
+	Nodes    []nodeManifest `json:"nodes"`
+	L2       *l2Segment     `json:"l2,omitempty"`
 }
 
 func manifestPath(id string) string {
 	return filepath.Join(envHome(), ".pandion", "keys", id, "manifest.json")
 }
 
-func saveManifest(id string, plans []*nodePlan, seg *l2Segment) error {
+func saveManifest(id, providerName string, plans []*nodePlan, seg *l2Segment) error {
 	nodes := make([]nodeManifest, 0, len(plans))
 	for _, p := range plans {
 		nodes = append(nodes, nodeManifest{
@@ -414,17 +415,27 @@ func saveManifest(id string, plans []*nodePlan, seg *l2Segment) error {
 			Workdir: p.workdir, RunUser: p.runUser, Caps: p.caps,
 		})
 	}
-	return writeManifest(id, nodes, seg)
+	return writeManifest(id, providerName, nodes, seg)
 }
 
-// writeManifest persists the reconnect-time view (nodes to SSH-pin) so `attach`
-// and `lockdown` work for both the single-node and cluster flows.
-func writeManifest(id string, nodes []nodeManifest, seg *l2Segment) error {
-	b, err := json.MarshalIndent(clusterManifest{ID: id, Nodes: nodes, L2: seg}, "", "  ")
+// writeManifest persists the reconnect-time view (nodes to SSH-pin, plus the owning
+// provider) so `attach`/`lockdown`/`down` work for both the single-node and cluster
+// flows — `down` reads the provider from here, so it needs no --provider.
+func writeManifest(id, providerName string, nodes []nodeManifest, seg *l2Segment) error {
+	b, err := json.MarshalIndent(clusterManifest{ID: id, Provider: providerName, Nodes: nodes, L2: seg}, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(manifestPath(id), b, 0o600)
+}
+
+// manifestProvider returns the provider that created a cluster (from its manifest),
+// or "" if unknown (no manifest, or a manifest from before this field existed).
+func manifestProvider(id string) string {
+	if m, err := loadManifest(id); err == nil {
+		return m.Provider
+	}
+	return ""
 }
 
 // l2Tag returns an `ls` label suffix marking a cluster's L2 overlay: a loud
@@ -934,7 +945,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	if clusterL2 != nil {
 		seg = &l2Segment{VNI: clusterL2.VNI, Subnet: clusterL2.Subnet, Profile: clusterL2.Profile}
 	}
-	if err := saveManifest(id, plans, seg); err != nil {
+	if err := saveManifest(id, prov, plans, seg); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not save cluster manifest: %v\n", err)
 	}
 

@@ -604,7 +604,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if opt.overlay {
 		overlayIP = nodeOverlayIP
 	}
-	if err := writeManifest(id, []nodeManifest{{
+	if err := writeManifest(id, prov, []nodeManifest{{
 		Name: node, IP: ip, OverlayIP: overlayIP, HostPub: host.PublicAuthorized,
 		Run: runCmd, Engine: opt.engine, ContainerImg: opt.containerImage,
 		Workdir: workdir, RunUser: opt.runUser, Caps: opt.caps,
@@ -684,12 +684,12 @@ func runAttach(args []string) {
 
 func runReap(args []string) {
 	fs := flag.NewFlagSet("reap", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
+	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
 	olderThan := fs.Duration("older-than", 0, "only reap clusters whose oldest node is at least this age (e.g. 2h)")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
 
-	p, err := newProvider(*prov)
+	p, err := newProvider(resolveProviderOrExit(*prov))
 	must(err)
 	o := orchestrator.New(p, mustStore())
 	initAudit()
@@ -729,11 +729,11 @@ func runReap(args []string) {
 // (works with no local state). Cost is shown when the provider prices its types.
 func runLs(args []string) {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
-	prov := fs.String("provider", "hetzner", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
+	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
 	_ = fs.Parse(args)
 
-	p, err := newProvider(*prov)
+	p, err := newProvider(resolveProviderOrExit(*prov))
 	must(err)
 	o := orchestrator.New(p, mustStore())
 
@@ -933,13 +933,26 @@ func estMoney(m provider.Money, age time.Duration) string {
 
 func runDown(args []string) {
 	fs := flag.NewFlagSet("down", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
+	prov := fs.String("provider", "", "provider (default: read from the cluster's manifest)")
 	id := fs.String("id", "demo", "cluster id")
 	dryRun := fs.Bool("dry-run", false, "list what would be destroyed; destroy nothing")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
 	_ = fs.Parse(args)
 
-	p, err := newProvider(*prov)
+	// prefer the provider recorded in the cluster's manifest, so `down --id X` needs
+	// no --provider; fall back to the flag/config resolution.
+	provName := *prov
+	if provName == "" {
+		provName = manifestProvider(*id)
+	}
+	if provName == "" {
+		provName = resolveProvider("")
+	}
+	if provName == "" {
+		fmt.Fprintln(os.Stderr, "no provider for this cluster (no manifest). Pass --provider=<name>.")
+		os.Exit(2)
+	}
+	p, err := newProvider(provName)
 	must(err)
 	o := orchestrator.New(p, mustStore())
 	initAudit()
