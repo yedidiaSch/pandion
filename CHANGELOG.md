@@ -7,6 +7,14 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **`pandion init` + a defaults config (`~/.pandion/config.yaml`) — bare one-liners that just
+  work.** A first-run wizard picks a default provider, logs you in (token → OS keychain, with the
+  disclosed signup pointer), and writes your defaults, so `pandion up -- ./app` needs no
+  `--provider`. Provider resolution is now: `--provider` flag → config default → the only provider
+  you have credentials for → (on a terminal) a prompt. Automation is unaffected — nothing ever
+  prompts without a TTY; non-interactive callers get a clear error naming the flag/env to set.
+  `init` is fully scriptable too (`--provider`/`--token`/`--region`). Verified offline (incl. the
+  macOS/Windows CI smoke): `init` writes the config and a bare `up` resolves to it.
 - **Architecture guard for prebuilt binaries** — when uploading with `sync.mode: binaries`,
   Pandion now checks each ELF binary's CPU architecture (parsed locally via `debug/elf`)
   against the node's (`uname -m`) and prints a loud warning naming any mismatch — turning a

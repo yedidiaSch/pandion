@@ -51,6 +51,8 @@ func main() {
 		os.Exit(2)
 	}
 	switch os.Args[1] {
+	case "init":
+		runInit(os.Args[2:])
 	case "version":
 		fmt.Println("pandion", version)
 	case "demo":
@@ -167,7 +169,7 @@ func newProvider(name string) (provider.Provider, error) {
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	prov := fs.String("provider", "mock", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway")
+	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway (default: from `pandion init` or your credentials)")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
@@ -194,7 +196,12 @@ func runUp(args []string) {
 	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 
-	p, err := newProvider(*prov)
+	provName := resolveProvider(*prov)
+	if provName == "" {
+		fmt.Fprintln(os.Stderr, "no provider set. Run `pandion init`, or pass --provider=<name>.")
+		os.Exit(2)
+	}
+	p, err := newProvider(provName)
 	must(err)
 	o := orchestrator.New(p, mustStore())
 	initAudit()
@@ -1016,6 +1023,7 @@ func initAudit() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  pandion init   (set up a default provider + credentials so bare commands work)")
 	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
 	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
