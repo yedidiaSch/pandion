@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,6 +131,9 @@ func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gos
 	ig := workspace.LoadIgnore(s.LocalPath)
 	if s.Binaries {
 		ig = workspace.LoadIgnoreStrict(s.LocalPath)
+		// arch guard: a prebuilt binary built for the wrong architecture fails at
+		// run with "Exec format error" — warn now, while it's fixable.
+		warnBinaryArchMismatch(ctx, addr, signer, pinned, s.LocalPath, ig)
 	}
 	data, files, err := workspace.Archive(s.LocalPath, ig)
 	if err != nil {
@@ -214,6 +218,67 @@ func warnMissingPackages(ctx context.Context, addr string, signer gossh.Signer, 
 		fmt.Fprintf(os.Stderr, "⚠ [%s] requested package(s) did NOT install: %s\n", node, strings.Join(m, ", "))
 		fmt.Fprintf(os.Stderr, "    check the apt name(s); packages install in the build window (egress is locked after).\n")
 	}
+}
+
+// nodeArch returns the node's Go arch ("amd64", "arm64", ...) via `uname -m`, or
+// "" if it can't be determined (in which case the arch guard is skipped).
+func nodeArch(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey) string {
+	out, err := envssh.Run(ctx, addr, "root", signer, pinned, "uname -m")
+	if err != nil {
+		return ""
+	}
+	switch strings.TrimSpace(out) {
+	case "x86_64", "amd64":
+		return "amd64"
+	case "aarch64", "arm64":
+		return "arm64"
+	case "armv7l", "armv6l", "armhf":
+		return "arm"
+	case "i386", "i686":
+		return "386"
+	default:
+		return strings.TrimSpace(out)
+	}
+}
+
+// warnBinaryArchMismatch (binaries mode) warns if any ELF binary being uploaded is
+// built for a different CPU architecture than the node — turning a later, cryptic
+// "Exec format error" at run time into an actionable message now, while it's still
+// fixable. Best-effort: if the node arch can't be read or nothing is an ELF, it is
+// silent, and it never blocks the upload.
+func warnBinaryArchMismatch(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, localPath string, ig *workspace.Ignore) {
+	na := nodeArch(ctx, addr, signer, pinned)
+	if na == "" {
+		return
+	}
+	scan, err := workspace.ELFArchScan(localPath, ig)
+	if err != nil {
+		return
+	}
+	var bad []string
+	for f, a := range scan {
+		if a != "" && a != na {
+			bad = append(bad, fmt.Sprintf("%s (built for %s)", f, a))
+		}
+	}
+	if len(bad) == 0 {
+		return
+	}
+	sort.Strings(bad)
+	fmt.Fprintf(os.Stderr, "⚠ binary arch mismatch: this node is %s, but you're uploading: %s\n", na, strings.Join(bad, ", "))
+	fmt.Fprintf(os.Stderr, "    a wrong-architecture binary fails at run with \"Exec format error\".\n")
+	fmt.Fprintf(os.Stderr, "    rebuild for linux/%s, or provision a node with %s architecture.\n", na, archNodeHint(scan, na))
+}
+
+// archNodeHint names an architecture the uploaded binaries were actually built for
+// (for the "provision a <arch> node" suggestion), falling back to the node arch.
+func archNodeHint(scan map[string]string, nodeA string) string {
+	for _, a := range scan {
+		if a != "" && a != nodeA {
+			return a
+		}
+	}
+	return nodeA
 }
 
 // syncWorkspace syncs files and runs the optional build on the host as runUser

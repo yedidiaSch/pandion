@@ -250,6 +250,8 @@ for a complete sync + build + run cluster.
 
 > Anything uploaded is built/run on **Ubuntu Linux** — compile prebuilt binaries for the node's
 > architecture (`linux/amd64` unless you chose arm64 sizes), or use `source` mode to build there.
+> In `binaries` mode Pandion checks each binary's architecture against the node's and **warns on a
+> mismatch** before you hit a runtime `Exec format error`.
 
 ## Security
 

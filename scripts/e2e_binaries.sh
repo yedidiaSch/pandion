@@ -36,6 +36,8 @@ int main(void){ puts("HELLO_FROM_PREBUILT_BINARY"); return 0; }
 C
 ( cd "$DIST" && { gcc -static -O2 app.c -o app 2>/dev/null || gcc -O2 app.c -o app; } )
 rm -f "$DIST/app.c"
+# A wrong-architecture binary to trip the arch guard (arm64 ELF; we never run it).
+GOOS=linux GOARCH=arm64 go build -o "$DIST/app_arm64" ./cmd/pandion 2>/dev/null && c_ok "cross-built arm64 fixture" || c_in "arm64 cross-build unavailable (arch-guard assert will be skipped)"
 # A .gitignore that excludes the binary — binaries mode must upload it ANYWAY.
 printf 'app\n*.bin\n' > "$DIST/.gitignore"
 file "$DIST/app" 2>/dev/null | sed 's/^/  /' || true
@@ -54,6 +56,15 @@ echo "$OUT" | grep -q "HELLO_FROM_PREBUILT_BINARY" && c_ok "prebuilt binary uplo
 # implies upload, but assert the listing too.
 echo "$OUT" | grep -qE '(^|\] )app$' && c_ok "gitignored binary WAS uploaded (binaries mode ignores .gitignore)" || c_no "binary was filtered out by .gitignore"
 echo "$OUT" | grep -q "RUNUSER=pandion-run" && c_ok "ran as unprivileged pandion-run" || c_no "did not run as pandion-run"
+
+# arch guard: the arm64 fixture (on an amd64 node) should trigger a loud warning
+if [ -f "$DIST/app_arm64" ]; then
+  if echo "$OUT" | grep -qi "arch mismatch" && echo "$OUT" | grep -q "app_arm64"; then
+    c_ok "arch guard warned about the wrong-arch binary (app_arm64)"
+  else
+    c_no "arch guard did not warn about the arm64 binary on an amd64 node"
+  fi
+fi
 
 echo "================================================================"
 [ "$PASS" = 1 ] && c_ok "BINARY UPLOAD (sync mode binaries): verified" || c_no "see failures above"
