@@ -1,0 +1,4 @@
+xterm.js 5.3.0
+xterm.css 5.3.0
+xterm-addon-fit 0.8.0
+(vendored from jsdelivr; embedded via go:embed)

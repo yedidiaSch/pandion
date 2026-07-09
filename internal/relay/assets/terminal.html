@@ -1,0 +1,44 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Pandion — {{.Node}}</title>
+<link rel="stylesheet" href="/assets/xterm.css"/>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0f14; }
+  #bar { font: 12px/1.6 -apple-system, Segoe UI, sans-serif; color: #9ec7dd;
+         background: #0b3d5c; padding: 4px 10px; }
+  #term { position: absolute; top: 25px; left: 0; right: 0; bottom: 0; padding: 4px; }
+</style>
+</head>
+<body>
+<div id="bar">Pandion relay &middot; <b>{{.Node}}</b> &middot; browser session over the encrypted overlay</div>
+<div id="term"></div>
+<script src="/assets/xterm.js"></script>
+<script src="/assets/xterm-addon-fit.js"></script>
+<script>
+  const token = "{{.Token}}";
+  const term = new Terminal({ cursorBlink: true, fontFamily: "monospace", fontSize: 14,
+                              theme: { background: "#0b0f14" } });
+  const fit = new FitAddon.FitAddon();
+  term.loadAddon(fit);
+  term.open(document.getElementById("term"));
+  fit.fit();
+
+  const proto = location.protocol === "https:" ? "wss" : "ws";
+  const ws = new WebSocket(proto + "://" + location.host + "/ws/" + token);
+  ws.binaryType = "arraybuffer";
+
+  function sendResize() {
+    if (ws.readyState === 1) ws.send(JSON.stringify({ resize: { cols: term.cols, rows: term.rows } }));
+  }
+  ws.onopen = () => { sendResize(); term.focus(); };
+  ws.onmessage = (e) => { term.write(typeof e.data === "string" ? e.data : new Uint8Array(e.data)); };
+  ws.onclose = () => { term.write("\r\n\x1b[31m[ session closed ]\x1b[0m\r\n"); };
+  term.onData((d) => { if (ws.readyState === 1) ws.send(new TextEncoder().encode(d)); });
+  term.onResize(() => sendResize());
+  window.addEventListener("resize", () => { fit.fit(); sendResize(); });
+</script>
+</body>
+</html>

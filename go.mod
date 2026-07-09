@@ -3,6 +3,7 @@ module github.com/yedidiaSch/pandion
 go 1.25.0
 
 require (
+	github.com/coder/websocket v1.8.12
 	github.com/digitalocean/godo v1.197.0
 	github.com/hetznercloud/hcloud-go/v2 v2.44.0
 	github.com/linode/linodego v1.69.1
