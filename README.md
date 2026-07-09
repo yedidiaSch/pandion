@@ -189,6 +189,68 @@ sudo wg-quick up ~/.pandion/keys/pipeline/wg-pipeline.conf   # join the overlay
 pandion lockdown --id pipeline                               # verifies overlay reach, then denies public
 ```
 
+## Running your code
+
+You don't ship a machine image or a container to run your own program — Pandion gets
+your code onto each node for you. There are three ways, depending on what you have:
+
+**1. A command that needs no code of yours.** Anything already on the node (the toolchain,
+your `--packages`, whatever `setup:` installed) just runs:
+
+```bash
+pandion up --provider=hetzner -- 'gcc --version && cmake --version'
+```
+
+**2. Build a project on the node** (`sync` mode `source`, the default). Point Pandion at a
+local directory; it uploads it, runs your build command **on the node** (in the egress-open
+window, so the build can fetch dependencies), then runs your program:
+
+```bash
+pandion up --provider=hetzner --workspace . --build 'cmake -B build && cmake --build build' -- ./build/app
+```
+
+```yaml
+# cluster.yaml — same thing, per node or under defaults:
+sync:
+  path: .                                   # local dir to upload (honors .pandionignore / .gitignore)
+  build: cmake -B build && cmake --build build
+run: ./build/app
+```
+
+**3. Upload a prebuilt binary** (`sync` mode `binaries`). Build locally, ship the artifact
+as-is — no remote build. Unlike source mode, `binaries` does **not** apply `.gitignore`, so
+build output (e.g. `./dist`, `./build`) is included rather than filtered out:
+
+```bash
+pandion up --provider=hetzner --workspace ./dist --sync-mode binaries -- ./dist/app
+```
+
+```yaml
+sync:
+  mode: binaries
+  path: ./dist        # uploaded verbatim (only .pandionignore is applied; .git is always excluded)
+run: ./dist/app       # build for the node's architecture — Linux, usually amd64
+```
+
+### Options
+
+| `sync:` key | Meaning |
+|---|---|
+| `mode` | `source` (default — build on the node) or `binaries` (upload prebuilt, no build) |
+| `path` | Local directory to upload (default `./`) |
+| `build` | Command run on the node after upload (source mode only) |
+| `remote_path` | Where the workspace lands on the node (defaults to the run user's workspace) |
+
+The `run:` value (or the single-node `-- <cmd>`) is a normal shell command run from the
+workspace directory as the unprivileged `pandion-run` user, with service-discovery variables
+in scope — so `run: ./worker --broker $PANDION_BROKER_IP` works with no hardcoded IPs. Chain
+steps with `&&`, set env inline, or run a script. Single-node flags: `--workspace`, `--build`,
+`--sync-mode`, `--remote-path`, `--run-as`, `--cap-add`. See [`examples/zmq-cluster`](examples/zmq-cluster)
+for a complete sync + build + run cluster.
+
+> Anything uploaded is built/run on **Ubuntu Linux** — compile prebuilt binaries for the node's
+> architecture (`linux/amd64` unless you chose arm64 sizes), or use `source` mode to build there.
+
 ## Security
 
 Pandion treats every cloud host as hostile until hardened, and hardens it at provisioning

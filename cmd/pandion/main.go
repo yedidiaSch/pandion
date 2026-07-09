@@ -176,7 +176,8 @@ func runUp(args []string) {
 	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
 	workspacePath := fs.String("workspace", "", "local dir to sync to the node before running")
 	remotePath := fs.String("remote-path", "", "where to place the workspace on the node")
-	buildCmd := fs.String("build", "", "build command to run on the node after sync")
+	buildCmd := fs.String("build", "", "build command to run on the node after sync (source mode)")
+	syncMode := fs.String("sync-mode", "source", "workspace sync: source (build on node) | binaries (upload prebuilt as-is, no .gitignore filtering, no build)")
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
@@ -221,7 +222,11 @@ func runUp(args []string) {
 		// orchestrator + SSH); the provider is injected via `o`.
 		var ws *syncSpec
 		if *workspacePath != "" {
-			ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Build: *buildCmd}
+			if strings.EqualFold(*syncMode, "binaries") {
+				ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Binaries: true}
+			} else {
+				ws = &syncSpec{LocalPath: *workspacePath, RemotePath: *remotePath, Build: *buildCmd}
+			}
 		}
 		idleTTL := *ttl
 		if *noTTL {

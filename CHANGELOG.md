@@ -6,6 +6,18 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Added
+- **Deploy prebuilt binaries — `sync.mode: binaries` now works (+ `--sync-mode`)** — you can
+  ship a prebuilt artifact to nodes as-is, with no remote build: `sync: { mode: binaries, path:
+  ./dist }` in `cluster.yaml`, or `pandion up --workspace ./dist --sync-mode binaries -- ./dist/app`
+  single-node. Unlike `source` mode, `binaries` does **not** apply `.gitignore` — so build output
+  (`dist/`, `build/`) is uploaded rather than filtered out (`.pandionignore` still applies; `.git`
+  is always excluded). Previously `mode: binaries` was silently a no-op (nothing synced). A new
+  README "Running your code" section documents all three execution paths (a bare command, build a
+  project on the node, upload a prebuilt binary) with the full `sync:`/`run:` options. Verified live
+  by `scripts/e2e_binaries.sh` (DigitalOcean): a locally-built, gitignored binary ships and runs
+  with no remote build.
+
 ### Changed
 - **Relicensed from BSL 1.1 to AGPL-3.0 (open source), with a commercial dual-license.**
   Pandion is now free and open source under the **GNU Affero General Public License v3.0**
