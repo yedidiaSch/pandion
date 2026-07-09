@@ -7,8 +7,10 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
+	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -35,6 +37,11 @@ type PTYConn interface {
 // SSH PTY to the session's target over the overlay); tests inject a fake.
 type Dialer func(s *Session) (PTYConn, error)
 
+// badTokenPerMin caps how many unknown-token requests a single source IP may make
+// per minute before it is throttled — the token is a bearer secret, so this blunts
+// brute-force scanning of the /s/ and /ws/ endpoints.
+const badTokenPerMin = 20
+
 // Server serves the browser terminal: a token page and a WebSocket bridged to the
 // target node's SSH PTY. It holds no keys itself — each session carries its own
 // scoped key, resolved from the Store by the presented token.
@@ -42,11 +49,55 @@ type Server struct {
 	store *Store
 	dial  Dialer
 	now   func() time.Time
+	lim   *limiter
 }
 
 // NewServer builds a relay server over a session store and a target dialer.
 func NewServer(store *Store, dial Dialer) *Server {
-	return &Server{store: store, dial: dial, now: func() time.Time { return time.Now().UTC() }}
+	return &Server{store: store, dial: dial, now: func() time.Time { return time.Now().UTC() }, lim: newLimiter(badTokenPerMin)}
+}
+
+// limiter is a minimal per-IP fixed-window counter (no external dependency) used to
+// throttle unknown-token attempts.
+type limiter struct {
+	mu   sync.Mutex
+	hits map[string]int
+	max  int
+}
+
+func newLimiter(max int) *limiter {
+	l := &limiter{hits: map[string]int{}, max: max}
+	go func() {
+		for range time.Tick(time.Minute) {
+			l.mu.Lock()
+			l.hits = map[string]int{}
+			l.mu.Unlock()
+		}
+	}()
+	return l
+}
+
+// allow records a failed attempt from ip and reports whether it is still under the
+// per-minute cap.
+func (l *limiter) allow(ip string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.hits[ip]++
+	return l.hits[ip] <= l.max
+}
+
+// reject writes a 404 for an unknown token, or 429 if the source IP is over the
+// bad-token rate cap. Returns true if it handled the response.
+func (srv *Server) reject(w http.ResponseWriter, r *http.Request) {
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		ip = r.RemoteAddr
+	}
+	if !srv.lim.allow(ip) {
+		http.Error(w, "too many requests", http.StatusTooManyRequests)
+		return
+	}
+	http.NotFound(w, r)
 }
 
 // Handler returns the HTTP routes: static assets, the token page, and the WebSocket.
@@ -67,7 +118,7 @@ func (srv *Server) handlePage(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/s/")
 	s, ok := srv.store.Get(token, srv.now())
 	if !ok {
-		http.NotFound(w, r)
+		srv.reject(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -79,7 +130,7 @@ func (srv *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimPrefix(r.URL.Path, "/ws/")
 	s, ok := srv.store.Get(token, srv.now())
 	if !ok {
-		http.NotFound(w, r)
+		srv.reject(w, r)
 		return
 	}
 	c, err := websocket.Accept(w, r, nil)
@@ -96,13 +147,15 @@ func (srv *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer pty.Close()
-	srv.pump(ctx, c, pty)
+	srv.pump(ctx, c, pty, s.ReadOnly)
 	c.Close(websocket.StatusNormalClosure, "session closed")
 }
 
 // pump bridges a WebSocket and a PTY: PTY output -> binary WS frames; browser input
 // (binary) -> PTY stdin; browser control (text JSON {"resize":{cols,rows}}) -> resize.
-func (srv *Server) pump(ctx context.Context, c *websocket.Conn, pty PTYConn) {
+// When readOnly, browser keystrokes are dropped (view-only); output and resize still
+// flow so the terminal renders and fits.
+func (srv *Server) pump(ctx context.Context, c *websocket.Conn, pty PTYConn, readOnly bool) {
 	c.SetReadLimit(1 << 20)
 	go func() {
 		buf := make([]byte, 32*1024)
@@ -133,6 +186,9 @@ func (srv *Server) pump(ctx context.Context, c *websocket.Conn, pty PTYConn) {
 				_ = pty.Resize(ctl.Resize.Rows, ctl.Resize.Cols)
 			}
 			continue
+		}
+		if readOnly {
+			continue // view-only: ignore keystrokes
 		}
 		if _, err := pty.Write(data); err != nil {
 			return

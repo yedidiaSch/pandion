@@ -74,6 +74,7 @@ func runRelayShare(args []string) {
 	node := fs.String("node", "", "target node to share (required)")
 	expires := fs.Duration("expires", 4*time.Hour, "how long the link is valid")
 	user := fs.String("user", "pandion-lab", "scoped non-root login user on the target")
+	readOnly := fs.Bool("read-only", false, "view-only: the participant sees the terminal but cannot type")
 	_ = fs.Parse(args)
 	initAudit()
 
@@ -124,7 +125,7 @@ func runRelayShare(args []string) {
 	sess := relay.Session{
 		ID: shareID, Token: token, ClusterID: *id, Node: target.Name,
 		Target: target.OverlayIP, HostPub: target.HostPub, User: *user,
-		SSHKeyPEM: scoped.PrivatePEM, Expiry: expiry,
+		SSHKeyPEM: scoped.PrivatePEM, Expiry: expiry, ReadOnly: *readOnly,
 	}
 	data, err := json.Marshal(sess)
 	must(err)
@@ -160,7 +161,11 @@ func runRelayShare(args []string) {
 	_ = os.WriteFile(filepath.Join(relaySharesDir(*id), shareID+".json"), b, 0o600)
 	audit.Event("relay.share", "id", *id, "node", target.Name, "share", shareID, "user", *user, "expiry", expiry.Format(time.RFC3339))
 
-	fmt.Printf("shared %q/%s as %s (expires %s):\n\n", *id, target.Name, *user, expiry.Format("2006-01-02 15:04 MST"))
+	mode := ""
+	if *readOnly {
+		mode = ", read-only"
+	}
+	fmt.Printf("shared %q/%s as %s%s (expires %s):\n\n", *id, target.Name, *user, mode, expiry.Format("2006-01-02 15:04 MST"))
 	fmt.Println("  " + url)
 	if rec.Domain != "" {
 		fmt.Println("\n# send that link — browser-trusted TLS (Let's Encrypt).")
