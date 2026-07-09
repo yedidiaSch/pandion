@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -53,7 +54,8 @@ type relayShareRecord struct {
 	RelayIP      string `json:"relay_ip"`       // relay node public IP (to remove the spool file)
 	RelayHostPub string `json:"relay_host_pub"` // relay node pinned host key
 	RelayPort    int    `json:"relay_port"`
-	Expiry       string `json:"expiry"` // RFC3339
+	URL          string `json:"url"` // the full clickable link
+	Expiry       string `json:"expiry"`
 }
 
 func relaySharesDir(id string) string {
@@ -148,19 +150,23 @@ func runRelayShare(args []string) {
 
 	// 3) record locally for revoke.
 	must(os.MkdirAll(relaySharesDir(*id), 0o700))
+	url := rec.baseURL() + "/s/" + token
 	sr := relayShareRecord{
 		ShareID: shareID, Node: target.Name, NodeIP: target.IP, NodeHostPub: target.HostPub,
 		User: *user, Token: token, RelayIP: rec.IP, RelayHostPub: relayNode.HostPub,
-		RelayPort: rec.Port, Expiry: expiry.Format(time.RFC3339),
+		RelayPort: rec.Port, URL: url, Expiry: expiry.Format(time.RFC3339),
 	}
 	b, _ := json.MarshalIndent(sr, "", "  ")
 	_ = os.WriteFile(filepath.Join(relaySharesDir(*id), shareID+".json"), b, 0o600)
 	audit.Event("relay.share", "id", *id, "node", target.Name, "share", shareID, "user", *user, "expiry", expiry.Format(time.RFC3339))
 
-	url := fmt.Sprintf("https://%s:%d/s/%s", rec.IP, rec.Port, token)
 	fmt.Printf("shared %q/%s as %s (expires %s):\n\n", *id, target.Name, *user, expiry.Format("2006-01-02 15:04 MST"))
 	fmt.Println("  " + url)
-	fmt.Printf("\n# send that link. TLS is self-signed (fingerprint %s) — the browser will warn.\n", rec.Fingerprint)
+	if rec.Domain != "" {
+		fmt.Println("\n# send that link — browser-trusted TLS (Let's Encrypt).")
+	} else {
+		fmt.Printf("\n# send that link. TLS is self-signed (fingerprint %s) — the browser will warn.\n", rec.Fingerprint)
+	}
 	fmt.Printf("# revoke:  pandion relay unshare --id %s --share %s   (or --all)\n", *id, shareID)
 }
 
@@ -232,7 +238,7 @@ func runRelayStatus(args []string) {
 	_ = fs.Parse(args)
 	recs := loadRelayShareRecords(*id)
 	if rec, err := loadRelayRecord(*id); err == nil {
-		fmt.Printf("relay: https://%s:%d/  (node %q)\n", rec.IP, rec.Port, rec.Node)
+		fmt.Printf("relay: %s/  (node %q)\n", rec.baseURL(), rec.Node)
 	} else {
 		fmt.Println("relay: not deployed (pandion relay up)")
 	}
@@ -241,8 +247,8 @@ func runRelayStatus(args []string) {
 		return
 	}
 	for _, r := range recs {
-		fmt.Printf("  %s  node=%s  user=%s  expires=%s\n  https://%s:%d/s/%s\n",
-			r.ShareID, r.Node, r.User, r.Expiry, r.RelayIP, r.RelayPort, r.Token)
+		fmt.Printf("  %s  node=%s  user=%s  expires=%s\n  %s\n",
+			r.ShareID, r.Node, r.User, r.Expiry, r.URL)
 	}
 }
 
@@ -269,8 +275,22 @@ func loadRelayShareRecords(id string) []relayShareRecord {
 type relayRecord struct {
 	Node        string `json:"node"`
 	IP          string `json:"ip"`
+	Domain      string `json:"domain,omitempty"` // Let's Encrypt DNS name, if any
 	Port        int    `json:"port"`
-	Fingerprint string `json:"fingerprint"`
+	Fingerprint string `json:"fingerprint"` // self-signed only; "(Let's Encrypt)" for --domain
+}
+
+// baseURL is the relay's public origin: the domain (Let's Encrypt) if set, else the
+// node IP, dropping :443 for a clean URL.
+func (r *relayRecord) baseURL() string {
+	host := r.IP
+	if r.Domain != "" {
+		host = r.Domain
+	}
+	if r.Port == 443 {
+		return "https://" + host
+	}
+	return fmt.Sprintf("https://%s:%d", host, r.Port)
 }
 
 func relayRecordPath(id string) string {
@@ -287,9 +307,19 @@ func runRelayUp(args []string) {
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "", "node to host the relay (default: first node)")
 	port := fs.Int("port", 8443, "public TLS port for the relay")
+	domain := fs.String("domain", "", "public DNS name for browser-trusted Let's Encrypt TLS (implies :443)")
 	relayBin := fs.String("relay-binary", "", "prebuilt linux pandion-relay binary (default: build from source)")
 	_ = fs.Parse(args)
 	initAudit()
+
+	// Let's Encrypt (TLS-ALPN-01) is answered on :443; force it unless the operator
+	// deliberately chose another port.
+	if *domain != "" && *port == 8443 {
+		*port = 443
+	}
+	if *domain != "" && *port != 443 {
+		fmt.Fprintf(os.Stderr, "warning: Let's Encrypt (TLS-ALPN-01) needs :443; issuance will fail on :%d\n", *port)
+	}
 
 	man, err := loadManifest(*id)
 	if err != nil {
@@ -348,16 +378,30 @@ func runRelayUp(args []string) {
 		os.Exit(1)
 	}
 
+	// with --domain, check the A record points at this node before we bother.
+	if *domain != "" {
+		if ips, lerr := net.LookupHost(*domain); lerr != nil || !contains(ips, target.IP) {
+			fmt.Fprintf(os.Stderr, "warning: %s does not resolve to %s yet — create an A record:\n  %s  A  %s\n",
+				*domain, target.IP, *domain, target.IP)
+			fmt.Fprintln(os.Stderr, "  (Let's Encrypt will keep retrying once DNS is correct.)")
+		}
+	}
+
 	// 3) provision the non-root service + state dir + systemd unit.
 	fmt.Printf("[%s] installing pandion-relay.service...\n", target.Name)
-	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, relayProvisionScript(*port, target.IP)); err != nil {
+	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, relayProvisionScript(*port, target.IP, *domain)); err != nil {
 		fmt.Fprintf(os.Stderr, "relay up: provision failed: %v\n%s\n", err, out)
 		os.Exit(1)
 	}
 
-	// 4) open the one public port in the host firewall (targeted rule, no flush).
-	if out, err := envssh.Run(ctx, addr, "root", signer, pinned,
-		fmt.Sprintf("nft add rule inet pandion input tcp dport %d accept 2>/dev/null || true", *port)); err != nil {
+	// 4) open the one public inbound port in the host firewall (targeted rule, no
+	//    flush). With --domain, ALSO allow outbound :443 so autocert can reach the
+	//    Let's Encrypt ACME API (the node is otherwise default-deny egress).
+	fwCmd := fmt.Sprintf("nft add rule inet pandion input tcp dport %d accept 2>/dev/null || true", *port)
+	if *domain != "" {
+		fwCmd += "; nft add rule inet pandion output tcp dport 443 accept 2>/dev/null || true"
+	}
+	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, fwCmd); err != nil {
 		fmt.Fprintf(os.Stderr, "relay up: firewall rule warning: %v\n%s\n", err, out)
 	}
 
@@ -367,29 +411,36 @@ func runRelayUp(args []string) {
 		os.Exit(1)
 	}
 
-	// 6) read back the cert fingerprint the relay just generated (a couple of tries;
-	//    the relay writes it within ~1s of first start).
-	fp := "(pending)"
-	for attempt := 0; attempt < 5; attempt++ {
-		time.Sleep(time.Second)
-		out, rerr := envssh.Run(ctx, addr, "root", signer, pinned, "cat /var/lib/pandion-relay/relay.crt 2>/dev/null")
-		if rerr == nil {
-			if f, ferr := relay.PEMFingerprint([]byte(out)); ferr == nil {
-				fp = f
-				break
+	// 6) TLS identity: Let's Encrypt certs are browser-trusted (no fingerprint to
+	//    show); for self-signed, read back the fingerprint the relay generated.
+	fp := "(Let's Encrypt)"
+	if *domain == "" {
+		fp = "(pending)"
+		for attempt := 0; attempt < 5; attempt++ {
+			time.Sleep(time.Second)
+			out, rerr := envssh.Run(ctx, addr, "root", signer, pinned, "cat /var/lib/pandion-relay/relay.crt 2>/dev/null")
+			if rerr == nil {
+				if f, ferr := relay.PEMFingerprint([]byte(out)); ferr == nil {
+					fp = f
+					break
+				}
 			}
 		}
 	}
 
-	rec := relayRecord{Node: target.Name, IP: target.IP, Port: *port, Fingerprint: fp}
+	rec := relayRecord{Node: target.Name, IP: target.IP, Domain: *domain, Port: *port, Fingerprint: fp}
 	if err := writeRelayRecord(*id, rec); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not persist relay record: %v\n", err)
 	}
-	audit.Event("relay.up", "id", *id, "node", target.Name, "ip", target.IP, "port", *port)
+	audit.Event("relay.up", "id", *id, "node", target.Name, "ip", target.IP, "port", *port, "domain", *domain)
 
-	fmt.Printf("\nrelay up on %s (node %q): https://%s:%d/\n", *id, target.Name, target.IP, *port)
-	fmt.Printf("  TLS SHA-256: %s\n", fp)
-	fmt.Printf("  (self-signed — participants will see a browser warning; --domain Let's Encrypt is coming)\n")
+	fmt.Printf("\nrelay up on %s (node %q): %s/\n", *id, target.Name, rec.baseURL())
+	if *domain != "" {
+		fmt.Printf("  TLS: Let's Encrypt for %s (browser-trusted — first request may take ~30s while the cert issues)\n", *domain)
+	} else {
+		fmt.Printf("  TLS SHA-256: %s\n", fp)
+		fmt.Printf("  (self-signed — participants see a browser warning; use --domain <name> for a trusted cert)\n")
+	}
 	fmt.Printf("  next:  pandion relay share --id %s --node TARGET   (mint a clickable link)\n", *id)
 }
 
@@ -407,9 +458,19 @@ func buildRelayBinary(arch string) (string, error) {
 }
 
 // relayProvisionScript creates the non-root relay user, its state dir, and a systemd
-// unit that serves TLS on port and reaches targets over the overlay. hostIP is put
-// in the self-signed cert's SANs.
-func relayProvisionScript(port int, hostIP string) string {
+// unit that serves TLS on port and reaches targets over the overlay. With domain set,
+// the relay uses Let's Encrypt (needs :443 and the bind capability); otherwise it
+// self-signs with hostIP in the cert SANs.
+func relayProvisionScript(port int, hostIP, domain string) string {
+	execStart := fmt.Sprintf("/usr/local/bin/pandion-relay --addr :%d --spool /var/lib/pandion-relay/sessions --state /var/lib/pandion-relay", port)
+	caps := ""
+	if domain != "" {
+		execStart += " --domain " + domain
+		// binding :443 as a non-root user needs CAP_NET_BIND_SERVICE.
+		caps = "AmbientCapabilities=CAP_NET_BIND_SERVICE\nCapabilityBoundingSet=CAP_NET_BIND_SERVICE\n"
+	} else {
+		execStart += " --hosts " + hostIP
+	}
 	unit := fmt.Sprintf(`[Unit]
 Description=Pandion browser-SSH relay
 After=network-online.target wg-quick@wg0.service
@@ -417,17 +478,17 @@ Wants=network-online.target
 
 [Service]
 User=pandion-relay
-ExecStart=/usr/local/bin/pandion-relay --addr :%d --spool /var/lib/pandion-relay/sessions --state /var/lib/pandion-relay --hosts %s
+ExecStart=%s
 Restart=on-failure
 RestartSec=2
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/pandion-relay
 ProtectHome=true
-
+%s
 [Install]
 WantedBy=multi-user.target
-`, port, hostIP)
+`, execStart, caps)
 
 	return "set -e\n" +
 		"id -u pandion-relay >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /var/lib/pandion-relay pandion-relay\n" +

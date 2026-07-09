@@ -22,3 +22,5 @@
 .env.*
 !.env.example
 relayprobe-*/
+relayleprobe-*/
+/pandion-relay
