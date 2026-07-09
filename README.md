@@ -315,6 +315,7 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 
 | Command | What it does |
 |---|---|
+| `pandion init` | First-run setup: pick a default provider, log in, write `~/.pandion/config.yaml` |
 | `pandion up [--provider …] [--id ID] [flags] -- <cmd>` | Provision, harden, and run a single node |
 | `pandion up --provider … -f cluster.yaml --id ID` | Provision a multi-node cluster and mesh |
 | `pandion up … --no-run` | Deploy only: provision, sync, and build, but do not launch the run command |
