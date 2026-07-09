@@ -11,8 +11,9 @@ import (
 // completionCommands is the subcommand list offered by shell completion. Kept
 // here (not derived from the main switch) so completion is explicit and stable.
 var completionCommands = []string{
-	"up", "down", "ls", "status", "validate",
-	"lockdown", "reap", "attach", "demo", "version", "completion",
+	"init", "up", "build", "down", "ls", "status", "start", "attach",
+	"ssh", "cp", "code", "debug", "relay", "validate", "lockdown", "reap",
+	"login", "logout", "profiles", "demo", "version", "completion",
 }
 
 // completionProviders are the values suggested after --provider.
@@ -51,13 +52,14 @@ _pandion() {
   prev="${COMP_WORDS[COMP_CWORD-1]}"
   case "$prev" in
     --provider) COMPREPLY=( $(compgen -W "` + provs + `" -- "$cur") ); return ;;
+    --profile) COMPREPLY=( $(compgen -W "$(pandion profiles 2>/dev/null | tail -n +2 | awk '{print $1}')" -- "$cur") ); return ;;
     -f|--f|--lock|--workspace) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
   esac
   if [ "$COMP_CWORD" -eq 1 ]; then
     COMPREPLY=( $(compgen -W "` + cmds + `" -- "$cur") ); return
   fi
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--provider --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--profile --provider --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
   fi
 }
 complete -F _pandion pandion
@@ -78,8 +80,9 @@ _pandion() {
   fi
   case "${words[CURRENT-1]}" in
     --provider) compadd ` + provs + ` ;;
+    --profile) compadd $(pandion profiles 2>/dev/null | tail -n +2 | awk '{print $1}') ;;
     -f|--lock|--workspace) _files ;;
-    *) _arguments '--provider[cloud backend]' '--id[cluster id]' '--node[node name]' \
+    *) _arguments '--profile[operator profile]' '--provider[cloud backend]' '--id[cluster id]' '--node[node name]' \
          '--dry-run[preview only]' '--lock[reproducibility lockfile]' '--max-cost[budget cap]' \
          '--ttl[idle poweroff]' '--no-ttl[disable ttl]' '-f[cluster.yaml]' '--json[machine-readable]' ;;
   esac
@@ -97,6 +100,8 @@ func fishCompletion() string {
 	// --provider values
 	b.WriteString("complete -c pandion -l provider -x -a '" +
 		strings.Join(completionProviders, " ") + "'\n")
+	// --profile values (dynamic: ask pandion itself)
+	b.WriteString("complete -c pandion -l profile -x -a '(pandion profiles 2>/dev/null | tail -n +2 | string split -f1 \" \")'\n")
 	for _, f := range []struct{ name, desc string }{
 		{"id", "cluster id"}, {"node", "node name"}, {"dry-run", "preview only"},
 		{"lock", "reproducibility lockfile"}, {"max-cost", "budget cap"},
