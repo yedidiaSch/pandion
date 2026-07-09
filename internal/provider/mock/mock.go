@@ -8,6 +8,7 @@ package mock
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -45,18 +46,77 @@ func (m *Mock) ReapAux(_ context.Context, _ string) error {
 	return nil
 }
 
+// mockGPUOfferings is a fixed, offline GPU catalog so the GPU seam (`list-gpus`,
+// `--gpu` resolution, GPU pricing) is exercised in CI without any cloud (G0).
+// Each SKU is a single GPU; multi-GPU requests scale price by GPUReq.Count.
+var mockGPUOfferings = []provider.GPUOffering{
+	{ServerType: "mock-gpu-a100", GPU: provider.GPUInfo{Model: "a100", Count: 1, VRAM: 40},
+		Regions: []string{"mock-dc"}, Hourly: provider.Money{Amount: 1.10, Currency: "EUR"}, Image: "mock-cuda"},
+	{ServerType: "mock-gpu-h100", GPU: provider.GPUInfo{Model: "h100", Count: 1, VRAM: 80},
+		Regions: []string{"mock-dc"}, Hourly: provider.Money{Amount: 2.50, Currency: "EUR"}, Image: "mock-cuda"},
+}
+
+// GPUOfferings implements provider.GPUProvider: the fixed offline catalog.
+func (m *Mock) GPUOfferings(_ context.Context) ([]provider.GPUOffering, error) {
+	out := make([]provider.GPUOffering, len(mockGPUOfferings))
+	copy(out, mockGPUOfferings)
+	return out, nil
+}
+
+// ResolveGPUType implements provider.GPUProvider: cheapest offering matching the
+// requested model (if any) and minimum VRAM. Deterministic so dry-run and up agree.
+func (m *Mock) ResolveGPUType(_ context.Context, req provider.GPUReq, _ []string) (string, string, error) {
+	off, err := matchGPUOffering(req)
+	if err != nil {
+		return "", "", err
+	}
+	return off.ServerType, off.Regions[0], nil
+}
+
+// matchGPUOffering returns the cheapest offering satisfying req (mockGPUOfferings
+// is already cheapest-first). Shared by ResolveGPUType, pricing, and CreateServer.
+func matchGPUOffering(req provider.GPUReq) (provider.GPUOffering, error) {
+	for _, o := range mockGPUOfferings {
+		if req.Model != "" && !strings.EqualFold(req.Model, o.GPU.Model) {
+			continue
+		}
+		if req.MinVRAM > 0 && o.GPU.VRAM < req.MinVRAM {
+			continue
+		}
+		return o, nil
+	}
+	return provider.GPUOffering{}, fmt.Errorf("mock: no GPU offering matches model=%q minVRAM=%d", req.Model, req.MinVRAM)
+}
+
 // HourlyPrice implements provider.Pricer with a fixed, nonzero fake price so the
 // `ls`/`status` cost path and the `--max-cost` preflight are exercised offline.
 func (m *Mock) HourlyPrice(_ context.Context, serverType, _ string) (provider.Money, error) {
 	if serverType == "" {
 		return provider.Money{}, nil
 	}
+	for _, o := range mockGPUOfferings {
+		if o.ServerType == serverType {
+			return o.Hourly, nil
+		}
+	}
 	return provider.Money{Amount: 0.01, Currency: "EUR"}, nil
 }
 
 // EstimateHourly implements provider.Pricer: the mock always resolves to a priced
-// type, so the `--max-cost` preflight is exercised offline.
-func (m *Mock) EstimateHourly(_ context.Context, _ provider.ServerSpec) (provider.Money, error) {
+// type, so the `--max-cost` preflight is exercised offline. A --gpu request is
+// priced from the GPU catalog (× Count); otherwise the flat CPU price.
+func (m *Mock) EstimateHourly(_ context.Context, spec provider.ServerSpec) (provider.Money, error) {
+	if spec.GPU.Wanted() {
+		off, err := matchGPUOffering(spec.GPU)
+		if err != nil {
+			return provider.Money{}, err
+		}
+		n := spec.GPU.Count
+		if n < 1 {
+			n = 1
+		}
+		return provider.Money{Amount: off.Hourly.Amount * float64(n), Currency: off.Hourly.Currency}, nil
+	}
 	return provider.Money{Amount: 0.01, Currency: "EUR"}, nil
 }
 
@@ -86,14 +146,27 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		return provider.Server{}, fmt.Errorf("mock: simulated create failure for %q", spec.Name)
 	}
 	m.seq++
+	typ, gpu := "mock-small", provider.GPUInfo{}
+	if spec.GPU.Wanted() {
+		off, err := matchGPUOffering(spec.GPU)
+		if err != nil {
+			return provider.Server{}, err
+		}
+		typ = off.ServerType
+		gpu = off.GPU
+		if spec.GPU.Count > 1 {
+			gpu.Count = spec.GPU.Count
+		}
+	}
 	s := provider.Server{
 		ID:        fmt.Sprintf("mock-%d", m.seq),
 		Name:      spec.Name,
 		ClusterID: spec.ClusterID,
-		Type:      "mock-small",
+		Type:      typ,
 		Region:    "mock-dc",
 		IP:        fmt.Sprintf("10.0.0.%d", m.seq),
 		Created:   time.Now(),
+		GPU:       gpu,
 	}
 	m.servers[s.ID] = s
 	return s, nil

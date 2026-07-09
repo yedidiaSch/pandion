@@ -31,6 +31,7 @@ type NodeSpec struct {
 	Type        string // exact provider type (from cluster.yaml `size`); empty = auto
 	Image       string
 	RegionPref  []string
+	GPU         provider.GPUReq // optional; zero = CPU-only
 }
 
 // Orchestrator drives clusters through their lifecycle.
@@ -76,6 +77,7 @@ func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSp
 		RegionPref:  spec.RegionPref,
 		UserData:    userData,
 		LoginPubKey: loginPubKey,
+		GPU:         spec.GPU,
 	})
 	if err != nil {
 		c.Nodes[0].Phase = state.Failed
@@ -134,6 +136,7 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 				Type:        specs[i].Type,
 				Image:       specs[i].Image,
 				RegionPref:  specs[i].RegionPref,
+				GPU:         specs[i].GPU,
 			})
 			if err != nil {
 				setPhase(i, state.Failed)
@@ -285,7 +288,7 @@ func (o *Orchestrator) EstimateSpend(ctx context.Context, specs []NodeSpec, wind
 	var est CostEstimate
 	for i, s := range specs {
 		m, err := pricer.EstimateHourly(ctx, provider.ServerSpec{
-			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref,
+			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref, GPU: s.GPU,
 		})
 		if err != nil {
 			return CostEstimate{}, err
@@ -331,7 +334,8 @@ func (o *Orchestrator) CheckBudget(ctx context.Context, specs []NodeSpec, window
 type DryRunNode struct {
 	Name, Size, Region string
 	Hourly             provider.Money
-	Window             time.Duration // idle-TTL; 0 = none
+	Window             time.Duration   // idle-TTL; 0 = none
+	GPU                provider.GPUReq // zero = CPU-only
 }
 
 // PlanUp previews an `up`: the per-node plan and the rolled-up projected cost,
@@ -346,7 +350,7 @@ func (o *Orchestrator) PlanUp(ctx context.Context, specs []NodeSpec, windows []t
 	var est CostEstimate
 	for i, s := range specs {
 		m, err := pricer.EstimateHourly(ctx, provider.ServerSpec{
-			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref,
+			Name: s.Name, Type: s.Type, Image: s.Image, RegionPref: s.RegionPref, GPU: s.GPU,
 		})
 		if err != nil {
 			return nil, CostEstimate{}, err
@@ -355,7 +359,7 @@ func (o *Orchestrator) PlanUp(ctx context.Context, specs []NodeSpec, windows []t
 		if len(s.RegionPref) > 0 {
 			region = s.RegionPref[0]
 		}
-		nodes = append(nodes, DryRunNode{Name: s.Name, Size: s.Type, Region: region, Hourly: m, Window: windows[i]})
+		nodes = append(nodes, DryRunNode{Name: s.Name, Size: s.Type, Region: region, Hourly: m, Window: windows[i], GPU: s.GPU})
 		if m.Known() {
 			est.Currency = m.Currency
 			est.Hourly += m.Amount
