@@ -5,6 +5,7 @@ package userconfig
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -28,7 +29,8 @@ func TestSaveLoad_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	// Unix mode bits only — Windows does not report 0600 for a written file.
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("config perms = %v, want 0600", fi.Mode().Perm())
 	}
 	if filepath.Base(Path(home)) != "config.yaml" {
