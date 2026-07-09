@@ -47,6 +47,14 @@ func New(p provider.Provider, s *state.Store) *Orchestrator {
 // Up provisions a single-node cluster, journaling each transition before/after.
 // loginPubKey (optional) is registered with the provider for root SSH access.
 func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData, loginPubKey string) (*state.Cluster, error) {
+	return o.UpSpec(ctx, clusterID, NodeSpec{Name: nodeName}, userData, loginPubKey)
+}
+
+// UpSpec is Up with an explicit node spec, so callers can pin the size (Type) and
+// region (RegionPref) — e.g. from `pandion init` defaults. Empty fields keep the
+// provider's auto-selection.
+func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSpec, userData, loginPubKey string) (*state.Cluster, error) {
+	nodeName := spec.Name
 	c := &state.Cluster{
 		ID:       clusterID,
 		Provider: o.P.Name(),
@@ -64,6 +72,8 @@ func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData, lo
 	srv, err := o.P.CreateServer(ctx, provider.ServerSpec{
 		Name:        nodeName,
 		ClusterID:   clusterID,
+		Type:        spec.Type,
+		RegionPref:  spec.RegionPref,
 		UserData:    userData,
 		LoginPubKey: loginPubKey,
 	})

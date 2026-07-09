@@ -130,7 +130,9 @@ flags:
 pandion init
 ```
 
-After that, `pandion up -- ./app` needs no `--provider`. Prefer to do it by hand (or automate)?
+`init` also records optional `defaults.{region,size,ttl}`, which seed any `up` that omits
+`--region`/`--size`/`--ttl` (an explicit flag always wins). After that, `pandion up -- ./app`
+needs no `--provider`, and no size/region either. Prefer to do it by hand (or automate)?
 Authenticate with a project-scoped API token — an environment variable, or the OS keychain:
 
 ```bash
