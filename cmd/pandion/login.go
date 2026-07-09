@@ -40,7 +40,7 @@ func providerToken(provider, env string) (string, error) {
 	if t := strings.TrimSpace(os.Getenv(env)); t != "" {
 		return t, nil
 	}
-	if t, err := secret.Get(provider); err == nil && t != "" {
+	if t, err := secret.Get(credName(provider)); err == nil && t != "" {
 		return t, nil
 	}
 	base := fmt.Errorf("%s not set and no stored token — set the env var or run `pandion login --provider %s`", env, provider)
@@ -91,12 +91,12 @@ func runLogin(args []string) {
 		printSignupSuggestion(name)
 		os.Exit(2)
 	}
-	if err := secret.Set(name, token); err != nil {
+	if err := secret.Set(credName(name), token); err != nil {
 		fmt.Fprintf(os.Stderr, "login: could not store the token in the OS keychain: %v\n", err)
 		fmt.Fprintf(os.Stderr, "  (no keyring available here? keep using the env var: export %s=…)\n", env)
 		os.Exit(3)
 	}
-	fmt.Printf("stored %s token in the OS keychain — pandion will use it automatically.\n", name)
+	fmt.Printf("stored %s token in the OS keychain — pandion will use it automatically%s.\n", name, profileLabel())
 }
 
 // runLogout removes a provider's token from the OS keychain.
@@ -109,9 +109,9 @@ func runLogout(args []string) {
 		fmt.Fprintf(os.Stderr, "logout: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway)\n", *provider)
 		os.Exit(2)
 	}
-	if err := secret.Delete(name); err != nil {
+	if err := secret.Delete(credName(name)); err != nil {
 		fmt.Fprintf(os.Stderr, "logout: %v\n", err)
 		os.Exit(3)
 	}
-	fmt.Printf("removed %s token from the OS keychain.\n", name)
+	fmt.Printf("removed %s token from the OS keychain%s.\n", name, profileLabel())
 }

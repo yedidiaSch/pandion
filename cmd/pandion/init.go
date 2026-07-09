@@ -32,7 +32,7 @@ func runInit(args []string) {
 	_ = fs.Parse(args)
 
 	home := envHome()
-	cfg, _ := userconfig.Load(home)
+	cfg, _ := userconfig.LoadProfile(home, activeProfile)
 	if cfg.DefaultProvider != "" && !*force && *provider == "" {
 		fmt.Printf("Pandion is already configured (default provider: %s).\n", cfg.DefaultProvider)
 		if !isTTY() || !yesNo("Reconfigure?", false) {
@@ -75,7 +75,7 @@ func runInit(args []string) {
 			fmt.Fprintln(os.Stderr, "init: no token provided")
 			os.Exit(2)
 		}
-		if err := secret.Set(canonical, tok); err != nil {
+		if err := secret.Set(credName(canonical), tok); err != nil {
 			fmt.Fprintf(os.Stderr, "init: could not store the token in the OS keychain: %v\n", err)
 			fmt.Fprintf(os.Stderr, "  keep using the env var instead: export %s=…\n", env)
 		} else {
@@ -119,12 +119,12 @@ func runInit(args []string) {
 	if tl != "" {
 		cfg.Defaults.TTL = tl
 	}
-	if err := userconfig.Save(home, cfg); err != nil {
+	if err := userconfig.SaveProfile(home, activeProfile, cfg); err != nil {
 		fmt.Fprintf(os.Stderr, "init: could not write config: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n✔ configured: default provider = %s", canonical)
+	fmt.Printf("\n✔ configured%s: default provider = %s", profileLabel(), canonical)
 	if reg != "" {
 		fmt.Printf(", region = %s", reg)
 	}
@@ -134,7 +134,7 @@ func runInit(args []string) {
 	if tl != "" {
 		fmt.Printf(", ttl = %s", tl)
 	}
-	fmt.Printf("  (%s)\n", userconfig.Path(home))
+	fmt.Printf("  (%s)\n", userconfig.PathFor(home, activeProfile))
 	fmt.Println("\nTry it:")
 	if canonical == "mock" {
 		fmt.Println("  pandion demo                      # full lifecycle, offline, zero cost")
