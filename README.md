@@ -200,6 +200,27 @@ sudo wg-quick up ~/.pandion/keys/pipeline/wg-pipeline.conf   # join the overlay
 pandion lockdown --id pipeline                               # verifies overlay reach, then denies public
 ```
 
+## Profiles
+
+Use `--profile NAME` (or `$PANDION_PROFILE`) to keep separate configs and credentials for
+different accounts or projects — for example, a personal Hetzner account and a work
+DigitalOcean account side by side:
+
+```bash
+pandion --profile work init --provider digitalocean
+pandion --profile work login --provider digitalocean   # stored as "work@digitalocean" in keychain
+
+pandion --profile personal init --provider hetzner
+pandion --profile personal login --provider hetzner   # stored as "personal@hetzner"
+
+pandion profiles          # list all profiles; * = active
+pandion --profile work up -- './app'
+```
+
+Named profiles store their defaults in `~/.pandion/profiles/<name>.yaml`; the default
+profile (no `--profile`) continues to use `~/.pandion/config.yaml` and bare keychain
+entries, so existing setups are unchanged.
+
 ## Running your code
 
 You don't ship a machine image or a container to run your own program — Pandion gets
@@ -327,7 +348,8 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 
 | Command | What it does |
 |---|---|
-| `pandion init` | First-run setup: pick a default provider, log in, write `~/.pandion/config.yaml` |
+| `pandion [--profile NAME] <cmd>` | Run any command under a named profile (`$PANDION_PROFILE` also accepted) |
+| `pandion init` | First-run setup: pick a default provider, log in, write `~/.pandion/config.yaml` (or `~/.pandion/profiles/<name>.yaml` with `--profile`) |
 | `pandion build [dir] [flags] [-- <cmd>]` | Auto-detect the toolchain, upload the project, and build it in the cloud |
 | `pandion up [--provider …] [--id ID] [flags] -- <cmd>` | Provision, harden, and run a single node |
 | `pandion up --provider … -f cluster.yaml --id ID` | Provision a multi-node cluster and mesh |
@@ -345,6 +367,8 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 | `pandion down --id ID` | Idempotent, verified teardown (provider read from the manifest; `--provider` optional) |
 | `pandion validate [-f cluster.yaml]` | Schema-check a topology |
 | `pandion lockdown --id ID` | Lockout-safe public deny-all (SSH over the overlay only) |
+| `pandion login \| logout [--provider …]` | Store/remove a provider's API token in the OS keychain |
+| `pandion profiles` | List configured profiles; `*` marks the active one |
 | `pandion completion bash\|zsh\|fish` | Shell completion script |
 | `pandion demo` · `pandion version` | Offline mock lifecycle · version |
 

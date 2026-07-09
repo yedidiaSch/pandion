@@ -1083,6 +1083,8 @@ func initAudit() {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage:")
+	fmt.Fprintln(os.Stderr, "  pandion [--profile NAME] <cmd> …   ($PANDION_PROFILE also accepted)")
+	fmt.Fprintln(os.Stderr, "")
 	fmt.Fprintln(os.Stderr, "  pandion init   (set up a default provider + credentials so bare commands work)")
 	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--size TYPE] [--region R] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
 	fmt.Fprintln(os.Stderr, "  pandion build [dir] [up-flags…] [-- <run cmd>]   (auto-detect toolchain, upload + build the project in the cloud)")
@@ -1102,6 +1104,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion relay up --id ID [--node NAME] [--port 8443]   (deploy the browser-SSH relay on a node)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
+	fmt.Fprintln(os.Stderr, "  pandion profiles   (list configured profiles; * = active)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
 	fmt.Fprintln(os.Stderr, "  pandion demo | version")
 }
