@@ -44,6 +44,7 @@ type Session struct {
 	SSHKeyPEM string    `json:"ssh_key"`             // scoped private key (reaches only User@Target)
 	Expiry    time.Time `json:"expiry"`              // hard expiry (UTC)
 	ReadOnly  bool      `json:"read_only,omitempty"` // view-only: browser input is ignored
+	Record    bool      `json:"record,omitempty"`    // tee the terminal output to a recording
 }
 
 // Expired reports whether the grant is past its expiry as of now.

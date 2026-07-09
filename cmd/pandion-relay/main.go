@@ -39,9 +39,11 @@ func main() {
 		}
 	}()
 
+	rsrv := relay.NewServer(store, relay.SSHDialer)
+	rsrv.RecordDir = filepath.Join(*dir, "recordings")
 	srv := &http.Server{
 		Addr:              *addr,
-		Handler:           relay.NewServer(store, relay.SSHDialer).Handler(),
+		Handler:           rsrv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
