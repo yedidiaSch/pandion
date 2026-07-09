@@ -6,6 +6,13 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Changed
+- **`down` reads the provider from the cluster manifest** — teardown (`pandion down --id ID`)
+  no longer needs `--provider`; it uses the provider recorded when the cluster was created,
+  falling back to the `pandion init` default / credential inference (`--provider` still wins if
+  given). `up` now records the owning provider in the manifest; `ls`/`reap` also honor the config
+  default instead of defaulting to Hetzner.
+
 ## [0.6.0] — 2026-07-09
 
 The headline is the **Relay** — self-hosted, zero-install browser terminals to your nodes — and

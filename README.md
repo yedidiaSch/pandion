@@ -33,7 +33,7 @@ streaming 2 node command(s) (Ctrl+C detaches; logs: ~/.pandion/logs/pipeline)
 [worker] processed batch 1
 [broker] dispatched 1 result
 
-$ pandion down --provider=hetzner --id pipeline
+$ pandion down --id pipeline                      # provider read from the cluster manifest
 DOWN (hetzner): cluster "pipeline" reconciled to empty.   # nothing left billing
 ```
 
@@ -329,7 +329,7 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 | `pandion debug join <token>` · `unshare --id ID --all` | Accept a shared grant · revoke it |
 | `pandion ls` / `status [--json]` | List live clusters/nodes with uptime and live cost |
 | `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
-| `pandion down [--provider …] --id ID` | Idempotent, verified teardown (reconciles by tag) |
+| `pandion down --id ID` | Idempotent, verified teardown (provider read from the manifest; `--provider` optional) |
 | `pandion validate [-f cluster.yaml]` | Schema-check a topology |
 | `pandion lockdown --id ID` | Lockout-safe public deny-all (SSH over the overlay only) |
 | `pandion completion bash\|zsh\|fish` | Shell completion script |
