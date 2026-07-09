@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/yedidiaSch/pandion/internal/audit"
@@ -35,9 +36,82 @@ func runRelayDispatch(args []string) {
 		runRelayUnshare(args[1:])
 	case "status":
 		runRelayStatus(args[1:])
+	case "recordings":
+		runRelayRecordings(args[1:])
 	default:
-		fmt.Fprintf(os.Stderr, "relay: unknown subcommand %q (up|share|unshare|status)\n", args[0])
+		fmt.Fprintf(os.Stderr, "relay: unknown subcommand %q (up|share|unshare|status|recordings)\n", args[0])
 		os.Exit(2)
+	}
+}
+
+const relayRecordingsDir = "/var/lib/pandion-relay/recordings"
+
+// runRelayRecordings lists the recorded sessions on the relay node, and with
+// --fetch downloads them into a local directory (over the pinned SSH channel).
+//
+//	pandion relay recordings --id ID [--fetch DIR]
+func runRelayRecordings(args []string) {
+	fs := flag.NewFlagSet("relay recordings", flag.ExitOnError)
+	id := fs.String("id", "demo", "cluster id")
+	fetch := fs.String("fetch", "", "download recordings into this local directory")
+	_ = fs.Parse(args)
+
+	rec, err := loadRelayRecord(*id)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "relay recordings: no relay for %q (pandion relay up)\n", *id)
+		os.Exit(1)
+	}
+	man, err := loadManifest(*id)
+	must(err)
+	var relayNode *nodeManifest
+	for i := range man.Nodes {
+		if man.Nodes[i].Name == rec.Node {
+			relayNode = &man.Nodes[i]
+		}
+	}
+	if relayNode == nil {
+		fmt.Fprintf(os.Stderr, "relay recordings: relay node %q not in manifest\n", rec.Node)
+		os.Exit(1)
+	}
+	signer, err := loadLoginSigner(*id)
+	must(err)
+	pinned, err := parsePinned(relayNode.HostPub)
+	must(err)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	out, _ := envssh.Run(ctx, rec.IP+":22", "root", signer, pinned,
+		"ls -1 "+relayRecordingsDir+" 2>/dev/null || true")
+	var files []string
+	for _, f := range strings.Split(strings.TrimSpace(out), "\n") {
+		if f = strings.TrimSpace(f); f != "" {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		fmt.Printf("no recordings on the relay (node %q). Share with --record to capture one.\n", rec.Node)
+		return
+	}
+	fmt.Printf("recordings on %q (%d):\n", rec.Node, len(files))
+	for _, f := range files {
+		fmt.Println("  " + f)
+	}
+	if *fetch == "" {
+		fmt.Printf("\n# download them:  pandion relay recordings --id %s --fetch ./recordings\n", *id)
+		return
+	}
+	must(os.MkdirAll(*fetch, 0o755))
+	for _, f := range files {
+		data, rerr := envssh.Run(ctx, rec.IP+":22", "root", signer, pinned, "cat "+relayRecordingsDir+"/"+shellQuote(f))
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "  fetch %s failed: %v\n", f, rerr)
+			continue
+		}
+		if werr := os.WriteFile(filepath.Join(*fetch, f), []byte(data), 0o600); werr != nil {
+			fmt.Fprintf(os.Stderr, "  write %s failed: %v\n", f, werr)
+			continue
+		}
+		fmt.Printf("  fetched %s -> %s\n", f, filepath.Join(*fetch, f))
 	}
 }
 
@@ -75,6 +149,7 @@ func runRelayShare(args []string) {
 	expires := fs.Duration("expires", 4*time.Hour, "how long the link is valid")
 	user := fs.String("user", "pandion-lab", "scoped non-root login user on the target")
 	readOnly := fs.Bool("read-only", false, "view-only: the participant sees the terminal but cannot type")
+	record := fs.Bool("record", false, "record the terminal session on the relay node (fetch with `relay recordings`)")
 	_ = fs.Parse(args)
 	initAudit()
 
@@ -125,7 +200,7 @@ func runRelayShare(args []string) {
 	sess := relay.Session{
 		ID: shareID, Token: token, ClusterID: *id, Node: target.Name,
 		Target: target.OverlayIP, HostPub: target.HostPub, User: *user,
-		SSHKeyPEM: scoped.PrivatePEM, Expiry: expiry, ReadOnly: *readOnly,
+		SSHKeyPEM: scoped.PrivatePEM, Expiry: expiry, ReadOnly: *readOnly, Record: *record,
 	}
 	data, err := json.Marshal(sess)
 	must(err)
@@ -163,7 +238,10 @@ func runRelayShare(args []string) {
 
 	mode := ""
 	if *readOnly {
-		mode = ", read-only"
+		mode += ", read-only"
+	}
+	if *record {
+		mode += ", recorded"
 	}
 	fmt.Printf("shared %q/%s as %s%s (expires %s):\n\n", *id, target.Name, *user, mode, expiry.Format("2006-01-02 15:04 MST"))
 	fmt.Println("  " + url)
@@ -497,9 +575,9 @@ WantedBy=multi-user.target
 
 	return "set -e\n" +
 		"id -u pandion-relay >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin -d /var/lib/pandion-relay pandion-relay\n" +
-		"mkdir -p /var/lib/pandion-relay/sessions\n" +
+		"mkdir -p /var/lib/pandion-relay/sessions /var/lib/pandion-relay/recordings\n" +
 		"chown -R pandion-relay:pandion-relay /var/lib/pandion-relay\n" +
-		"chmod 700 /var/lib/pandion-relay /var/lib/pandion-relay/sessions\n" +
+		"chmod 700 /var/lib/pandion-relay /var/lib/pandion-relay/sessions /var/lib/pandion-relay/recordings\n" +
 		"cat > /etc/systemd/system/pandion-relay.service <<'PANDION_RELAY_UNIT'\n" + unit + "PANDION_RELAY_UNIT\n" +
 		"systemctl daemon-reload\n"
 }

@@ -7,8 +7,13 @@ import (
 	"embed"
 	"encoding/json"
 	"html/template"
+	"io"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -50,6 +55,9 @@ type Server struct {
 	dial  Dialer
 	now   func() time.Time
 	lim   *limiter
+	// RecordDir, if set, is where sessions with Record=true tee their terminal
+	// output (one file per session). Empty disables recording.
+	RecordDir string
 }
 
 // NewServer builds a relay server over a session store and a target dialer.
@@ -147,21 +155,38 @@ func (srv *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer pty.Close()
-	srv.pump(ctx, c, pty, s.ReadOnly)
+
+	var rec io.Writer
+	if s.Record && srv.RecordDir != "" {
+		_ = os.MkdirAll(srv.RecordDir, 0o700) // best-effort; the CLI pre-creates it
+		name := s.ID + "-" + strconv.FormatInt(srv.now().Unix(), 10) + ".log"
+		f, ferr := os.OpenFile(filepath.Join(srv.RecordDir, name), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+		if ferr != nil {
+			log.Printf("relay: recording disabled for %s: %v", s.ID, ferr)
+		} else {
+			rec = f
+			defer f.Close()
+		}
+	}
+	srv.pump(ctx, c, pty, s.ReadOnly, rec)
 	c.Close(websocket.StatusNormalClosure, "session closed")
 }
 
 // pump bridges a WebSocket and a PTY: PTY output -> binary WS frames; browser input
 // (binary) -> PTY stdin; browser control (text JSON {"resize":{cols,rows}}) -> resize.
 // When readOnly, browser keystrokes are dropped (view-only); output and resize still
-// flow so the terminal renders and fits.
-func (srv *Server) pump(ctx context.Context, c *websocket.Conn, pty PTYConn, readOnly bool) {
+// flow so the terminal renders and fits. When rec is non-nil, PTY output is also
+// teed to it (session recording).
+func (srv *Server) pump(ctx context.Context, c *websocket.Conn, pty PTYConn, readOnly bool, rec io.Writer) {
 	c.SetReadLimit(1 << 20)
 	go func() {
 		buf := make([]byte, 32*1024)
 		for {
 			n, err := pty.Read(buf)
 			if n > 0 {
+				if rec != nil {
+					_, _ = rec.Write(buf[:n])
+				}
 				if c.Write(ctx, websocket.MessageBinary, buf[:n]) != nil {
 					return
 				}

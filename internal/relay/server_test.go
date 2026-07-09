@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -206,5 +208,45 @@ func TestServer_RateLimitsUnknownTokens(t *testing.T) {
 	}
 	if !got429 {
 		t.Fatalf("expected a 429 after >%d unknown-token requests", badTokenPerMin)
+	}
+}
+
+func TestServer_Recording_TeesOutput(t *testing.T) {
+	store, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pty := newFakePTY()
+	srv := NewServer(store, func(s *Session) (PTYConn, error) { return pty, nil })
+	recDir := t.TempDir()
+	srv.RecordDir = recDir
+	ts := httptest.NewServer(srv.Handler())
+	defer ts.Close()
+
+	tok, _ := NewToken()
+	_ = store.Put(&Session{ID: "rec1", Token: tok, Node: "n", Target: "1.2.3.4",
+		HostPub: "ssh-ed25519 AAAA h", User: "u", SSHKeyPEM: "x",
+		Expiry: time.Now().Add(time.Hour).UTC(), Record: true})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	c, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/ws/"+tok, nil)
+	if err != nil {
+		t.Fatalf("ws dial: %v", err)
+	}
+	_ = c.Write(ctx, websocket.MessageBinary, []byte("hello")) // fake PTY echoes "HELLO"
+	if _, data, rerr := c.Read(ctx); rerr != nil || !strings.Contains(string(data), "HELLO") {
+		t.Fatalf("expected echo, got %q (%v)", data, rerr)
+	}
+	c.Close(websocket.StatusNormalClosure, "done")
+	time.Sleep(300 * time.Millisecond) // let handleWS close the recording file
+
+	entries, _ := os.ReadDir(recDir)
+	if len(entries) != 1 || !strings.HasPrefix(entries[0].Name(), "rec1-") {
+		t.Fatalf("expected one recording file rec1-*, got %v", entries)
+	}
+	b, _ := os.ReadFile(filepath.Join(recDir, entries[0].Name()))
+	if !strings.Contains(string(b), "HELLO") {
+		t.Fatalf("recording should contain the terminal output, got %q", b)
 	}
 }
