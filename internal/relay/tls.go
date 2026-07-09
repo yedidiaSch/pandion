@@ -88,9 +88,15 @@ func certFingerprint(certPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return PEMFingerprint(pemBytes)
+}
+
+// PEMFingerprint returns the colon-separated uppercased SHA-256 fingerprint of the
+// first certificate in a PEM blob (e.g. read back from the relay node to show/pin).
+func PEMFingerprint(pemBytes []byte) (string, error) {
 	block, _ := pem.Decode(pemBytes)
 	if block == nil {
-		return "", fmt.Errorf("no PEM in %s", certPath)
+		return "", fmt.Errorf("no PEM certificate found")
 	}
 	return fingerprint(block.Bytes), nil
 }
