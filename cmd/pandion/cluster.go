@@ -40,6 +40,9 @@ type syncSpec struct {
 	LocalPath  string
 	RemotePath string
 	Build      string
+	// Binaries selects "upload as-is" mode: no remote build, and .gitignore is NOT
+	// used to filter (so gitignored build output can be shipped). See resolveSync.
+	Binaries bool
 }
 
 // capsFor normalizes declared capabilities (needs_caps) plus any capability
@@ -122,7 +125,12 @@ func workspaceDir(runUser, override string) string {
 // node, chowning to runUser. Returns the remote workspace dir. No build.
 func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
 	remote := workspaceDir(runUser, s.RemotePath)
+	// binaries mode ships build output that is usually gitignored, so it must not
+	// fall back to .gitignore for filtering (.pandionignore still applies).
 	ig := workspace.LoadIgnore(s.LocalPath)
+	if s.Binaries {
+		ig = workspace.LoadIgnoreStrict(s.LocalPath)
+	}
 	data, files, err := workspace.Archive(s.LocalPath, ig)
 	if err != nil {
 		return "", fmt.Errorf("archive %s: %w", s.LocalPath, err)
@@ -276,13 +284,17 @@ func resolveSync(node config.Node, defaults config.NodeCommon) *syncSpec {
 	if s == nil {
 		s = defaults.Sync
 	}
-	if s == nil || strings.EqualFold(s.Mode, "binaries") {
-		// M-sync-1 supports source sync; binaries mode is a fast-follow (H3).
+	if s == nil {
 		return nil
 	}
 	local := s.Path
 	if local == "" {
 		local = "./"
+	}
+	// "binaries" uploads the path as-is (no remote build) — for shipping prebuilt
+	// artifacts. "source" (default) syncs and runs the build command on the node.
+	if strings.EqualFold(s.Mode, "binaries") {
+		return &syncSpec{LocalPath: local, RemotePath: s.RemotePath, Binaries: true}
 	}
 	return &syncSpec{LocalPath: local, RemotePath: s.RemotePath, Build: s.Build}
 }
