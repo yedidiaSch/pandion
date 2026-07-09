@@ -46,4 +46,16 @@ run up --provider=mock --id ci-dry --dry-run -- 'echo hi'
 echo "[smoke] shell completion renders"
 run completion bash > /dev/null
 
+echo "[smoke] init writes a config + bare 'up' resolves to it (isolated home)"
+# build once with the normal home (so Go's cache isn't created under the isolated
+# home), then run the binary with an isolated home (Linux/macOS: HOME; Windows:
+# USERPROFILE). Glob the output name so it works whether or not Go appended .exe.
+go build -o "$tmp/pcli" ./cmd/pandion
+BIN="$(ls "$tmp"/pcli* | head -1)"
+H="$tmp/home"; mkdir -p "$H"
+HOME="$H" USERPROFILE="$H" "$BIN" init --provider mock > /dev/null
+if ! HOME="$H" USERPROFILE="$H" "$BIN" up --id cfg-smoke -- 'echo hi' | grep -q 'UP (mock)'; then
+  echo "[smoke] FAIL: bare 'up' did not resolve to the configured default provider"; exit 1
+fi
+
 echo "[smoke] OK on ${RUNNER_OS:-$(uname -s)}"
