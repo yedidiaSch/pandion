@@ -77,6 +77,8 @@ func main() {
 		runCode(os.Args[2:])
 	case "debug":
 		runDebugDispatch(os.Args[2:])
+	case "relay":
+		runRelayDispatch(os.Args[2:])
 	case "ls", "status":
 		runLs(os.Args[2:])
 	case "completion":
@@ -1028,6 +1030,7 @@ func usage() {
 	fmt.Fprintln(os.Stderr, "  pandion debug share --id ID [--node NAME] [--expires 2h]   (grant a teammate a scoped, expiring remote-debug token)")
 	fmt.Fprintln(os.Stderr, "  pandion debug join <token>   (accept a shared debug grant: scoped overlay peer + launch.json)")
 	fmt.Fprintln(os.Stderr, "  pandion debug unshare --id ID [--share SID | --all]   (revoke a shared debug grant)")
+	fmt.Fprintln(os.Stderr, "  pandion relay up --id ID [--node NAME] [--port 8443]   (deploy the browser-SSH relay on a node)")
 	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
 	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
 	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
