@@ -14,6 +14,11 @@ import (
 // DefaultIdleTTL is the default abandoned-node poweroff window (P2b, security).
 const DefaultIdleTTL = 60 * time.Minute
 
+// DefaultGPUIdleUtil is the GPU-utilization percent (inclusive) at or below which
+// a GPU is considered idle by the dead-man's-switch. Above idle-driver noise,
+// below any real CUDA kernel. See docs/gpu-design.md §4.
+const DefaultGPUIdleUtil = 5
+
 // DefaultRunUser is the unprivileged user that runs workloads (S-C).
 const DefaultRunUser = "pandion-run"
 
@@ -40,6 +45,16 @@ type CloudInit struct {
 	// IdleTTL, if > 0, installs an on-node dead-man's-switch: the node powers
 	// itself off after this long with no active SSH (P2b, security). 0 disables.
 	IdleTTL time.Duration
+	// HasGPU, when set (with IdleTTL > 0), makes the dead-man treat GPU work as
+	// liveness: the node stays up while any GPU is busy (a headless training/CUDA
+	// job with no SSH session), and reaps once BOTH SSH and the GPU are idle. On a
+	// GPU node the SSH-only signal is wrong in both directions (a headless job
+	// looks idle → killed mid-epoch; an idle Jupyter tunnel looks busy → never
+	// reaps). See docs/gpu-design.md §4.
+	HasGPU bool
+	// GPUIdleUtil is the GPU-utilization percent at or below which the GPU counts
+	// as idle (only meaningful with HasGPU). 0 ⇒ DefaultGPUIdleUtil.
+	GPUIdleUtil int
 	// Fail2ban, if set, installs fail2ban and enables the sshd jail (systemd
 	// backend) — defense-in-depth against SSH brute-force/scanning (P1). Bans on
 	// FAILED auth only, so the key-holding operator is never affected.
@@ -199,8 +214,17 @@ func Build(ci CloudInit) string {
 	// `pandion reap` handles deletion). 0 disables.
 	if ci.IdleTTL > 0 {
 		ttlSec := int(ci.IdleTTL.Seconds())
+		// On a GPU node, also treat GPU utilization as liveness (see §4). 0 disables
+		// the GPU branch (CPU node); HasGPU with an unset threshold uses the default.
+		gpuBusy := 0
+		if ci.HasGPU {
+			gpuBusy = ci.GPUIdleUtil
+			if gpuBusy <= 0 {
+				gpuBusy = DefaultGPUIdleUtil
+			}
+		}
 		files = append(files,
-			wf{"/usr/local/bin/pandion-deadman", "0755", deadmanScript(ttlSec)},
+			wf{"/usr/local/bin/pandion-deadman", "0755", deadmanScript(ttlSec, gpuBusy)},
 			wf{"/etc/systemd/system/pandion-deadman.service", "0644", deadmanService()},
 			wf{"/etc/systemd/system/pandion-deadman.timer", "0644", deadmanTimer()})
 		runcmds = append(runcmds,
@@ -322,9 +346,23 @@ chown "$owner:$owner" "$WORKDIR" 2>/dev/null || true
 `
 }
 
-// deadmanScript touches the heartbeat while an SSH connection is established, and
-// powers the node off once the heartbeat is older than ttlSec (idle).
-func deadmanScript(ttlSec int) string {
+// deadmanScript touches the heartbeat while the node is doing work, and powers the
+// node off once the heartbeat is older than ttlSec (idle). SSH is always a
+// liveness signal; when gpuBusyPct > 0 (a GPU node), sustained GPU utilization
+// above that percent is ALSO liveness — so a headless training job with no SSH
+// session keeps the node alive, and an idle box (no SSH, cold GPU) still reaps.
+func deadmanScript(ttlSec, gpuBusyPct int) string {
+	gpuCheck := ""
+	if gpuBusyPct > 0 {
+		// fresh while any GPU is above the busy threshold (headless CUDA work)
+		gpuCheck = fmt.Sprintf(`# GPU liveness: fresh while any GPU is busy (>%d%% util)
+if command -v nvidia-smi >/dev/null 2>&1; then
+  hot=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null \
+        | awk -v b=%d 'BEGIN{h=0} {if ($1+0 > b) h=1} END{print h}')
+  [ "$hot" = "1" ] && { mkdir -p /run/pandion && touch "$HB"; }
+fi
+`, gpuBusyPct, gpuBusyPct)
+	}
 	return fmt.Sprintf(`#!/bin/sh
 TTL=%d
 HB=/run/pandion/heartbeat
@@ -332,13 +370,13 @@ HB=/run/pandion/heartbeat
 if ss -Htn state established '( sport = :22 )' 2>/dev/null | grep -q .; then
   mkdir -p /run/pandion && touch "$HB"
 fi
-now=$(date +%%s)
+%snow=$(date +%%s)
 last=$(stat -c %%Y "$HB" 2>/dev/null || echo "$now")
 if [ $((now - last)) -gt "$TTL" ]; then
   logger "pandion dead-man: idle > ${TTL}s, powering off"
   systemctl poweroff
 fi
-`, ttlSec)
+`, ttlSec, gpuCheck)
 }
 
 func deadmanService() string {

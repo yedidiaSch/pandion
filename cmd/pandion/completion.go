@@ -59,7 +59,7 @@ _pandion() {
     COMPREPLY=( $(compgen -W "` + cmds + `" -- "$cur") ); return
   fi
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--profile --provider --gpu --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
+    COMPREPLY=( $(compgen -W "--profile --provider --gpu --gpu-idle-util --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
   fi
 }
 complete -F _pandion pandion
