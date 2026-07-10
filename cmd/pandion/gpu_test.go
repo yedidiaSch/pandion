@@ -3,12 +3,14 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	"github.com/yedidiaSch/pandion/internal/provider"
+	"github.com/yedidiaSch/pandion/internal/provider/mock"
 )
 
 func TestParseGPUFlag(t *testing.T) {
@@ -78,5 +80,78 @@ func TestRenderDryRun_GPUColumn(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("dry-run GPU output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// The `ls` table shows a GPU column: CPU nodes "—", GPU nodes their model×count.
+func TestRenderStatus_GPUColumn(t *testing.T) {
+	clusters := []orchestrator.ClusterStatus{{
+		ClusterID: "ml",
+		Nodes: []orchestrator.NodeStatus{
+			{Name: "trainer", Type: "gpu_8x_h100", Region: "us-west-1", Age: time.Hour,
+				Hourly: provider.Money{Amount: 23.92, Currency: "USD"},
+				GPU:    provider.GPUInfo{Model: "h100", Count: 8, VRAM: 80}},
+			{Name: "plain", Type: "cpx21", Region: "fsn1", Age: time.Hour,
+				Hourly: provider.Money{Amount: 0.01, Currency: "USD"}},
+		},
+		Hourly: 23.93,
+	}}
+	var b strings.Builder
+	renderStatus(&b, clusters, "USD")
+	out := b.String()
+	for _, want := range []string{"GPU", "h100×8", "trainer"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("ls GPU column missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderReceipt(t *testing.T) {
+	// priced GPU teardown
+	var b strings.Builder
+	renderReceipt(&b, receipt{nodes: 1, ran: 2*time.Hour + 13*time.Minute, ranKnown: true,
+		total: 5.31, currency: "USD", priced: true, gpus: []string{"a100"}})
+	out := b.String()
+	for _, want := range []string{"1 node(s)", "(a100)", "ran 2h13m", "total ~5.31 USD"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("receipt missing %q: %q", want, out)
+		}
+	}
+
+	// unpriced provider ⇒ "cost unknown", no bogus total
+	b.Reset()
+	renderReceipt(&b, receipt{nodes: 2, ran: time.Hour, ranKnown: true})
+	if got := b.String(); !strings.Contains(got, "cost unknown") || strings.Contains(got, "total") {
+		t.Errorf("unpriced receipt wrong: %q", got)
+	}
+
+	// no nodes ⇒ no line at all
+	b.Reset()
+	renderReceipt(&b, receipt{})
+	if b.String() != "" {
+		t.Errorf("empty receipt should print nothing, got %q", b.String())
+	}
+}
+
+// buildReceipt against the mock provider: a GPU node priced from the catalog,
+// with a nonzero runtime and the GPU label captured.
+func TestBuildReceipt_Mock(t *testing.T) {
+	m := mock.New()
+	ctx := context.Background()
+	if _, err := m.CreateServer(ctx, provider.ServerSpec{
+		Name: "g", ClusterID: "c", GPU: provider.GPUReq{Model: "a100", Count: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	servers, _ := m.ListByTag(ctx, "c")
+	r := buildReceipt(ctx, m, servers)
+	if r.nodes != 1 || !r.priced || !r.ranKnown {
+		t.Fatalf("receipt = %+v", r)
+	}
+	if len(r.gpus) != 1 || r.gpus[0] != "a100" {
+		t.Fatalf("gpu label = %v", r.gpus)
+	}
+	if r.currency != "EUR" || r.total < 0 {
+		t.Fatalf("cost = %.4f %s", r.total, r.currency)
 	}
 }

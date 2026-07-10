@@ -209,7 +209,8 @@ func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) ([
 type NodeStatus struct {
 	Name, Type, Region, IP string
 	Age                    time.Duration
-	Hourly                 provider.Money // zero = price unknown
+	Hourly                 provider.Money   // zero = price unknown
+	GPU                    provider.GPUInfo // zero = CPU node
 }
 
 // ClusterStatus aggregates a cluster's running nodes and its rolled-up cost.
@@ -244,7 +245,7 @@ func (o *Orchestrator) Status(ctx context.Context) ([]ClusterStatus, string, err
 		if s.Created.IsZero() {
 			age = 0
 		}
-		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age}
+		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age, GPU: s.GPU}
 		if pricer != nil {
 			// a per-node pricing error is non-fatal: leave that node unpriced.
 			if m, perr := pricer.HourlyPrice(ctx, s.Type, s.Region); perr == nil && m.Known() {
