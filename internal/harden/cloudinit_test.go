@@ -3,6 +3,7 @@
 package harden
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -104,6 +105,58 @@ func TestBuild_IdleDeadman(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("deadman cloud-init missing %q\n%s", want, out)
 		}
+	}
+}
+
+// On a GPU node the dead-man also treats GPU utilization as liveness, so a
+// headless training job (no SSH) is not killed mid-epoch (docs/gpu-design.md §4).
+func TestBuild_GPUDeadman(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		IdleTTL:        30 * time.Minute,
+		HasGPU:         true,
+		GPUIdleUtil:    12,
+	})
+	for _, want := range []string{
+		"nvidia-smi",         // GPU liveness probe present
+		"utilization.gpu",    // queries GPU util
+		"b=12",               // custom threshold wired through
+		"systemctl poweroff", // still reaps when BOTH signals idle
+		`sport = :22`,        // SSH signal retained
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("gpu deadman missing %q\n%s", want, out)
+		}
+	}
+}
+
+// A CPU node must NOT get the nvidia-smi branch (it would touch the heartbeat via
+// a missing binary check every minute for nothing, and muddies intent).
+func TestBuild_CPUDeadman_NoGPUProbe(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		IdleTTL:        30 * time.Minute,
+	})
+	if strings.Contains(out, "nvidia-smi") {
+		t.Errorf("CPU node must not emit a GPU probe:\n%s", out)
+	}
+}
+
+// HasGPU with an unset threshold falls back to the default, not "disabled".
+func TestBuild_GPUDeadman_DefaultThreshold(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		IdleTTL:        30 * time.Minute,
+		HasGPU:         true, // GPUIdleUtil left 0 ⇒ DefaultGPUIdleUtil
+	})
+	if !strings.Contains(out, "nvidia-smi") {
+		t.Fatalf("GPU node with default threshold should still probe:\n%s", out)
+	}
+	if !strings.Contains(out, fmt.Sprintf("b=%d", DefaultGPUIdleUtil)) {
+		t.Errorf("expected default threshold b=%d\n%s", DefaultGPUIdleUtil, out)
 	}
 }
 

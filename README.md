@@ -144,6 +144,11 @@ For GPU work, Lambda Cloud (`--provider lambda`) serves on-demand A100/H100 inst
 browse them with `pandion list-gpus --provider lambda`, then `pandion up --gpu a100 -- ./train.sh`.
 Lambda is GPU-only and its image is CUDA-native (Lambda Stack), so no driver setup is needed.
 
+On a GPU node the idle dead-man's-switch also treats **GPU utilization** as liveness: a
+headless training job (no SSH session) keeps the node alive, while a truly idle box still
+powers off after `--ttl` — tune the threshold with `--gpu-idle-util` (default 5%). Teardown
+(`pandion down`) prints a cost **receipt** (`ran 2h13m · total ~5.31 USD`).
+
 Scaleway uses a triple (`SCW_SECRET_KEY`, `SCW_ACCESS_KEY`, `SCW_DEFAULT_PROJECT_ID`); only the
 secret key is sensitive. Provider resolution follows `--provider` flag → `~/.pandion/config.yaml`
 default → the only provider you have credentials for → (on a terminal) a prompt; automation stays

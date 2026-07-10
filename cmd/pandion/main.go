@@ -226,6 +226,7 @@ func runUp(args []string) {
 	size := fs.String("size", "", "provider server type/size (e.g. cpx21); default: `pandion init` default, else auto-select")
 	region := fs.String("region", "", "preferred region/location, comma-separated fallbacks (e.g. nbg1,fsn1); default: config default, else provider's choice")
 	gpu := fs.String("gpu", "", "provision a GPU node: MODEL[:COUNT], e.g. a100 or a100:2 (the provider must offer GPUs; see `pandion list-gpus`)")
+	gpuIdleUtil := fs.Int("gpu-idle-util", harden.DefaultGPUIdleUtil, "GPU node: utilization %% at/below which the GPU counts as idle for the dead-man's-switch (so headless jobs keep the node alive)")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
@@ -316,7 +317,7 @@ func runUp(args []string) {
 			toolchain: !*noToolchain, packages: splitCSV(*packages), setup: setupCmds(*setup),
 			firewall: !*noFirewall, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
-			size: *size, regionPref: splitCSV(*region), gpu: gpuReq,
+			size: *size, regionPref: splitCSV(*region), gpu: gpuReq, gpuIdleUtil: *gpuIdleUtil,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 		})
@@ -337,6 +338,7 @@ type hetznerUpOpts struct {
 	size             string          // provider server type (--size); empty = auto-select
 	regionPref       []string        // preferred regions (--region); empty = provider's choice
 	gpu              provider.GPUReq // optional GPU request (--gpu); zero = CPU-only
+	gpuIdleUtil      int             // GPU idle-utilization %% for the dead-man (--gpu-idle-util)
 	engine           string          // native | docker
 	containerImage   string
 	caps             []string
@@ -468,6 +470,8 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		LoginPubKey:      login.PublicAuthorized,
 		RunUser:          opt.runUser,          // unprivileged workload user (S-C)
 		IdleTTL:          opt.idleTTL,          // idle poweroff dead-man's-switch (P2b)
+		HasGPU:           opt.gpu.Wanted(),     // GPU util counts as liveness (§4)
+		GPUIdleUtil:      opt.gpuIdleUtil,      // GPU idle threshold %
 		Fail2ban:         true,                 // SSH brute-force protection (P1)
 		AuditLog:         true,                 // on-node audit trail (S-F)
 		SysctlHardening:  true,                 // CIS-lite kernel network baseline (P1)
@@ -831,6 +835,7 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 	type jsonNode struct {
 		Name          string  `json:"name"`
 		Type          string  `json:"type"`
+		GPU           string  `json:"gpu,omitempty"`
 		Region        string  `json:"region"`
 		IP            string  `json:"ip"`
 		UptimeSeconds int64   `json:"uptime_seconds"`
@@ -853,8 +858,12 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 	for _, c := range clusters {
 		jc := jsonCluster{ID: c.ClusterID, Nodes: []jsonNode{}, Hourly: c.Hourly, Accrued: c.Accrued}
 		for _, n := range c.Nodes {
+			gpu := ""
+			if n.GPU.Present() {
+				gpu = gpuInfoLabel(n.GPU)
+			}
 			jc.Nodes = append(jc.Nodes, jsonNode{
-				Name: n.Name, Type: n.Type, Region: n.Region, IP: n.IP,
+				Name: n.Name, Type: n.Type, GPU: gpu, Region: n.Region, IP: n.IP,
 				UptimeSeconds: int64(n.Age.Seconds()),
 				Hourly:        n.Hourly.Amount,
 				Accrued:       n.Hourly.Amount * n.Age.Hours(),
@@ -877,7 +886,7 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 		currency = "?"
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tREGION\tUPTIME\t%s/hr\t~%s spent\n", currency, currency)
+	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tGPU\tREGION\tUPTIME\t%s/hr\t~%s spent\n", currency, currency)
 	var totHourly, totAccrued float64
 	totNodes := 0
 	for _, c := range clusters {
@@ -886,8 +895,8 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 			if i > 0 {
 				cid = "" // label the cluster only on its first row
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				cid, n.Name, dashIfEmpty(n.Type), dashIfEmpty(n.Region),
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+				cid, n.Name, dashIfEmpty(n.Type), gpuInfoLabel(n.GPU), dashIfEmpty(n.Region),
 				shortDur(n.Age), money(n.Hourly), estMoney(n.Hourly, n.Age))
 		}
 		totHourly += c.Hourly
@@ -1066,6 +1075,83 @@ func gpuLabel(g provider.GPUReq) string {
 	return model
 }
 
+// gpuInfoLabel renders a realized GPU (on a running node) for the `ls` table.
+func gpuInfoLabel(g provider.GPUInfo) string {
+	if !g.Present() {
+		return "—"
+	}
+	if g.Count > 1 {
+		return fmt.Sprintf("%s×%d", g.Model, g.Count)
+	}
+	return g.Model
+}
+
+// receipt is the closing cost summary printed on teardown — the zero-backend way
+// to shut the "what did that cost me?" loop (docs/gpu-design.md §6.2).
+type receipt struct {
+	nodes    int
+	ran      time.Duration // oldest node's wall-clock lifetime
+	ranKnown bool          // false when the provider gives no creation time (e.g. lambda)
+	total    float64       // Σ hourly × age (estimate)
+	currency string
+	priced   bool
+	gpus     []string // distinct GPU labels present, e.g. ["a100", "h100×8"]
+}
+
+// buildReceipt summarizes a cluster's spend from the servers about to be destroyed
+// (call BEFORE teardown, while their creation times are live). Pricing is
+// best-effort: an unpriced provider yields priced=false ("cost unknown").
+func buildReceipt(ctx context.Context, p provider.Provider, servers []provider.Server) receipt {
+	r := receipt{nodes: len(servers)}
+	pricer, _ := p.(provider.Pricer)
+	now := time.Now()
+	seen := map[string]bool{}
+	for _, s := range servers {
+		if !s.Created.IsZero() {
+			age := now.Sub(s.Created)
+			if age > r.ran {
+				r.ran = age
+			}
+			r.ranKnown = true
+			if pricer != nil {
+				if m, err := pricer.HourlyPrice(ctx, s.Type, s.Region); err == nil && m.Known() {
+					r.total += m.Amount * age.Hours()
+					r.currency = m.Currency
+					r.priced = true
+				}
+			}
+		}
+		if s.GPU.Present() {
+			if lbl := gpuInfoLabel(s.GPU); !seen[lbl] {
+				seen[lbl] = true
+				r.gpus = append(r.gpus, lbl)
+			}
+		}
+	}
+	return r
+}
+
+// renderReceipt writes the one-line teardown receipt. Pure, for unit tests.
+func renderReceipt(w io.Writer, r receipt) {
+	if r.nodes == 0 {
+		return
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "  receipt: %d node(s)", r.nodes)
+	if len(r.gpus) > 0 {
+		fmt.Fprintf(&b, " (%s)", strings.Join(r.gpus, ", "))
+	}
+	if r.ranKnown {
+		fmt.Fprintf(&b, ", ran %s", shortDur(r.ran))
+	}
+	if r.priced {
+		fmt.Fprintf(&b, " · total ~%.2f %s", r.total, r.currency)
+	} else {
+		b.WriteString(" · cost unknown")
+	}
+	fmt.Fprintln(w, b.String())
+}
+
 func ttlLabel(d time.Duration) string {
 	if d <= 0 {
 		return "none"
@@ -1140,10 +1226,13 @@ func runDown(args []string) {
 		}
 	}
 	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
+	// snapshot the cost receipt BEFORE teardown (needs the live creation times).
+	rcpt := buildReceipt(ctx, p, servers)
 	must(o.Down(ctx, *id))
 	reapShares(*id) // revoke + delete any outstanding debug shares (no leak)
 	audit.Event("down.complete", "id", *id, "provider", p.Name())
 	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
+	renderReceipt(os.Stdout, rcpt)
 }
 
 // isTTY reports whether stdin is an interactive terminal.
