@@ -18,6 +18,18 @@ import (
 // plain CPU `up`.
 var cloudProviders = []string{"hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda"}
 
+// isCloudProvider reports whether a canonical provider name is one of the real
+// cloud backends (i.e. takes the hardened `up` flow). Derived from cloudProviders
+// so the resolver and the `up` dispatch can never drift out of sync.
+func isCloudProvider(name string) bool {
+	for _, p := range cloudProviders {
+		if p == name {
+			return true
+		}
+	}
+	return false
+}
+
 // hasCreds reports whether a token for a provider is available (env or keychain).
 func hasCreds(canonical string) bool {
 	_, env, ok := providerEnv(canonical)
