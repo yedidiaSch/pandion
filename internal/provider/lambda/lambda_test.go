@@ -224,6 +224,34 @@ func TestCreateAndDestroy(t *testing.T) {
 	}
 }
 
+// Regression for the live-e2e finding: Lambda keeps returning terminating/
+// terminated instances for a while, and reconciliation must treat them as gone —
+// else `pandion down`'s verify-empty check fails after a successful terminate.
+func TestListExcludesTerminating(t *testing.T) {
+	var draining []instance
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/instances", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := json.Marshal(map[string][]instance{"data": draining})
+		w.Write(b)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	l := New("k", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()))
+
+	draining = []instance{
+		{ID: "a", Name: "pandion-c--n1", Status: "active", InstanceType: itype{Name: "gpu_1x_a10"}},
+		{ID: "b", Name: "pandion-c--n2", Status: "terminating", InstanceType: itype{Name: "gpu_1x_a10"}},
+		{ID: "d", Name: "pandion-c--n3", Status: "terminated", InstanceType: itype{Name: "gpu_1x_a10"}},
+	}
+	got, err := l.ListByTag(context.Background(), "c")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != "a" {
+		t.Fatalf("want only the active node, got %+v", got)
+	}
+}
+
 func TestCreateRequiresGPU(t *testing.T) {
 	l, _, _ := stubServer(t)
 	_, err := l.CreateServer(context.Background(), provider.ServerSpec{Name: "n", ClusterID: "c"})

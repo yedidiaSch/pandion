@@ -322,7 +322,30 @@ func (l *Lambda) listInstances(ctx context.Context) ([]instance, error) {
 	if err := l.do(ctx, http.MethodGet, "/instances", nil, &r); err != nil {
 		return nil, err
 	}
-	return r.Data, nil
+	// Lambda termination is ASYNC: the API keeps returning an instance in
+	// "terminating"/"terminated" status for ~30s after DestroyServer. For
+	// reconciliation (ListByTag/ListAllTagged → Down's verify-empty, reap, ls) such
+	// an instance is already gone — including it makes Down report "teardown
+	// incomplete" and over-counts cost. Filter it out here (getInstance, used by
+	// waitRunning, is a separate path and still sees these states).
+	out := r.Data[:0]
+	for _, in := range r.Data {
+		if isTerminating(in.Status) {
+			continue
+		}
+		out = append(out, in)
+	}
+	return out, nil
+}
+
+// isTerminating reports whether a Lambda instance status means "gone" for
+// reconciliation purposes.
+func isTerminating(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "terminating", "terminated":
+		return true
+	}
+	return false
 }
 
 // apiError is a non-2xx Lambda API error body.
