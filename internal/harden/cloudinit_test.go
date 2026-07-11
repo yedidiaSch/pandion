@@ -38,6 +38,20 @@ func TestBuild_UsesSshKeysNotWriteFiles(t *testing.T) {
 	}
 }
 
+// Pandion drives nodes as root; images that default cloud-init disable_root=true
+// (Lambda/OCI) wrap root's keys with an "exit 142" stub that breaks our SSH gate.
+// The cloud-config must force disable_root off so root login works everywhere.
+func TestBuild_DisablesRootOff(t *testing.T) {
+	out := Build(CloudInit{
+		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
+		HostPubKey:     "ssh-ed25519 AAAA host",
+		LoginPubKey:    "ssh-ed25519 BBBB login",
+	})
+	if !strings.Contains(out, "disable_root: false") {
+		t.Errorf("cloud-config must set disable_root: false (root SSH breaks on Lambda otherwise):\n%s", out)
+	}
+}
+
 func TestBuild_InstallsToolchainPackages(t *testing.T) {
 	out := Build(CloudInit{
 		HostPrivKeyPEM: "-----BEGIN OPENSSH PRIVATE KEY-----\nX\n-----END OPENSSH PRIVATE KEY-----",
