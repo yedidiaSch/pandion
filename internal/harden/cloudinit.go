@@ -127,6 +127,14 @@ func Build(ci CloudInit) string {
 	var b strings.Builder
 	b.WriteString("#cloud-config\n")
 
+	// Pandion drives every node as root over a pinned host key. Some base images
+	// (e.g. Lambda Cloud / OCI) default cloud-init's disable_root=true, which wraps
+	// root's authorized_keys with a forced command that prints "login as <user>"
+	// and exits 142 — so our root SSH readiness gate fails. Force it off so our
+	// login key lands on root unwrapped. Harmless where root is already allowed
+	// (Hetzner, etc.).
+	b.WriteString("disable_root: false\n")
+
 	// effective package list: the requested toolchain, plus the hardening daemons.
 	pkgs := append([]string{}, ci.Packages...)
 	if ci.Fail2ban {
