@@ -290,16 +290,18 @@ func runUp(args []string) {
 		return
 	}
 
-	switch p.Name() {
-	case "mock":
+	switch {
+	case p.Name() == "mock":
 		c, err := o.UpSpec(context.Background(), *id,
 			orchestrator.NodeSpec{Name: *node, GPU: gpuReq}, "#cloud-config\n", "")
 		must(err)
 		fmt.Printf("UP (mock): cluster %q node %q -> %s\n", c.ID, *node, c.Nodes[0].Phase)
 		fmt.Println("note: mock provider creates no cloud resources and runs no SSH.")
-	case "hetzner", "digitalocean", "do", "vultr", "linode", "scaleway":
+	case isCloudProvider(p.Name()):
 		// the hardened single-node flow is provider-agnostic (it drives the
-		// orchestrator + SSH); the provider is injected via `o`.
+		// orchestrator + SSH); the provider is injected via `o`. Every provider in
+		// cloudProviders takes this path — deriving it from that list (not a
+		// hardcoded parallel one) means a newly wired provider can't silently no-op.
 		var ws *syncSpec
 		if *workspacePath != "" {
 			if strings.EqualFold(*syncMode, "binaries") {
@@ -321,6 +323,11 @@ func runUp(args []string) {
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 		})
+	default:
+		// never silently no-op: a provider that resolves + prices but is missing
+		// from this dispatch is a wiring bug, not success.
+		fmt.Fprintf(os.Stderr, "internal: no `up` path wired for provider %q\n", p.Name())
+		os.Exit(2)
 	}
 }
 
@@ -527,8 +534,8 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	must(err)
 	ip := c.Nodes[0].IP
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
-	fmt.Printf("UP (hetzner): cluster %q node %q running at %s (host fp %s)\n",
-		c.ID, node, ip, host.Fingerprint())
+	fmt.Printf("UP (%s): cluster %q node %q running at %s (host fp %s)\n",
+		prov, c.ID, node, ip, host.Fingerprint())
 
 	// cloud-edge firewall (defense-in-depth, M8) — tied to the firewall posture.
 	if opt.firewall {
