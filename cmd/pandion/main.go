@@ -24,6 +24,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/firewall"
+	"github.com/yedidiaSch/pandion/internal/gpucache"
 	"github.com/yedidiaSch/pandion/internal/harden"
 	"github.com/yedidiaSch/pandion/internal/lockfile"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
@@ -981,6 +982,7 @@ func runListGPUs(args []string) {
 	fs := flag.NewFlagSet("list-gpus", flag.ExitOnError)
 	prov := fs.String("provider", "", "provider to query (default: from `pandion init` or your credentials)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
+	refresh := fs.Bool("refresh", false, "bypass the local cache and re-fetch the live catalog")
 	_ = fs.Parse(args)
 
 	provName := resolveProvider(*prov)
@@ -995,10 +997,20 @@ func runListGPUs(args []string) {
 		fmt.Fprintf(os.Stderr, "provider %q has no GPU offerings.\n", p.Name())
 		os.Exit(2)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	offers, err := gp.GPUOfferings(ctx)
-	must(err)
+	// Serve from the on-disk cache (fast + offline) unless --refresh or stale (M6-R3).
+	// `up` always resolves live at create, so a stale cache can't launch the wrong SKU.
+	const gpuCacheTTL = 6 * time.Hour
+	var offers []provider.GPUOffering
+	if !*refresh {
+		offers, _ = gpucache.Load(envHome(), p.Name(), gpuCacheTTL)
+	}
+	if offers == nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		offers, err = gp.GPUOfferings(ctx)
+		must(err)
+		_ = gpucache.Save(envHome(), p.Name(), offers)
+	}
 
 	if *asJSON {
 		must(json.NewEncoder(os.Stdout).Encode(offers))
