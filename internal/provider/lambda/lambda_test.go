@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/yedidiaSch/pandion/internal/provider"
 )
@@ -91,7 +92,7 @@ func stubServer(t *testing.T) (*Lambda, *[]launchReq, *[]terminateReq) {
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	l := New("test-key", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()))
+	l := New("test-key", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()), WithMinGap(0))
 	return l, &launches, &terminates
 }
 
@@ -99,6 +100,86 @@ func TestImplementsInterfaces(t *testing.T) {
 	var _ provider.Provider = New("k")
 	var _ provider.GPUProvider = New("k")
 	var _ provider.Pricer = New("k")
+}
+
+// quietRetries silences the stderr retry notices for the duration of a test.
+func quietRetries(t *testing.T) {
+	t.Helper()
+	prev := errWriter
+	errWriter = io.Discard
+	t.Cleanup(func() { errWriter = prev })
+}
+
+// TestRetryOn429 proves the Cloudflare rate-limit defense: the API returns 429
+// (code 1015) twice, then succeeds. do() must ride out the throttle and return
+// the eventual body rather than failing the call.
+func TestRetryOn429(t *testing.T) {
+	quietRetries(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 2 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			io.WriteString(w, `error code: 1015`)
+			return
+		}
+		io.WriteString(w, `{"data":[]}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	l := New("k", WithBaseURL(srv.URL), WithHTTPClient(srv.Client()), WithMinGap(0))
+	l.maxRetry = 5
+	l.backoffBase, l.backoffMax = time.Millisecond, time.Millisecond // fast, real backoff
+	if _, err := l.listInstances(context.Background()); err != nil {
+		t.Fatalf("expected success after retries, got %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("want 3 attempts (2×429 then ok), got %d", calls)
+	}
+}
+
+// TestNoRetryOn4xx: a non-rate-limit client error (401) must fail immediately,
+// not burn the retry budget.
+func TestNoRetryOn4xx(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusUnauthorized)
+		io.WriteString(w, `{"error":{"code":"unauthorized","message":"bad key"}}`)
+	}))
+	t.Cleanup(srv.Close)
+
+	l := New("k", WithBaseURL(srv.URL), WithHTTPClient(srv.Client()), WithMinGap(0))
+	if _, err := l.listInstances(context.Background()); err == nil {
+		t.Fatal("expected 401 to fail")
+	}
+	if calls != 1 {
+		t.Fatalf("401 must not retry; got %d attempts", calls)
+	}
+}
+
+// TestRetryGivesUp: persistent 429 exhausts maxRetry and surfaces the error
+// (so a genuinely over-quota client still gets a clear failure, not a hang).
+func TestRetryGivesUp(t *testing.T) {
+	quietRetries(t)
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusTooManyRequests)
+		io.WriteString(w, `error code: 1015`)
+	}))
+	t.Cleanup(srv.Close)
+
+	l := New("k", WithBaseURL(srv.URL), WithHTTPClient(srv.Client()), WithMinGap(0))
+	l.maxRetry = 3
+	l.backoffBase, l.backoffMax = time.Millisecond, time.Millisecond // fast, real backoff
+	err := l.do(context.Background(), http.MethodGet, "/instances", nil, nil)
+	if err == nil {
+		t.Fatal("expected failure after exhausting retries")
+	}
+	if calls != 4 { // initial + 3 retries
+		t.Fatalf("want 4 attempts (1+maxRetry), got %d", calls)
+	}
 }
 
 func TestGPUOfferings(t *testing.T) {

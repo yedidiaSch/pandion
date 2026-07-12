@@ -20,9 +20,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/rand"
 	"net/http"
+	"os"
 	"regexp"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/yedidiaSch/pandion/internal/provider"
@@ -73,6 +77,20 @@ type Lambda struct {
 	baseURL    string
 	http       *http.Client
 	regionPref []string
+
+	// Lambda's API is fronted by Cloudflare, which answers request bursts with
+	// 429 (code 1015 — a time-windowed rate limit, not a ban). Two defenses,
+	// both centralized in do() so every call site inherits them:
+	//   - minGap enforces a minimum spacing between outbound requests so
+	//     concurrent node polls / rapid list calls don't trip the limit.
+	//   - do() retries 429 (and transient 5xx) with backoff to ride out a
+	//     throttle that slips through.
+	mu          sync.Mutex
+	lastReq     time.Time
+	minGap      time.Duration
+	maxRetry    int
+	backoffBase time.Duration
+	backoffMax  time.Duration
 }
 
 // Option configures a Lambda provider.
@@ -83,6 +101,10 @@ func WithBaseURL(u string) Option { return func(l *Lambda) { l.baseURL = strings
 
 // WithHTTPClient overrides the HTTP client (tests inject a stub transport).
 func WithHTTPClient(c *http.Client) Option { return func(l *Lambda) { l.http = c } }
+
+// WithMinGap sets the minimum spacing between outbound API requests (rate-limit
+// defense). Tests pass 0 to run without throttling.
+func WithMinGap(d time.Duration) Option { return func(l *Lambda) { l.minGap = d } }
 
 // WithRegionPref sets preferred regions, in priority order.
 func WithRegionPref(regions ...string) Option {
@@ -97,9 +119,13 @@ func WithRegionPref(regions ...string) Option {
 // key as the username).
 func New(apiKey string, opts ...Option) *Lambda {
 	l := &Lambda{
-		apiKey:  apiKey,
-		baseURL: defaultBaseURL,
-		http:    &http.Client{Timeout: 30 * time.Second},
+		apiKey:   apiKey,
+		baseURL:  defaultBaseURL,
+		http:        &http.Client{Timeout: 30 * time.Second},
+		minGap:      300 * time.Millisecond,
+		maxRetry:    5,
+		backoffBase: time.Second,
+		backoffMax:  8 * time.Second,
 	}
 	for _, o := range opts {
 		o(l)
@@ -373,21 +399,75 @@ func isNotFound(err error) bool {
 	return ae.Status == http.StatusNotFound || strings.Contains(ae.Code, "not-found")
 }
 
-// do performs an authenticated JSON request. body (if non-nil) is sent as JSON;
-// out (if non-nil) receives the decoded response. Auth is HTTP Basic with the
-// API key as the username (Lambda's documented scheme).
+// do performs an authenticated JSON request, throttled and retried. It enforces
+// the minimum inter-request gap, then retries on a rate-limit (429) or transient
+// 5xx with exponential backoff (honoring Retry-After), up to maxRetry attempts.
+// Non-retryable errors (4xx other than 429) return immediately.
 func (l *Lambda) do(ctx context.Context, method, path string, body, out any) error {
+	for attempt := 0; ; attempt++ {
+		if err := l.throttle(ctx); err != nil {
+			return err
+		}
+		err, retryAfter := l.doOnce(ctx, method, path, body, out)
+		if err == nil {
+			return nil
+		}
+		if !retryable(err) || attempt >= l.maxRetry {
+			return err
+		}
+		wait := l.backoffDelay(attempt, retryAfter)
+		fmt.Fprintf(errWriter, "lambda: rate-limited by provider, retrying in %s (attempt %d/%d)\n",
+			wait.Round(time.Millisecond), attempt+1, l.maxRetry)
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(wait):
+		}
+	}
+}
+
+// errWriter is where retry notices go (stderr, so a waiting client sees progress
+// rather than a silent hang; never stdout, so --json output stays clean).
+// Overridable in tests.
+var errWriter io.Writer = os.Stderr
+
+// throttle blocks until at least minGap has elapsed since the previous request,
+// reserving this request's slot so concurrent callers queue rather than burst.
+func (l *Lambda) throttle(ctx context.Context) error {
+	if l.minGap <= 0 {
+		return nil
+	}
+	l.mu.Lock()
+	now := time.Now()
+	wait := max(l.minGap-now.Sub(l.lastReq), 0)
+	l.lastReq = now.Add(wait)
+	l.mu.Unlock()
+	if wait <= 0 {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-time.After(wait):
+		return nil
+	}
+}
+
+// doOnce performs a single authenticated JSON request. Auth is HTTP Basic with
+// the API key as the username (Lambda's documented scheme). It returns the
+// error (if any) and the parsed Retry-After delay (0 if absent).
+func (l *Lambda) doOnce(ctx context.Context, method, path string, body, out any) (error, time.Duration) {
 	var rdr io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return err, 0
 		}
 		rdr = bytes.NewReader(b)
 	}
 	req, err := http.NewRequestWithContext(ctx, method, l.baseURL+path, rdr)
 	if err != nil {
-		return err
+		return err, 0
 	}
 	req.SetBasicAuth(l.apiKey, "")
 	if body != nil {
@@ -395,7 +475,7 @@ func (l *Lambda) do(ctx context.Context, method, path string, body, out any) err
 	}
 	resp, err := l.http.Do(req)
 	if err != nil {
-		return err
+		return err, 0
 	}
 	defer resp.Body.Close()
 	data, _ := io.ReadAll(resp.Body)
@@ -410,12 +490,46 @@ func (l *Lambda) do(ctx context.Context, method, path string, body, out any) err
 		if json.Unmarshal(data, &body) == nil && body.Error.Message != "" {
 			ae.Code, ae.Msg = body.Error.Code, body.Error.Message
 		}
-		return ae
+		return ae, parseRetryAfter(resp.Header.Get("Retry-After"))
 	}
 	if out != nil {
-		return json.Unmarshal(data, out)
+		return json.Unmarshal(data, out), 0
 	}
-	return nil
+	return nil, 0
+}
+
+// retryable reports whether an API error is worth retrying: a 429 rate-limit or
+// a transient 5xx. A 429 means the request was rejected (not processed), so even
+// a launch is safe to retry — no instance was created.
+func retryable(err error) bool {
+	var ae *apiError
+	if e, ok := err.(*apiError); ok {
+		ae = e
+	}
+	if ae == nil {
+		return false
+	}
+	return ae.Status == http.StatusTooManyRequests || ae.Status >= 500
+}
+
+// backoffDelay returns the wait before the next attempt: exponential backoff
+// (base, 2×base, 4×base, … capped at backoffMax) with jitter to desynchronize
+// concurrent node polls. The server's Retry-After is honored only as a floor —
+// when it asks for *longer* — so a Retry-After of 0 (which Cloudflare's 1015
+// sends) can never make us retry faster than real backoff and re-trip the limit.
+func (l *Lambda) backoffDelay(attempt int, retryAfter time.Duration) time.Duration {
+	d := min(l.backoffBase<<attempt, l.backoffMax)
+	d += time.Duration(rand.Int63n(int64(d/2) + 1))
+	return max(d, retryAfter)
+}
+
+// parseRetryAfter parses a Retry-After header value (delta-seconds only; Lambda/
+// Cloudflare use the numeric form). Returns 0 if empty or unparseable.
+func parseRetryAfter(v string) time.Duration {
+	if n, err := strconv.Atoi(strings.TrimSpace(v)); err == nil && n >= 0 {
+		return time.Duration(n) * time.Second
+	}
+	return 0
 }
 
 var _ provider.Provider = (*Lambda)(nil)
