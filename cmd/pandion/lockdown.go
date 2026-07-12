@@ -29,6 +29,7 @@ import (
 func runLockdown(args []string) {
 	fs := flag.NewFlagSet("lockdown", flag.ExitOnError)
 	id := fs.String("id", "", "cluster id (required)")
+	auditMode := fs.Bool("audit", false, "DRY RUN: apply the deny-all in audit mode — log what would be dropped but enforce nothing (inspect with `journalctl -k | grep pandion-audit`)")
 	_ = fs.Parse(args)
 	if *id == "" {
 		fmt.Fprintln(os.Stderr, "lockdown: --id is required")
@@ -80,11 +81,16 @@ func runLockdown(args []string) {
 
 	// STEP 2: apply deny-all-public firewall over the OVERLAY connection, so the
 	// change can't sever us (established + iif wg0 keep the session alive).
-	fmt.Println("all nodes reachable over overlay — applying public deny-all...")
+	if *auditMode {
+		fmt.Println("all nodes reachable over overlay — applying deny-all in AUDIT mode (log only, nothing enforced)...")
+	} else {
+		fmt.Println("all nodes reachable over overlay — applying public deny-all...")
+	}
 	rules := firewall.NFTables(firewall.Spec{
 		AllowDNS: true, NoPublicSSH: true,
 		WGPort: overlay.DefaultPort, AllowOverlayInput: true,
 		BlockMetadata: true, // S-F: no workload may read cloud metadata
+		AuditOnly:     *auditMode,
 	})
 	cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 	for _, n := range man.Nodes {
@@ -93,13 +99,22 @@ func runLockdown(args []string) {
 			fmt.Fprintf(os.Stderr, "lockdown: firewall apply failed on %s: %v\n", n.Name, err)
 			os.Exit(6)
 		}
-		fmt.Printf("  %s: public SSH removed (overlay-only)\n", n.Name)
+		if *auditMode {
+			fmt.Printf("  %s: audit ruleset applied (public SSH still open — logging what deny-all would drop)\n", n.Name)
+		} else {
+			fmt.Printf("  %s: public SSH removed (overlay-only)\n", n.Name)
+		}
 	}
 
-	audit.Event("lockdown", "id", *id, "nodes", len(man.Nodes))
+	audit.Event("lockdown", "id", *id, "nodes", len(man.Nodes), "audit", *auditMode)
 	fmt.Println("----------------------------------------------------------------")
-	fmt.Printf("cluster %q locked down: public ingress = deny-all; SSH only over the overlay.\n", *id)
-	fmt.Println("a public scan now sees only the WireGuard port. Reach nodes at their 10.99.0.x IPs.")
+	if *auditMode {
+		fmt.Printf("cluster %q lockdown AUDIT applied: nothing enforced; inspect would-be-drops with\n", *id)
+		fmt.Printf("  pandion ssh --id %s -- 'journalctl -k | grep pandion-audit'\n", *id)
+	} else {
+		fmt.Printf("cluster %q locked down: public ingress = deny-all; SSH only over the overlay.\n", *id)
+		fmt.Println("a public scan now sees only the WireGuard port. Reach nodes at their 10.99.0.x IPs.")
+	}
 }
 
 // parsePinned turns an authorized-keys line into a pinned host key.

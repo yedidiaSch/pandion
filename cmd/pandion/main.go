@@ -280,7 +280,7 @@ func runUp(args []string) {
 	// default (per-node `gpu:` in the topology overrides); GPU nodes are provisioned,
 	// hardened, and meshed like any other (M5).
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu, *firewallAudit)
 		return
 	}
 
@@ -359,7 +359,7 @@ type hetznerUpOpts struct {
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool, gpuFlag string) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool, gpuFlag string, auditFW bool) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
@@ -386,7 +386,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 
 	if providerName != "mock" && providerName != "" {
 		// the hardened multi-node mesh flow is provider-agnostic (driven through `o`).
-		upClusterHetzner(o, cl, id, maxCost, lockPath, noRun)
+		upClusterHetzner(o, cl, id, maxCost, lockPath, noRun, auditFW)
 		return
 	}
 
