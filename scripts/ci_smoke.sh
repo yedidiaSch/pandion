@@ -9,6 +9,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 run() { go run ./cmd/pandion "$@"; }
 tmp="$(mktemp -d 2>/dev/null || mktemp -d -t pandion)"

@@ -12,6 +12,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 CID="e2e-attach"        # cluster-path id
 SID="e2e-attach-single" # single-node-path id

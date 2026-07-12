@@ -10,6 +10,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 ID="e2e-do"
 BIN="./bin/pandion"

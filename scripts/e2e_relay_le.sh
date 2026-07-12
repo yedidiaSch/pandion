@@ -11,6 +11,7 @@
 # ============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 PROV="${1:-digitalocean}"
 ID="e2e-relayle-$PROV"
