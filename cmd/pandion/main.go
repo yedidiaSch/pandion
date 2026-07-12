@@ -267,20 +267,17 @@ func runUp(args []string) {
 	gpuReq, err := parseGPUFlag(*gpu)
 	must(err)
 	if gpuReq.Wanted() {
-		if *file != "" {
-			fmt.Fprintln(os.Stderr, "--gpu is not yet supported with -f cluster.yaml (use a single-node `up`)")
-			os.Exit(2)
-		}
 		if _, ok := p.(provider.GPUProvider); !ok {
 			fmt.Fprintf(os.Stderr, "provider %q has no GPU offerings — pick a GPU provider (see `pandion list-gpus`)\n", p.Name())
 			os.Exit(2)
 		}
 	}
 
-	// multi-node path: -f cluster.yaml. M3.2a wires the concurrent provisioning +
-	// barrier on the mock provider; the real WG-mesh path lands in M3.2b.
+	// multi-node path: -f cluster.yaml. A top-level `--gpu` applies as the cluster
+	// default (per-node `gpu:` in the topology overrides); GPU nodes are provisioned,
+	// hardened, and meshed like any other (M5).
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu)
 		return
 	}
 
@@ -358,11 +355,23 @@ type hetznerUpOpts struct {
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool, gpuFlag string) {
 	cl, err := config.Load(file)
 	must(err)
 	if id == "demo" || id == "" {
 		id = cl.Name // default the cluster id to the topology name
+	}
+	// a top-level `--gpu` is the cluster-wide default: apply it where the topology
+	// doesn't already set one (per-node `gpu:` and `defaults.gpu:` still win).
+	if gpuFlag != "" && cl.Defaults.GPU == "" {
+		cl.Defaults.GPU = gpuFlag
+	}
+	// if any node ends up wanting a GPU, the provider must be GPU-capable.
+	if clusterWantsGPU(cl) {
+		if _, ok := o.P.(provider.GPUProvider); !ok {
+			fmt.Fprintf(os.Stderr, "provider %q has no GPU offerings — a GPU node in %q needs a GPU provider (see `pandion list-gpus`)\n", o.P.Name(), file)
+			os.Exit(2)
+		}
 	}
 
 	// dry-run works for any pricing provider, incl. mock (offline preview).
@@ -380,7 +389,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 	// mock path: concurrent provisioning + barrier only (no cloud/mesh).
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
 	for i, n := range cl.Nodes {
-		specs[i] = orchestrator.NodeSpec{Name: n.Name, UserData: "#cloud-config\n"}
+		specs[i] = orchestrator.NodeSpec{Name: n.Name, UserData: "#cloud-config\n", GPU: gpuReqOf(cl.Effective(n).GPU)}
 	}
 	fmt.Printf("UP cluster %q: provisioning %d nodes (provider=mock, bounded concurrency)...\n", id, len(specs))
 	c, err := o.UpCluster(context.Background(), id, specs, orchestrator.DefaultMaxConcurrency)
