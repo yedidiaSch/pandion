@@ -6,7 +6,23 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-12
+
 ### Added
+- **GPU support — `pandion up --gpu MODEL[:N]`** — provision on-demand GPU nodes, hardened,
+  overlay-meshed, and torn down like any Pandion node. `pandion list-gpus` browses the live,
+  priced catalog (capacity per region). Two providers, both **Tier-A** (CUDA/ROCm-native base
+  images — no driver setup): **Lambda Cloud** (`--provider lambda`; A10 → B200) and
+  **DigitalOcean GPU Droplets** (`--provider digitalocean`; H100/H200/L40S/RTX/MI300X — uses your
+  existing DO token). A **GPU-aware idle dead-man** keeps a node alive while the GPU is busy
+  (headless training/inference jobs survive with no SSH session; tune with `--gpu-idle-util`,
+  default 5%) and powers it off once both SSH and the GPU are idle. `pandion down` prints a cost
+  **receipt**; `ls` / `--json` gain a GPU column; `--max-cost` and `--dry-run` price GPU requests
+  (fail-closed on an unpriceable one). GPU provisioning gets a larger boot budget (large images).
+- **Operator profiles — `--profile NAME` / `$PANDION_PROFILE`** — keep separate configs and
+  credentials per account or project; `pandion profiles` lists them (`*` = active). Named profiles
+  live in `~/.pandion/profiles/<name>.yaml` with OS-keychain entries namespaced per profile; the
+  default profile (no `--profile`) is unchanged, so existing setups keep working.
 - **`pandion build [dir]` — one-liner "upload this project and build it in the cloud"** — auto-
   detects the toolchain (CMake, Meson, Cargo, Go, npm, Python, or Make), syncs the directory, and
   builds it on a hardened node; add `-- <cmd>` to run the result, or omit it to build-only. It's a

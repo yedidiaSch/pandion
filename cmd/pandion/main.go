@@ -460,7 +460,14 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if runCmd == "" {
 		runCmd = "echo PANDION_READY && uname -a"
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
+	// Overall budget for provision + SSH readiness + hardening + workload launch.
+	// GPU images (Lambda Stack, DO AI/ML Ready) are large and can take 5-6 min just
+	// to boot, so a CPU-sized 6-minute budget starves the rest — give GPU nodes more.
+	upTimeout := 6 * time.Minute
+	if opt.gpu.Wanted() {
+		upTimeout = 15 * time.Minute
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
 	defer cancel()
 
 	// 1) generate the host key (to inject + pin) and the login key (S1)
