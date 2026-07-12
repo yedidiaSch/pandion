@@ -97,12 +97,44 @@ func TestRenderStatus_GPUColumn(t *testing.T) {
 		Hourly: 23.93,
 	}}
 	var b strings.Builder
-	renderStatus(&b, clusters, "USD")
+	renderStatus(&b, clusters, "USD", false)
 	out := b.String()
 	for _, want := range []string{"GPU", "h100×8", "trainer"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("ls GPU column missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// M6-R2: `ls --gpu-util` adds a UTIL% column; measured values render, unknown "—".
+func TestRenderStatus_GPUUtilColumn(t *testing.T) {
+	clusters := []orchestrator.ClusterStatus{{
+		ClusterID: "ml",
+		Nodes: []orchestrator.NodeStatus{
+			{Name: "busy", Type: "gpu_1x_a10", Region: "us", Age: time.Hour,
+				GPU: provider.GPUInfo{Model: "a10", Count: 1}, GPUUtil: 97},
+			{Name: "unreach", Type: "gpu_1x_a10", Region: "us", Age: time.Hour,
+				GPU: provider.GPUInfo{Model: "a10", Count: 1}, GPUUtil: -1},
+		},
+	}}
+	var b strings.Builder
+	renderStatus(&b, clusters, "USD", true)
+	out := b.String()
+	for _, want := range []string{"UTIL%", "97%", "—" /* unreachable */} {
+		if !strings.Contains(out, want) {
+			t.Errorf("gpu-util output missing %q:\n%s", want, out)
+		}
+	}
+	var b2 strings.Builder
+	renderStatus(&b2, clusters, "USD", false)
+	if strings.Contains(b2.String(), "UTIL%") {
+		t.Error("UTIL column must only appear with --gpu-util")
+	}
+}
+
+func TestGPUUtilLabel(t *testing.T) {
+	if gpuUtilLabel(-1) != "—" || gpuUtilLabel(0) != "0%" || gpuUtilLabel(100) != "100%" {
+		t.Error("gpuUtilLabel wrong")
 	}
 }
 

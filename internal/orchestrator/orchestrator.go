@@ -211,6 +211,7 @@ type NodeStatus struct {
 	Age                    time.Duration
 	Hourly                 provider.Money   // zero = price unknown
 	GPU                    provider.GPUInfo // zero = CPU node
+	GPUUtil                int              // live GPU utilization %; -1 = not measured/unknown
 }
 
 // ClusterStatus aggregates a cluster's running nodes and its rolled-up cost.
@@ -245,7 +246,7 @@ func (o *Orchestrator) Status(ctx context.Context) ([]ClusterStatus, string, err
 		if s.Created.IsZero() {
 			age = 0
 		}
-		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age, GPU: s.GPU}
+		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age, GPU: s.GPU, GPUUtil: -1}
 		if pricer != nil {
 			// a per-node pricing error is non-fatal: leave that node unpriced.
 			if m, perr := pricer.HourlyPrice(ctx, s.Type, s.Region); perr == nil && m.Known() {
