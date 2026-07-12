@@ -141,6 +141,7 @@
         "target": { "enum": ["cloud", "local"], "default": "cloud" },
         "engine": { "enum": ["docker", "native"], "default": "native" },
         "size": { "type": "string" },
+        "gpu": { "type": "string", "description": "GPU model[:count], e.g. a100 or h100:2; empty = CPU" },
         "image": { "type": "string" },
         "container_image": { "type": "string" },
         "ttl": {

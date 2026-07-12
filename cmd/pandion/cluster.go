@@ -525,6 +525,24 @@ func writeLock(id, prov string, nodes []lockfile.NodeLock) error {
 
 // dryRunCluster previews a cluster `up` — per-node size/region/TTL and projected
 // cost from cluster.yaml — creating nothing (no keys, no cloud-init, no cloud).
+// gpuReqOf parses a node's effective `gpu:` string ("MODEL[:COUNT]") into a
+// GPUReq. A parse error aborts (the topology is malformed).
+func gpuReqOf(effGPU string) provider.GPUReq {
+	g, err := parseGPUFlag(effGPU)
+	must(err)
+	return g
+}
+
+// clusterWantsGPU reports whether any node in the topology resolves to a GPU.
+func clusterWantsGPU(cl *config.Cluster) bool {
+	for _, n := range cl.Nodes {
+		if gpuReqOf(cl.Effective(n).GPU).Wanted() {
+			return true
+		}
+	}
+	return false
+}
+
 func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -536,7 +554,7 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) 
 		if eff.Region != "" {
 			region = []string{eff.Region}
 		}
-		specs[i] = orchestrator.NodeSpec{Name: n.Name, Type: eff.Size, RegionPref: region}
+		specs[i] = orchestrator.NodeSpec{Name: n.Name, Type: eff.Size, RegionPref: region, GPU: gpuReqOf(eff.GPU)}
 		windows[i] = parseTTL(eff.TTLRaw)
 	}
 	nodes, est, err := o.PlanUp(ctx, specs, windows)
@@ -677,6 +695,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			WGConfig:         overlay.InterfaceConfig(wg.Private, oip+"/24", overlay.DefaultPort),
 			RunUser:          runUser,
 			IdleTTL:          windows[i],
+			HasGPU:           gpuReqOf(eff.GPU).Wanted(), // GPU util counts as liveness (§4, M5)
+			GPUIdleUtil:      harden.DefaultGPUIdleUtil,
 			Fail2ban:         true,               // SSH brute-force protection (P1)
 			AuditLog:         eff.AuditLog,       // on-node audit trail (S-F; security.audit_log)
 			SysctlHardening:  true,               // CIS-lite kernel network baseline (P1)
@@ -685,7 +705,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		}
 		specs[i] = orchestrator.NodeSpec{
 			Name: n.Name, UserData: harden.Build(ci), LoginPubKey: login.PublicAuthorized,
-			Type: eff.Size, Image: eff.Image, RegionPref: region,
+			Type: eff.Size, Image: eff.Image, RegionPref: region, GPU: gpuReqOf(eff.GPU),
 		}
 	}
 

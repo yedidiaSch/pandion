@@ -133,6 +133,48 @@ func TestEffective_DefaultsInheritanceAndOverride(t *testing.T) {
 	}
 }
 
+// M5: the schema accepts `gpu:` at both defaults and per-node level.
+func TestValidate_AcceptsGPU(t *testing.T) {
+	yaml := []byte(`apiVersion: pandion/v1
+name: gpu-mesh
+provider:
+  name: hetzner
+defaults:
+  gpu: a100
+nodes:
+  - name: worker-0
+  - name: worker-1
+    gpu: h100:2
+    run: ./train
+`)
+	if err := Validate(yaml); err != nil {
+		t.Fatalf("cluster.yaml with gpu should validate, got: %v", err)
+	}
+}
+
+// M5: a top-level defaults.gpu is inherited; a per-node gpu overrides it.
+func TestEffective_GPUInheritanceAndOverride(t *testing.T) {
+	c := &Cluster{
+		Defaults: NodeCommon{GPU: "a100"},
+		Nodes: []Node{
+			{Name: "w0"}, // inherits a100
+			{NodeCommon: NodeCommon{GPU: "h100:2"}, Name: "w1"},       // overrides
+			{NodeCommon: NodeCommon{Size: "cpx21"}, Name: "cpu-only"}, // no gpu override → still inherits default
+		},
+	}
+	if g := c.Effective(c.Nodes[0]).GPU; g != "a100" {
+		t.Fatalf("w0 gpu = %q, want a100 (inherited)", g)
+	}
+	if g := c.Effective(c.Nodes[1]).GPU; g != "h100:2" {
+		t.Fatalf("w1 gpu = %q, want h100:2 (override)", g)
+	}
+	// with NO default, a node without gpu is CPU
+	none := &Cluster{Nodes: []Node{{Name: "x"}}}
+	if g := none.Effective(none.Nodes[0]).GPU; g != "" {
+		t.Fatalf("no-gpu node should be empty, got %q", g)
+	}
+}
+
 func TestEffective_EngineAndContainerImage(t *testing.T) {
 	c := &Cluster{
 		Defaults: NodeCommon{Engine: "docker"},
