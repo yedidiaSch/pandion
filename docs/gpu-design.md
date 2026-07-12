@@ -299,6 +299,11 @@ in `completion.go`.
 
 G0–G2 are the MVP: a real, safe, single-provider GPU story. G3–G4 broaden reach.
 
+**Shipped:** G0, G1 (Lambda), G1b (DO GPU Droplets), G2 — released in **v0.7.0/0.7.1**.
+**Provider-tier expansion (G3/G4 and other clouds) is deferred.** The active, non-provider
+roadmap — multi-node GPU clusters (M5), cost/observability polish (M6), a GPU walkthrough (M7)
+— is specified as requirements in **§13**.
+
 ---
 
 ## 9. Edge cases & pitfalls
@@ -379,3 +384,66 @@ The three highest-leverage moves, in order:
    H100.
 
 Everything else rides the seam Pandion already has.
+
+---
+
+## 13. Post-0.7 roadmap — requirements
+
+Status: G0–G2 shipped and live-validated; Lambda + DO GPU Droplets in **v0.7.0/0.7.1**.
+Provider-tier expansion (G3 Scaleway / G4 Tier-C / other Tier-A clouds) is explicitly
+**deferred** — the following deepen the GPU story on the providers we already have. Each
+item is written as **requirements + acceptance**, not implementation notes, so it can be
+picked up independently.
+
+Legend: 🔜 active · ⬜ planned.
+
+### M5 — Multi-node GPU clusters 🔜 (active)
+
+Lift the single-node restriction (`--gpu` currently errors with `-f cluster.yaml`) so
+Pandion can stand up an **N-node GPU mesh** — the original killer use case (distributed
+fine-tuning / inference / cracking, §1). Provider-agnostic (Lambda + DO today).
+
+- **M5-R1** — `pandion up --gpu MODEL[:N] -f cluster.yaml --id ID` provisions **every** node
+  in the topology as a GPU node. The `--gpu`+`-f` guard is removed.
+- **M5-R2** — cluster.yaml supports a **per-node `gpu:`** key (`model`, `count`); a top-level
+  `--gpu` is the default for nodes that don't override (heterogeneous clusters allowed).
+- **M5-R3** — nodes provision **concurrently** with the existing bounded-concurrency +
+  RUNNING barrier (`UpCluster`), each hardened with the GPU-aware cloud-init (`disable_root`,
+  GPU idle dead-man) and joined into the **WireGuard mesh**.
+- **M5-R4** — the GPU idle dead-man keeps a node alive while **its** GPU is busy; the cluster
+  as a whole survives a headless distributed job (no SSH) and reaps only when all nodes idle.
+- **M5-R5** — `--max-cost` sums **projected spend across all GPU nodes** and fails closed if
+  any node can't be priced; `--dry-run` shows the per-node + rolled-up GPU plan.
+- **M5-R6** — **rendezvous**: each node can discover its peers' overlay IPs, and a distributed
+  entrypoint gets what it needs to form a group — e.g. `PANDION_MASTER_ADDR` (first node's
+  overlay IP), `PANDION_RANK`, `PANDION_WORLD_SIZE` injected into the workload env — so
+  `torchrun` / Ray / Hashcat (`--skip/--limit`) can address the mesh without hardcoding IPs.
+- **M5-R7** — teardown destroys **all** nodes (verified empty) and the receipt sums the
+  cluster's cost.
+- **Acceptance** — on Lambda, `up --gpu a10 -f 2node.yaml` brings up 2 A10 nodes, meshed;
+  from one node, the others are reachable over the overlay and `PANDION_MASTER_ADDR`/rank are
+  present; `down` tears the whole cluster down clean (no leak). Offline: `--dry-run` prices a
+  2-node GPU plan; budget fails closed on an unpriceable node.
+
+### M6 — Cost / observability polish ⬜
+
+Close the gaps in the §6 "cost as the trust surface" story surfaced during live validation.
+
+- **M6-R1** — the teardown **receipt shows real cost even when the provider gives no creation
+  timestamp** (Lambda): Pandion records its **own** create time in the cluster manifest/state
+  and uses it, so `down` no longer prints "cost unknown".
+- **M6-R2** — **`ls --gpu-util`**: an opt-in live GPU-utilization column (per node, via
+  `ssh nvidia-smi`), so `ls` reflects real GPU activity, not just cost/age. Default `ls` stays
+  network-cheap (shows `—`).
+- **M6-R3** — **offline GPU pricing cache** (§6.3) under `~/.pandion/cache/<provider>-gpu.json`
+  with a short TTL, so `list-gpus` / `--dry-run` are fast and work offline; `up` re-validates
+  availability at create time.
+
+### M7 — GPU example / walkthrough ⬜
+
+Turn "it provisions a GPU" into "here's the thing people actually want to do."
+
+- **M7-R1** — a runnable example under `examples/` — a single-GPU fine-tune (or, once M5 lands,
+  a 2-node distributed-training demo) driven by `pandion up --gpu`, with its own README.
+- **M7-R2** — a README "GPU: from zero to training" quickstart chaining
+  `list-gpus → up --gpu → workload → down`, including the cost receipt and teardown safety.
