@@ -30,7 +30,7 @@ already landed. The stale local branches have been deleted; the matching
 
 ## P0 — Correctness gaps that undermine the security claim
 
-### 1. IPv6 is a semantic blind spot — **CONFIRMED LIVE**
+### 1. IPv6 is a semantic blind spot — ✅ **CLOSED (disable-on-node stance)**
 `internal/firewall/nftables.go` uses `table inet` with `policy drop`, so IPv6 is
 default-denied — not a gaping hole. But every *allow/deny* rule is IPv4-only:
 the egress allowlist (`ip daddr @egress_ok`), the metadata block
@@ -43,14 +43,12 @@ dual-stack host where the SDK may egress over an unlisted IPv6."
 Net effect under lockdown: IPv6 is effectively unusable *and* the
 allowlist/metadata semantics silently don't extend to it.
 
-**Decision required (forks the implementation):**
-- **(a) Disable IPv6 on the node** via sysctl (`disable_ipv6 = 1`) — fail-closed,
-  smallest change, matches the zero-trust default. Recommended MVP stance.
-- **(b) Full dual-stack** — `ip6` allowlist set, IPv6 metadata endpoint block,
-  `icmpv6` ND/RA accept in the ingress chain. More work; keeps IPv6 usable.
-
-→ *e2e:* assert an IPv6 egress to a public host is denied under lockdown, and
-that the chosen posture holds.
+**Resolved:** chose **(a) disable IPv6 on the node** (`disable_ipv6 = 1` in
+`sysctlHardening`) — fail-closed, matches the zero-trust default, overlay is
+IPv4 so no loss of function. Covered by `TestBuild_Sysctl*` and the real-node
+`scripts/e2e_ipv6_lockdown.sh` (asserts IPv6 off, no global v6 address, v6
+egress fails). Full dual-stack nftables remains the fallback if IPv6 egress is
+ever required.
 
 ---
 
@@ -98,8 +96,8 @@ See `ebpf.md` for the full rationale.
 
 1. ✅ Commit the Lambda 429 fix.
 2. ✅ Confirm the three in-flight branches are already merged; delete the stale ones.
-3. **→ Decide the IPv6 stance (P0.1) and ship it + its e2e.**  ← next
-4. Lockdown e2e (P1.2), then the cross-provider matrix (P1.3).
+3. ✅ IPv6 stance (P0.1): disable-on-node, shipped with e2e.
+4. **→ Lockdown e2e (P1.2), then the cross-provider matrix (P1.3).**  ← next
 5. DNS allowlist + dry-run mode (P2).
 6. Park eBPF behind demand validation.
 
