@@ -190,6 +190,9 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 				if isAvailabilityErr(cerr) {
 					continue // try the next (region,size)
 				}
+				if s.GPU && isGPUQuotaErr(cerr) {
+					return provider.Server{}, fmt.Errorf("create %s@%s: %w\n  DigitalOcean GPU Droplets need account approval — request GPU access in the DO console (GPU Droplets) or via support, then retry", s.Slug, region, cerr)
+				}
 				return provider.Server{}, fmt.Errorf("create %s@%s: %w", s.Slug, region, cerr)
 			}
 			srv, werr := d.waitActive(ctx, dr.ID, spec.ClusterID)
@@ -498,6 +501,13 @@ func isAvailabilityErr(err error) bool {
 		strings.Contains(m, "unavailable") ||
 		strings.Contains(m, "sold out") ||
 		strings.Contains(m, "no capacity")
+}
+
+// isGPUQuotaErr detects DO's "exceed your GPU limit" 422 — the account has no
+// (or insufficient) GPU Droplet quota, which requires requesting access.
+func isGPUQuotaErr(err error) bool {
+	m := strings.ToLower(err.Error())
+	return strings.Contains(m, "gpu limit") || strings.Contains(m, "gpu quota")
 }
 
 // keyMaterial extracts the base64 body of an SSH public key so keys compare by
