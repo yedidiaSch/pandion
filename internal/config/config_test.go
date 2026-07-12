@@ -152,6 +152,24 @@ nodes:
 	}
 }
 
+// The cluster schema's provider enum must include every provider the CLI resolves
+// — lambda was added after the schema and got missed (multi-node GPU regression).
+func TestValidate_AcceptsLambdaProvider(t *testing.T) {
+	yaml := []byte(`apiVersion: pandion/v1
+name: gpu-mesh
+provider:
+  name: lambda
+defaults:
+  gpu: a10
+nodes:
+  - name: n0
+    run: ./x
+`)
+	if err := Validate(yaml); err != nil {
+		t.Fatalf("provider: lambda should validate, got: %v", err)
+	}
+}
+
 // M5: a top-level defaults.gpu is inherited; a per-node gpu overrides it.
 func TestEffective_GPUInheritanceAndOverride(t *testing.T) {
 	c := &Cluster{
