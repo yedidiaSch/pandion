@@ -16,6 +16,7 @@
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 ID="e2e-dbgshare"; NODE="worker"; PROV="${PANDION_PROVIDER:-hetzner}"; BIN="./bin/pandion"
 : "${HCLOUD_TOKEN:?Set HCLOUD_TOKEN}"

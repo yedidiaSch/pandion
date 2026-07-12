@@ -17,6 +17,7 @@
 # ============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 ok(){ printf '\033[32m[ OK ]\033[0m %s\n' "$*"; }
 no(){ printf '\033[31m[FAIL]\033[0m %s\n' "$*"; FAIL=1; }
 inf(){ printf '\033[36m[ .. ]\033[0m %s\n' "$*"; }

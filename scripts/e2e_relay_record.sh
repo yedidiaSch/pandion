@@ -3,6 +3,7 @@
 # Usage:  ./scripts/e2e_relay_record.sh [provider]   (default digitalocean)
 set -uo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 PROV="${1:-digitalocean}"
 ID="e2e-relayrec-$PROV"
