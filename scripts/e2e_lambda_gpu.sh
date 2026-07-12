@@ -95,7 +95,7 @@ if [ "${E2E_OVERLAY:-0}" = 1 ]; then
   if [ -f "$CONF" ]; then
     c_in "[3] joining the WireGuard overlay (needs sudo) + lockdown..."
     sudo wg-quick up "$CONF" && c_ok "overlay up" || c_no "wg-quick up failed"
-    NO_COLOR=1 "$BIN" lockdown --provider lambda --id "$ID" 2>&1 | tail -3 && c_ok "lockdown applied (public deny-all)" || c_no "lockdown failed"
+    NO_COLOR=1 "$BIN" lockdown --id "$ID" 2>&1 | tail -3 && c_ok "lockdown applied (public deny-all)" || c_no "lockdown failed"
     if "$BIN" ssh --id "$ID" --overlay -- 'nvidia-smi -L' 2>&1 | grep -qi "GPU"; then
       c_ok "reached the GPU over the overlay AFTER lockdown"
     else
