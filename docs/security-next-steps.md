@@ -83,16 +83,16 @@ with a warning.
 goes stale — periodic **on-node re-resolution** (a small agent/cron that
 re-resolves and updates the nftables set) is the remaining piece.
 
-### 5. Audit / dry-run mode — 🚧 **single-node `up --firewall-audit` done; cluster wiring is follow-up**
-`up --firewall-audit` renders the firewall with `policy accept` (nothing
-enforced) plus a trailing `log prefix "pandion-audit-in/out"` on each chain, so
-the operator sees exactly what a real lockdown would drop
-(`journalctl -k | grep pandion-audit`) before committing. Metadata is logged,
-not dropped, in this mode. (`firewall.Spec.AuditOnly`, unit-tested;
-`scripts/e2e_firewall_audit.sh` proves non-enforcement + logging on a real node.)
+### 5. Audit / dry-run mode — ✅ **done** (`up --firewall-audit`, `up -f`, `lockdown --audit`)
+Audit mode renders the firewall with `policy accept` (nothing enforced) plus a
+trailing `log prefix "pandion-audit-in/out"` on each chain, so the operator sees
+exactly what a real lockdown would drop (`journalctl -k | grep pandion-audit`)
+before committing. Metadata is logged, not dropped, in this mode.
+(`firewall.Spec.AuditOnly`, unit-tested; `scripts/e2e_firewall_audit.sh`.)
 
-**Still open:** the flag is wired into single-node `up` only; the cluster
-(`up -f`) path and a `lockdown --audit` variant are the remaining slices.
+Wired into all three enforcement points: single-node `up --firewall-audit`, the
+cluster `up -f --firewall-audit`, and `lockdown --audit` (preview the deny-all /
+overlay-only posture without cutting public access).
 
 ---
 

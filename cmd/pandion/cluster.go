@@ -562,7 +562,7 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) 
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
-func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string, noRun bool) {
+func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string, noRun bool, auditFW bool) {
 	prov := o.P.Name()         // hetzner | digitalocean — used in teardown hints
 	var pinLock *lockfile.Lock // reproducibility (H2): pin toolchain from this lock
 	if lockPath != "" {
@@ -899,7 +899,11 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}
 
 	// apply per-node firewall: SSH from operator + WG + overlay-trust, egress deny
-	fmt.Println("applying per-node firewall...")
+	if auditFW {
+		fmt.Println("applying per-node firewall in AUDIT mode (nothing enforced; would-be-drops logged)...")
+	} else {
+		fmt.Println("applying per-node firewall...")
+	}
 	for _, p := range plans {
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
@@ -907,6 +911,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			AllowL2Input:   clusterL2 != nil, // accept decapsulated vxlan0 frames
 			EgressAllowIPs: resolveEgressAllow(p.egressAllow), // egress_allow / security; hostnames resolved (P0-2)
 			BlockMetadata:  p.blockMeta,      // S-F (honors security.block_metadata_service)
+			AuditOnly:      auditFW,          // --firewall-audit: dry-run, log not drop (P2.2)
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
