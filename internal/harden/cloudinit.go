@@ -306,6 +306,13 @@ func auditRules() string {
 // NOT strict (1): strict reverse-path filtering drops WireGuard's asymmetrically
 // routed packets and breaks the overlay. Nothing here touches ip_forward (the
 // nodes are WG endpoints, not routers), so the mesh is unaffected.
+//
+// IPv6 is DISABLED. The nftables lockdown (internal/firewall) filters IPv4 only —
+// the egress allowlist and the metadata-SSRF block are IPv4 rules — so a
+// dual-stack node would let a workload egress over IPv6, bypassing both. The
+// overlay and all control traffic are IPv4 (10.99.0.x / SSH), so turning IPv6
+// off closes the gap with no loss of function. If IPv6 egress is ever needed,
+// the alternative is full dual-stack nftables (see docs/security-next-steps.md).
 func sysctlHardening() string {
 	return `# Pandion network hardening baseline
 net.ipv4.conf.all.rp_filter = 2
@@ -318,6 +325,10 @@ net.ipv4.conf.all.accept_source_route = 0
 net.ipv6.conf.all.accept_source_route = 0
 net.ipv4.tcp_syncookies = 1
 net.ipv4.conf.all.log_martians = 1
+# IPv6 off: the nftables lockdown is IPv4-only, so a dual-stack node would leak
+# egress over IPv6 past the allowlist + metadata block. The overlay is IPv4.
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
 `
 }
 
