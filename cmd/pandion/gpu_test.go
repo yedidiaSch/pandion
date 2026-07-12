@@ -144,7 +144,7 @@ func TestBuildReceipt_Mock(t *testing.T) {
 		t.Fatal(err)
 	}
 	servers, _ := m.ListByTag(ctx, "c")
-	r := buildReceipt(ctx, m, servers)
+	r := buildReceipt(ctx, m, servers, time.Time{})
 	if r.nodes != 1 || !r.priced || !r.ranKnown {
 		t.Fatalf("receipt = %+v", r)
 	}
@@ -153,5 +153,29 @@ func TestBuildReceipt_Mock(t *testing.T) {
 	}
 	if r.currency != "EUR" || r.total < 0 {
 		t.Fatalf("cost = %.4f %s", r.total, r.currency)
+	}
+}
+
+// M6-R1: a provider that reports NO creation time (Lambda) still gets a priced
+// receipt via the lockfile fallback, instead of "cost unknown".
+func TestBuildReceipt_FallbackCreated(t *testing.T) {
+	m := mock.New()
+	ctx := context.Background()
+	// a server with a zero Created (as Lambda returns) — priced type, no timestamp.
+	servers := []provider.Server{{
+		ID: "i-1", Name: "n", ClusterID: "c", Type: "mock-gpu-a100", Region: "mock-dc",
+		GPU: provider.GPUInfo{Model: "a100", Count: 1, VRAM: 40}, // Created is zero
+	}}
+	// without a fallback: unpriced (no age to multiply)
+	if r := buildReceipt(ctx, m, servers, time.Time{}); r.priced || r.ranKnown {
+		t.Fatalf("no timestamp should yield cost unknown: %+v", r)
+	}
+	// with the lockfile fallback (created 2h ago): real cost from age × hourly
+	r := buildReceipt(ctx, m, servers, time.Now().Add(-2*time.Hour))
+	if !r.ranKnown || !r.priced {
+		t.Fatalf("fallback should produce a priced receipt: %+v", r)
+	}
+	if r.total < 2.0 || r.total > 2.4 { // a100 = 1.10/hr × ~2h
+		t.Fatalf("expected ~2.20, got %.4f %s", r.total, r.currency)
 	}
 }

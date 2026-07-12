@@ -1124,14 +1124,21 @@ type receipt struct {
 // buildReceipt summarizes a cluster's spend from the servers about to be destroyed
 // (call BEFORE teardown, while their creation times are live). Pricing is
 // best-effort: an unpriced provider yields priced=false ("cost unknown").
-func buildReceipt(ctx context.Context, p provider.Provider, servers []provider.Server) receipt {
+// fallbackCreated (Pandion's own create time, from the lockfile) covers providers
+// that report no creation timestamp on the server (e.g. Lambda), so the receipt
+// shows real cost instead of "cost unknown" (M6-R1).
+func buildReceipt(ctx context.Context, p provider.Provider, servers []provider.Server, fallbackCreated time.Time) receipt {
 	r := receipt{nodes: len(servers)}
 	pricer, _ := p.(provider.Pricer)
 	now := time.Now()
 	seen := map[string]bool{}
 	for _, s := range servers {
-		if !s.Created.IsZero() {
-			age := now.Sub(s.Created)
+		created := s.Created
+		if created.IsZero() {
+			created = fallbackCreated // provider gave no timestamp — use ours
+		}
+		if !created.IsZero() {
+			age := now.Sub(created)
 			if age > r.ran {
 				r.ran = age
 			}
@@ -1249,8 +1256,13 @@ func runDown(args []string) {
 		}
 	}
 	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
-	// snapshot the cost receipt BEFORE teardown (needs the live creation times).
-	rcpt := buildReceipt(ctx, p, servers)
+	// snapshot the cost receipt BEFORE teardown. Fall back to Pandion's own recorded
+	// create time (the lockfile) for providers that report none (Lambda) — M6-R1.
+	var created time.Time
+	if lk, lerr := lockfile.Load(lockfile.Path(envHome(), *id)); lerr == nil {
+		created = lk.Created
+	}
+	rcpt := buildReceipt(ctx, p, servers, created)
 	must(o.Down(ctx, *id))
 	reapShares(*id) // revoke + delete any outstanding debug shares (no leak)
 	audit.Event("down.complete", "id", *id, "provider", p.Name())
