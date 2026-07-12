@@ -28,6 +28,9 @@ type cached struct {
 // Load returns the cached offerings if the cache exists and is younger than ttl.
 // ok is false on any miss (absent, unreadable, malformed, or stale).
 func Load(home, prov string, ttl time.Duration) (offs []provider.GPUOffering, ok bool) {
+	if ttl <= 0 {
+		return nil, false // caching disabled ⇒ always a miss (deterministic)
+	}
 	b, err := os.ReadFile(path(home, prov))
 	if err != nil {
 		return nil, false
