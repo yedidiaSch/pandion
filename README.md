@@ -154,6 +154,12 @@ headless training job (no SSH session) keeps the node alive, while a truly idle 
 powers off after `--ttl` — tune the threshold with `--gpu-idle-util` (default 5%). Teardown
 (`pandion down`) prints a cost **receipt** (`ran 2h13m · total ~5.31 USD`).
 
+For **multi-node GPU clusters**, add `gpu:` to nodes in a `cluster.yaml` (or `--gpu` as the
+cluster-wide default) and `pandion up -f cluster.yaml` stands up a WireGuard-meshed GPU fleet.
+Each node gets rendezvous env for distributed frameworks —
+`MASTER_ADDR=$PANDION_MASTER_ADDR torchrun --nnodes $PANDION_WORLD_SIZE --node-rank $PANDION_RANK …`
+— so training groups form over the overlay with no hardcoded IPs.
+
 Scaleway uses a triple (`SCW_SECRET_KEY`, `SCW_ACCESS_KEY`, `SCW_DEFAULT_PROJECT_ID`); only the
 secret key is sensitive. Provider resolution follows `--provider` flag → `~/.pandion/config.yaml`
 default → the only provider you have credentials for → (on a terminal) a prompt; automation stays
