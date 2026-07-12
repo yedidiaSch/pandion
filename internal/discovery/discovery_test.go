@@ -40,6 +40,32 @@ func TestScript_SortedExportsAndSelf(t *testing.T) {
 	}
 }
 
+// M5-R6: the rendezvous env (rank/world-size/master) is derived from the sorted
+// node order, so torchrun/Ray/etc. can form a group over the mesh.
+func TestScript_RendezvousEnv(t *testing.T) {
+	ips := map[string]string{"broker": "10.99.0.1", "worker-a": "10.99.0.2", "worker-b": "10.99.0.3"}
+	// rank-0 is the first in sorted order ("broker"); worker-b is rank 2.
+	out := Script(ips, "worker-b")
+	for _, want := range []string{
+		"export PANDION_WORLD_SIZE=3",
+		"export PANDION_RANK=2",
+		"export PANDION_MASTER_ADDR=10.99.0.1", // broker (sorted first)
+		"export PANDION_MASTER_PORT=29500",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendezvous env missing %q\n%s", want, out)
+		}
+	}
+	// the rank-0 node itself
+	if !strings.Contains(Script(ips, "broker"), "export PANDION_RANK=0") {
+		t.Error("broker should be rank 0")
+	}
+	// no self ⇒ no rendezvous env (operator-side / non-node render)
+	if strings.Contains(Script(ips, ""), "PANDION_RANK") {
+		t.Error("rendezvous env must be gated on selfName")
+	}
+}
+
 func TestScript_NoSelf(t *testing.T) {
 	out := Script(map[string]string{"a": "10.99.0.1"}, "")
 	if strings.Contains(out, "PANDION_SELF") {

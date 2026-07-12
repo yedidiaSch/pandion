@@ -397,7 +397,16 @@ picked up independently.
 
 Legend: 🔜 active · ⬜ planned.
 
-### M5 — Multi-node GPU clusters 🔜 (active)
+### M5 — Multi-node GPU clusters ✅ (done)
+
+> **Done.** `up --gpu -f cluster.yaml` provisions an N-node GPU mesh: per-node `gpu:`
+> (+ `defaults.gpu` + top-level `--gpu` fallback), concurrent hardened provisioning +
+> WireGuard mesh, per-node GPU idle dead-man, budget summed across nodes, and peer
+> **rendezvous** env (`PANDION_RANK`/`WORLD_SIZE`/`MASTER_ADDR`/`MASTER_PORT`) injected
+> via the discovery file so `torchrun`/Ray form a group with no hardcoded IPs. Offline-
+> tested (config merge, schema, dry-run mesh pricing, discovery rendezvous). Live
+> multi-node run is the next validation once convenient.
+
 
 Lift the single-node restriction (`--gpu` currently errors with `-f cluster.yaml`) so
 Pandion can stand up an **N-node GPU mesh** — the original killer use case (distributed
