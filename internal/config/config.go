@@ -43,6 +43,7 @@ type NodeCommon struct {
 	Target         string     `yaml:"target"`
 	Engine         string     `yaml:"engine"`
 	Size           string     `yaml:"size"`
+	GPU            string     `yaml:"gpu"` // "MODEL[:COUNT]" e.g. "a100" / "h100:2"; empty = CPU
 	Image          string     `yaml:"image"`
 	ContainerImage string     `yaml:"container_image"` // for engine=docker
 	TTL            string     `yaml:"ttl"`
@@ -121,6 +122,7 @@ type Lifecycle struct {
 // overrides (node wins). It's what the orchestrator should consume.
 type Effective struct {
 	Size  string
+	GPU   string // "MODEL[:COUNT]"; node wins over defaults; empty = CPU
 	Image string
 	// Packages are the node's EXTRA apt packages (declared libraries/tools). They
 	// are added to the built-in toolchain unless NoDefaultToolchain is set.
@@ -159,6 +161,7 @@ func (c *Cluster) Effective(n Node) Effective {
 	}
 	e := Effective{
 		Size:           pick(n.Size, c.Defaults.Size),
+		GPU:            pick(n.GPU, c.Defaults.GPU),
 		Image:          pick(n.Image, c.Defaults.Image),
 		Region:         c.Provider.Region,
 		TTLRaw:         pick(n.TTL, c.Defaults.TTL),
