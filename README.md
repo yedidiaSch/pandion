@@ -140,9 +140,14 @@ export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY 
 pandion login --provider hetzner        # alternatively, store it in the OS keychain
 ```
 
-For GPU work, Lambda Cloud (`--provider lambda`) serves on-demand A100/H100 instances —
-browse them with `pandion list-gpus --provider lambda`, then `pandion up --gpu a100 -- ./train.sh`.
-Lambda is GPU-only and its image is CUDA-native (Lambda Stack), so no driver setup is needed.
+For GPU work, `pandion up --gpu MODEL[:N]` provisions an on-demand GPU node — hardened,
+overlay-meshed, and torn down like any other. Browse the live, priced catalog with
+`pandion list-gpus --provider <name>`, then e.g. `pandion up --gpu a100 -- ./train.sh`. Two
+providers today, both with CUDA-native images (no driver setup):
+
+- **Lambda Cloud** (`--provider lambda`) — A10 → B200, GPU-only.
+- **DigitalOcean GPU Droplets** (`--provider digitalocean`) — H100/H200/L40S/RTX/MI300X, using
+  your existing DO token (the successor to Paperspace; needs GPU-Droplet quota on your DO account).
 
 On a GPU node the idle dead-man's-switch also treats **GPU utilization** as liveness: a
 headless training job (no SSH session) keeps the node alive, while a truly idle box still
