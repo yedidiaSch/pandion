@@ -31,6 +31,10 @@ type Mock struct {
 	// FailCreateFor makes CreateServer fail for these node names, to exercise
 	// partial-cluster-failure handling (M10).
 	FailCreateFor map[string]bool
+	// TransientBootFor makes CreateServer return a TransientProvisionError for a
+	// node name that many times before succeeding — exercises the provisioning
+	// retry (a cloud terminating a VM mid-boot). Decremented per call.
+	TransientBootFor map[string]int
 	// MaxConcurrent records the peak simultaneous CreateServer calls, to assert
 	// bounded concurrency (M6).
 	MaxConcurrent int
@@ -135,6 +139,10 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		m.MaxConcurrent = m.curConcurrent
 	}
 	fail := m.FailCreateFor[spec.Name]
+	transient := m.TransientBootFor[spec.Name] > 0
+	if transient {
+		m.TransientBootFor[spec.Name]--
+	}
 	m.mu.Unlock()
 
 	// stay "in flight" briefly so overlapping callers are actually observed
@@ -142,6 +150,11 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 
 	m.mu.Lock()
 	defer func() { m.curConcurrent--; m.mu.Unlock() }()
+	if transient {
+		return provider.Server{}, &provider.TransientProvisionError{
+			Err: fmt.Errorf("mock: instance for %q entered status \"terminated\" while booting", spec.Name),
+		}
+	}
 	if fail {
 		return provider.Server{}, fmt.Errorf("mock: simulated create failure for %q", spec.Name)
 	}

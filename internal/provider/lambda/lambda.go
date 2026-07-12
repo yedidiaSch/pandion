@@ -203,7 +203,13 @@ func (l *Lambda) waitRunning(ctx context.Context, id, clusterID string) (provide
 			return toServer(inst, clusterID), nil
 		}
 		if strings.EqualFold(inst.Status, "terminated") || strings.EqualFold(inst.Status, "error") {
-			return provider.Server{}, fmt.Errorf("lambda: instance %s entered status %q while booting", id, inst.Status)
+			// Lambda killed the VM during boot (capacity/spot). Best-effort clean up
+			// the dead instance, then signal a TRANSIENT failure so the orchestrator
+			// relaunches a fresh one instead of failing the whole up.
+			_ = l.DestroyServer(ctx, id)
+			return provider.Server{}, &provider.TransientProvisionError{
+				Err: fmt.Errorf("lambda: instance %s entered status %q while booting", id, inst.Status),
+			}
 		}
 		select {
 		case <-ctx.Done():
