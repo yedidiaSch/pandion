@@ -71,9 +71,17 @@ of runway: breadth-of-proof beats new mechanism.
 
 ## P2 — Capability improvements (still nftables)
 
-### 4. DNS-name egress allowlisting
-Today's allowlist is *resolved IPs*; "allow `github.com`" goes stale as CDN IPs
-rotate. Add periodic re-resolution so name-based egress rules stay correct.
+### 4. DNS-name egress allowlisting — 🚧 **provision-time resolution done; re-resolution is follow-up**
+`--egress-allow` (and `egress_allow` in cluster.yaml) now accepts **hostnames**,
+resolved to IPv4 at provision time and fed into the nftables egress set
+(`cmd/pandion/egressallow.go`, unit-tested; `scripts/e2e_egress_dns.sh` proves a
+resolved host is reachable while an un-allowlisted one is denied). IPs/CIDRs pass
+through; IPv6 is dropped (nodes are IPv4-only); unresolvable names are skipped
+with a warning.
+
+**Still open:** this resolves *once*. If a name's IPs rotate (CDNs), the rule
+goes stale — periodic **on-node re-resolution** (a small agent/cron that
+re-resolves and updates the nftables set) is the remaining piece.
 
 ### 5. Audit / dry-run mode
 A "log what *would* be dropped, don't enforce" mode. Lowers the friction of
