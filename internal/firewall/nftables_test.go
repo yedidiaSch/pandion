@@ -146,3 +146,46 @@ func TestNFTables_NoPublicSSH_OverlayOnly(t *testing.T) {
 		t.Errorf("overlay + WG must remain reachable:\n%s", out)
 	}
 }
+
+// Audit (dry-run) mode: same allow rules, but nothing is enforced — both chains
+// default to ACCEPT and a trailing log records what a real lockdown would drop,
+// including the metadata endpoint (which is NOT dropped in audit mode).
+func TestNFTables_AuditOnly_LogsNotDrops(t *testing.T) {
+	out := NFTables(Spec{
+		AuditOnly: true, SSHFromCIDR: "203.0.113.4/32", WGPort: 51820,
+		AllowOverlayInput: true, AllowDNS: true, BlockMetadata: true,
+		EgressAllowIPs: []string{"1.1.1.1"},
+	})
+	// nothing enforced: no drop policy, no metadata drop
+	if strings.Contains(out, "policy drop;") {
+		t.Errorf("audit mode must not enforce a drop policy:\n%s", out)
+	}
+	if strings.Contains(out, metadataIP+" drop") {
+		t.Errorf("audit mode must not drop metadata (observe only):\n%s", out)
+	}
+	// accept-by-default on both chains
+	if c := strings.Count(out, "policy accept;"); c != 2 {
+		t.Errorf("want policy accept on both chains, got %d:\n%s", c, out)
+	}
+	// would-be-drops are logged on ingress and egress
+	for _, want := range []string{"log prefix \"pandion-audit-in \" counter", "log prefix \"pandion-audit-out \" counter"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("audit mode missing %q:\n%s", want, out)
+		}
+	}
+	// the real allow rules are still present (so the log only catches the rest)
+	if !strings.Contains(out, "@egress_ok accept") || !strings.Contains(out, "ip saddr 203.0.113.4/32 tcp dport 22 accept") {
+		t.Errorf("audit mode should keep the allow rules:\n%s", out)
+	}
+}
+
+// Enforced mode is unchanged: drop policy, metadata dropped, no audit log.
+func TestNFTables_Enforced_NoAuditLog(t *testing.T) {
+	out := NFTables(Spec{SSHFromCIDR: "203.0.113.4/32", BlockMetadata: true, AllowDNS: true})
+	if !strings.Contains(out, "policy drop;") || !strings.Contains(out, metadataIP+" drop") {
+		t.Errorf("enforced mode must drop by default and block metadata:\n%s", out)
+	}
+	if strings.Contains(out, "pandion-audit") {
+		t.Errorf("enforced mode must not emit audit logs:\n%s", out)
+	}
+}

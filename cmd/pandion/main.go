@@ -218,6 +218,7 @@ func runUp(args []string) {
 	packages := fs.String("packages", "", "comma-separated apt packages/libraries to install (e.g. libzmq3-dev,libboost-dev); added to the toolchain")
 	setup := fs.String("setup", "", "shell command run on the node (as root) in the build window, before your build — for non-apt software (pip/npm/curl; chain with &&)")
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
+	firewallAudit := fs.Bool("firewall-audit", false, "DRY RUN: apply the firewall in audit mode — log what would be dropped but enforce nothing (inspect with `journalctl -k | grep pandion-audit`)")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
 	egressAllow := fs.String("egress-allow", "", "comma-separated outbound allowlist: IPv4, CIDR, or hostname (resolved at provision)")
 	workspacePath := fs.String("workspace", "", "local dir to sync to the node before running")
@@ -316,7 +317,7 @@ func runUp(args []string) {
 		upHetzner(o, hetznerUpOpts{
 			id: *id, node: *node, runCmd: runCmd,
 			toolchain: !*noToolchain, packages: splitCSV(*packages), setup: setupCmds(*setup),
-			firewall: !*noFirewall, overlay: !*noOverlay,
+			firewall: !*noFirewall, firewallAudit: *firewallAudit, overlay: !*noOverlay,
 			egressAllow: splitCSV(*egressAllow), sync: ws, runUser: *runAsUser, idleTTL: idleTTL,
 			size: *size, regionPref: splitCSV(*region), gpu: gpuReq, gpuIdleUtil: *gpuIdleUtil,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
@@ -336,6 +337,7 @@ type hetznerUpOpts struct {
 	packages         []string // extra apt packages/libraries (--packages), added to the toolchain
 	setup            []string // setup commands run (as root) in the build window (--setup)
 	firewall         bool
+	firewallAudit    bool // dry-run: log what the firewall would drop, enforce nothing
 	overlay          bool
 	egressAllow      []string
 	sync             *syncSpec
@@ -685,6 +687,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			WGPort:            wgPortIf(opt.overlay),
 			AllowOverlayInput: opt.overlay,
 			BlockMetadata:     true, // S-F: no workload may read cloud metadata
+			AuditOnly:         opt.firewallAudit,
 		})
 		b64 := base64.StdEncoding.EncodeToString([]byte(rules))
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
@@ -697,7 +700,12 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		if operatorCIDR != "" {
 			sshScope = operatorCIDR
 		}
-		fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
+		if opt.firewallAudit {
+			fmt.Printf("firewall applied in AUDIT mode: NOTHING enforced; would-be-drops logged.\n")
+			fmt.Printf("  inspect:  pandion ssh --id %s -- 'journalctl -k | grep pandion-audit'\n", id)
+		} else {
+			fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
+		}
 	}
 
 	// 8) persist a manifest (node IP + pinned host key) so `attach` can reconnect,

@@ -53,6 +53,12 @@ type Spec struct {
 	// instance's cloud credentials and user-data, so a compromised workload must
 	// never reach it, even if the operator opens a broad egress allowlist (S-F).
 	BlockMetadata bool
+	// AuditOnly renders a DRY-RUN ruleset: the same allow rules, but the default
+	// policy is ACCEPT (not drop) and a trailing `log` rule records every packet
+	// that WOULD have been dropped (prefix "pandion-audit-in/out"). Nothing is
+	// actually blocked — the operator can see what a real lockdown would deny
+	// (via `journalctl -k` / dmesg) before committing to enforcement.
+	AuditOnly bool
 }
 
 // metadataIP is the cloud instance metadata endpoint (same on Hetzner, DO, AWS,
@@ -92,9 +98,16 @@ func NFTables(in Spec) string {
 		b.WriteString("  }\n")
 	}
 
+	// audit (dry-run): accept by default and LOG what a real lockdown would drop,
+	// so nothing is enforced but the would-be-denied traffic is observable.
+	policy := "drop"
+	if s.AuditOnly {
+		policy = "accept"
+	}
+
 	// inbound: default drop, keep the control plane + declared ports reachable.
 	b.WriteString("  chain input {\n")
-	b.WriteString("    type filter hook input priority 0; policy drop;\n")
+	b.WriteString("    type filter hook input priority 0; policy " + policy + ";\n")
 	b.WriteString("    iif \"lo\" accept\n")
 	b.WriteString("    ct state established,related accept\n")
 	b.WriteString("    ip protocol icmp accept\n")
@@ -118,14 +131,19 @@ func NFTables(in Spec) string {
 	for _, p := range s.IngressPorts {
 		b.WriteString(fmt.Sprintf("    tcp dport %d accept\n", p))
 	}
+	if s.AuditOnly {
+		// log (and, via policy accept, allow) what a real ingress deny would drop.
+		b.WriteString("    log prefix \"pandion-audit-in \" counter\n")
+	}
 	b.WriteString("  }\n")
 
 	// outbound: default drop — exfiltration protection (S2).
 	b.WriteString("  chain output {\n")
-	b.WriteString("    type filter hook output priority 0; policy drop;\n")
+	b.WriteString("    type filter hook output priority 0; policy " + policy + ";\n")
 	b.WriteString("    oif \"lo\" accept\n")
-	if s.BlockMetadata {
+	if s.BlockMetadata && !s.AuditOnly {
 		// unconditional, BEFORE any allow — defense-in-depth vs. metadata SSRF (S-F).
+		// In audit mode this is left to the trailing log so the access is observed.
 		b.WriteString("    ip daddr " + metadataIP + " drop\n")
 	}
 	b.WriteString("    ct state established,related accept\n")
@@ -153,6 +171,11 @@ func NFTables(in Spec) string {
 	}
 	if len(s.EgressAllowIPs) > 0 {
 		b.WriteString("    ip daddr @egress_ok accept\n")
+	}
+	if s.AuditOnly {
+		// log (and, via policy accept, allow) what a real egress deny would drop —
+		// including the metadata endpoint — so the operator sees the full picture.
+		b.WriteString("    log prefix \"pandion-audit-out \" counter\n")
 	}
 	b.WriteString("  }\n")
 
