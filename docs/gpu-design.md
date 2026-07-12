@@ -434,7 +434,14 @@ fine-tuning / inference / cracking, §1). Provider-agnostic (Lambda + DO today).
   present; `down` tears the whole cluster down clean (no leak). Offline: `--dry-run` prices a
   2-node GPU plan; budget fails closed on an unpriceable node.
 
-### M6 — Cost / observability polish ⬜
+### M6 — Cost / observability polish ✅ (done)
+
+> **Done.** R1: teardown receipt shows real cost even when the provider gives no
+> creation timestamp (Lambda), via the lockfile's create-time fallback. R2:
+> `ls --gpu-util` adds a live GPU-utilization column (SSHes `nvidia-smi`, best-effort,
+> `—` when unreachable). R3: offline pricing cache for `list-gpus`
+> (`~/.pandion/cache/<provider>-gpu.json`, 6h TTL, `--refresh`; ~35× faster from cache).
+> All offline-tested; R2's live reading reuses the validated SSH machinery.
 
 Close the gaps in the §6 "cost as the trust surface" story surfaced during live validation.
 
