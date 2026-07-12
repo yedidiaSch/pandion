@@ -23,6 +23,7 @@
 # ============================================================================
 set -uo pipefail
 cd "$(dirname "$0")/.."
+[ -f ./.env ] && { set -a; . ./.env; set +a; }   # auto-load provider creds from .env
 
 BIN="./bin/pandion"
 TTL="${E2E_TTL:-20m}"
