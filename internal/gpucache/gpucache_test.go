@@ -5,6 +5,7 @@ package gpucache
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -46,6 +47,9 @@ func TestLoad_MissAndStale(t *testing.T) {
 }
 
 func TestSave_PrivatePerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not enforce Unix file permissions")
+	}
 	home := t.TempDir()
 	if err := Save(home, "lambda", nil); err != nil {
 		t.Fatal(err)
