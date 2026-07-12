@@ -6,6 +6,17 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+## [0.7.1] — 2026-07-12
+
+### Fixed
+- **Lambda overlay + `lockdown` now work** — Lambda's account firewall defaults to SSH + ICMP
+  only, so the WireGuard overlay port (UDP 51820) was closed: the operator couldn't reach a node
+  over the mesh, and `lockdown` (correctly) refused rather than risk locking you out. The Lambda
+  provider now implements the cloud-firewall hook and ensures inbound `udp/51820` on the
+  account-wide rule set — additively (your SSH/ICMP/other rules are untouched) — so `up` opens it
+  automatically, matching Hetzner/DigitalOcean. GPU compute + SSH were unaffected; this only
+  gated the optional "go dark" overlay/lockdown step.
+
 ## [0.7.0] — 2026-07-12
 
 ### Added
