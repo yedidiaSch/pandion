@@ -35,7 +35,7 @@
       "additionalProperties": false,
       "required": ["name"],
       "properties": {
-        "name": { "enum": ["hetzner", "digitalocean", "vultr", "linode", "scaleway", "mock"] },
+        "name": { "enum": ["hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda", "mock"] },
         "credential": {
           "type": "string",
           "description": "Name of a credential in the local secret store. NEVER the token itself."
