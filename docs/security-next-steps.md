@@ -54,18 +54,18 @@ ever required.
 
 ## P1 — Prove the posture where it isn't proven
 
-### 2. Dedicated lockdown e2e (`e2e_lockdown.sh`)
-The full deny-all / overlay-only-SSH flip is the strongest claim and has **no
-self-cleaning e2e** of its own (unlike metadata/network/node). It should assert:
-public SSH dead, overlay SSH works, egress denied, metadata blocked, and —
-critically — the **lockout-safe refusal** fires when the overlay is unreachable.
+### 2. Dedicated lockdown e2e — 🚧 **written, pending hand-run** (`scripts/e2e_lockdown.sh`, PR #105)
+Asserts both halves of the deny-all / overlay-only-SSH flip: the **lockout-safe
+refusal** (overlay down ⇒ `lockdown` exits 6, changes nothing, public SSH
+survives) and the real flip (overlay up ⇒ public SSH dead, overlay SSH lives).
 
-### 3. Cross-provider hardening matrix
-Every hardening e2e is Hetzner-only. The lockdown posture is exactly what breaks
-per-provider (Lambda's firewall is account-wide and already special-cased).
-Parameterize the hardening e2e across **DO, Lambda, Vultr, Scaleway, Linode** and
-record a support matrix. Highest-value use of available runway: breadth-of-proof
-beats new mechanism.
+### 3. Cross-provider hardening matrix — 🚧 **written, pending hand-run** (`scripts/e2e_hardening_matrix.sh`)
+Every hardening e2e was Hetzner-only. This runs one probe per provider (whose
+credential is present) and prints a support matrix of the core invariants —
+`meta` (metadata blocked), `egress` (default-deny holds), `v6` (IPv6 disabled),
+`ssh` (workload ran least-priv) — across **Hetzner, DO, Vultr, Linode,
+Scaleway**. Token-gated (absent creds ⇒ skip), self-cleaning. Highest-value use
+of runway: breadth-of-proof beats new mechanism.
 
 ---
 
@@ -97,8 +97,9 @@ See `ebpf.md` for the full rationale.
 1. ✅ Commit the Lambda 429 fix.
 2. ✅ Confirm the three in-flight branches are already merged; delete the stale ones.
 3. ✅ IPv6 stance (P0.1): disable-on-node, shipped with e2e.
-4. **→ Lockdown e2e (P1.2), then the cross-provider matrix (P1.3).**  ← next
-5. DNS allowlist + dry-run mode (P2).
+4. 🚧 Lockdown e2e (P1.2) + cross-provider matrix (P1.3): written; **pending a hand-run against real cloud** before merge.
+5. **→ DNS allowlist + dry-run mode (P2).**  ← next
+
 6. Park eBPF behind demand validation.
 
 **Headline risk:** the posture is only proven on one provider. Spend the runway
