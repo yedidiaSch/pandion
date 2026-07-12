@@ -896,26 +896,35 @@ func fetchGPUUtils(clusters []orchestrator.ClusterStatus) {
 }
 
 // queryGPUUtil SSHes a node (host-key pinned) and returns the busiest GPU's
-// utilization %, or -1 if unreachable/unparseable.
+// utilization %, or -1 if unreachable/unparseable. Best-effort, but retried: the
+// read races GPU/CUDA warmup and a fresh SSH can be slow to establish, so one
+// transient miss shouldn't blank the column. Two attempts, 12s each, 1s apart.
 func queryGPUUtil(ip, hostPub string, signer gossh.Signer) int {
 	pinned, err := parsePinned(hostPub)
 	if err != nil {
 		return -1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-	out, err := envssh.Run(ctx, ip+":22", "root", signer, pinned,
-		"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits")
-	if err != nil {
-		return -1
-	}
-	max := -1
-	for _, f := range strings.Fields(out) {
-		if v, err := strconv.Atoi(f); err == nil && v > max {
-			max = v
+	const attempts = 2
+	for i := range attempts {
+		if i > 0 {
+			time.Sleep(time.Second)
 		}
+		ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+		out, err := envssh.Run(ctx, ip+":22", "root", signer, pinned,
+			"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits")
+		cancel()
+		if err != nil {
+			continue
+		}
+		best := -1
+		for _, f := range strings.Fields(out) {
+			if v, err := strconv.Atoi(f); err == nil && v > best {
+				best = v
+			}
+		}
+		return best
 	}
-	return max
+	return -1
 }
 
 // renderStatusJSON emits the fleet status as stable JSON (durations in seconds,
