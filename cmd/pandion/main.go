@@ -219,7 +219,7 @@ func runUp(args []string) {
 	setup := fs.String("setup", "", "shell command run on the node (as root) in the build window, before your build — for non-apt software (pip/npm/curl; chain with &&)")
 	noFirewall := fs.Bool("no-firewall", false, "skip the default-deny firewall lockdown")
 	noOverlay := fs.Bool("no-overlay", false, "skip the WireGuard management overlay")
-	egressAllow := fs.String("egress-allow", "", "comma-separated IPv4/CIDR outbound allowlist")
+	egressAllow := fs.String("egress-allow", "", "comma-separated outbound allowlist: IPv4, CIDR, or hostname (resolved at provision)")
 	workspacePath := fs.String("workspace", "", "local dir to sync to the node before running")
 	remotePath := fs.String("remote-path", "", "where to place the workspace on the node")
 	buildCmd := fs.String("build", "", "build command to run on the node after sync (source mode)")
@@ -680,7 +680,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if opt.firewall {
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS:          true,
-			EgressAllowIPs:    opt.egressAllow,
+			EgressAllowIPs:    resolveEgressAllow(opt.egressAllow),
 			SSHFromCIDR:       operatorCIDR,
 			WGPort:            wgPortIf(opt.overlay),
 			AllowOverlayInput: opt.overlay,
