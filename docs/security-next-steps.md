@@ -83,10 +83,16 @@ with a warning.
 goes stale — periodic **on-node re-resolution** (a small agent/cron that
 re-resolves and updates the nftables set) is the remaining piece.
 
-### 5. Audit / dry-run mode
-A "log what *would* be dropped, don't enforce" mode. Lowers the friction of
-adopting default-deny egress and pairs with the existing `internal/audit` trail.
-Cheap in nftables (a `log` rule variant).
+### 5. Audit / dry-run mode — 🚧 **single-node `up --firewall-audit` done; cluster wiring is follow-up**
+`up --firewall-audit` renders the firewall with `policy accept` (nothing
+enforced) plus a trailing `log prefix "pandion-audit-in/out"` on each chain, so
+the operator sees exactly what a real lockdown would drop
+(`journalctl -k | grep pandion-audit`) before committing. Metadata is logged,
+not dropped, in this mode. (`firewall.Spec.AuditOnly`, unit-tested;
+`scripts/e2e_firewall_audit.sh` proves non-enforcement + logging on a real node.)
+
+**Still open:** the flag is wired into single-node `up` only; the cluster
+(`up -f`) path and a `lockdown --audit` variant are the remaining slices.
 
 ---
 
