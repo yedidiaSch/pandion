@@ -14,6 +14,9 @@ type sizeInfo struct {
 	Regions     []string // region slugs where this size is orderable
 	Available   bool
 	GPU         bool
+	GPUModel    string // e.g. "nvidia_h100" (vendor-prefixed, as DO reports it)
+	GPUCount    int
+	GPUVRAM     int // GB per GPU
 }
 
 // selectSizes picks sizes meeting the spec, CHEAPEST-FIRST. Unlike Hetzner, DO
