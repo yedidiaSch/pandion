@@ -42,6 +42,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/state"
 	"github.com/yedidiaSch/pandion/internal/stream"
 	"github.com/yedidiaSch/pandion/internal/userconfig"
+	gossh "golang.org/x/crypto/ssh"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". Defaults to
@@ -833,6 +834,7 @@ func runLs(args []string) {
 	fs := flag.NewFlagSet("ls", flag.ExitOnError)
 	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
+	gpuUtil := fs.Bool("gpu-util", false, "also show live GPU utilization %% per node (SSHes nvidia-smi; needs public SSH reachability)")
 	_ = fs.Parse(args)
 
 	p, err := newProvider(resolveProviderOrExit(*prov))
@@ -841,6 +843,9 @@ func runLs(args []string) {
 
 	clusters, currency, err := o.Status(context.Background())
 	must(err)
+	if *gpuUtil {
+		fetchGPUUtils(clusters) // best-effort: SSH each GPU node for live utilization
+	}
 	if *jsonOut {
 		must(renderStatusJSON(os.Stdout, clusters, currency))
 		return
@@ -849,7 +854,68 @@ func runLs(args []string) {
 		fmt.Printf("no active Pandion clusters at %s.\n", p.Name())
 		return
 	}
-	renderStatus(os.Stdout, clusters, currency)
+	renderStatus(os.Stdout, clusters, currency, *gpuUtil)
+}
+
+// fetchGPUUtils fills NodeStatus.GPUUtil for GPU nodes by SSHing nvidia-smi
+// (public IP, host-key pinned). Best-effort: an unreachable node stays -1.
+func fetchGPUUtils(clusters []orchestrator.ClusterStatus) {
+	for ci := range clusters {
+		c := &clusters[ci]
+		anyGPU := false
+		for _, n := range c.Nodes {
+			if n.GPU.Present() {
+				anyGPU = true
+			}
+		}
+		if !anyGPU {
+			continue
+		}
+		man, err := loadManifest(c.ClusterID)
+		if err != nil {
+			continue
+		}
+		signer, err := loadLoginSigner(c.ClusterID)
+		if err != nil {
+			continue
+		}
+		hostByName := map[string]string{}
+		for _, mn := range man.Nodes {
+			hostByName[mn.Name] = mn.HostPub
+		}
+		for ni := range c.Nodes {
+			n := &c.Nodes[ni]
+			if !n.GPU.Present() || n.IP == "" {
+				continue
+			}
+			if hp, ok := hostByName[n.Name]; ok {
+				n.GPUUtil = queryGPUUtil(n.IP, hp, signer)
+			}
+		}
+	}
+}
+
+// queryGPUUtil SSHes a node (host-key pinned) and returns the busiest GPU's
+// utilization %, or -1 if unreachable/unparseable.
+func queryGPUUtil(ip, hostPub string, signer gossh.Signer) int {
+	pinned, err := parsePinned(hostPub)
+	if err != nil {
+		return -1
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	out, err := envssh.Run(ctx, ip+":22", "root", signer, pinned,
+		"nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits")
+	if err != nil {
+		return -1
+	}
+	max := -1
+	for _, f := range strings.Fields(out) {
+		if v, err := strconv.Atoi(f); err == nil && v > max {
+			max = v
+		}
+	}
+	return max
 }
 
 // renderStatusJSON emits the fleet status as stable JSON (durations in seconds,
@@ -860,6 +926,7 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 		Name          string  `json:"name"`
 		Type          string  `json:"type"`
 		GPU           string  `json:"gpu,omitempty"`
+		GPUUtil       *int    `json:"gpu_util,omitempty"`
 		Region        string  `json:"region"`
 		IP            string  `json:"ip"`
 		UptimeSeconds int64   `json:"uptime_seconds"`
@@ -886,12 +953,17 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 			if n.GPU.Present() {
 				gpu = gpuInfoLabel(n.GPU)
 			}
-			jc.Nodes = append(jc.Nodes, jsonNode{
+			jn := jsonNode{
 				Name: n.Name, Type: n.Type, GPU: gpu, Region: n.Region, IP: n.IP,
 				UptimeSeconds: int64(n.Age.Seconds()),
 				Hourly:        n.Hourly.Amount,
 				Accrued:       n.Hourly.Amount * n.Age.Hours(),
-			})
+			}
+			if n.GPUUtil >= 0 { // measured via --gpu-util
+				u := n.GPUUtil
+				jn.GPUUtil = &u
+			}
+			jc.Nodes = append(jc.Nodes, jn)
 		}
 		out.NodeCount += len(c.Nodes)
 		out.TotalHourly += c.Hourly
@@ -905,12 +977,16 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 
 // renderStatus writes the `ls`/`status` table + totals. Separated from runLs so
 // the output format is unit-testable without a live provider.
-func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency string) {
+func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency string, showGPUUtil bool) {
 	if currency == "" {
 		currency = "?"
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
-	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tGPU\tREGION\tUPTIME\t%s/hr\t~%s spent\n", currency, currency)
+	utilCol := ""
+	if showGPUUtil {
+		utilCol = "\tUTIL%"
+	}
+	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tGPU%s\tREGION\tUPTIME\t%s/hr\t~%s spent\n", utilCol, currency, currency)
 	var totHourly, totAccrued float64
 	totNodes := 0
 	for _, c := range clusters {
@@ -919,8 +995,12 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 			if i > 0 {
 				cid = "" // label the cluster only on its first row
 			}
-			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-				cid, n.Name, dashIfEmpty(n.Type), gpuInfoLabel(n.GPU), dashIfEmpty(n.Region),
+			util := ""
+			if showGPUUtil {
+				util = "\t" + gpuUtilLabel(n.GPUUtil)
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s%s\t%s\t%s\t%s\t%s\n",
+				cid, n.Name, dashIfEmpty(n.Type), gpuInfoLabel(n.GPU), util, dashIfEmpty(n.Region),
 				shortDur(n.Age), money(n.Hourly), estMoney(n.Hourly, n.Age))
 		}
 		totHourly += c.Hourly
@@ -1108,6 +1188,15 @@ func gpuLabel(g provider.GPUReq) string {
 		return fmt.Sprintf("%s×%d", model, g.Count)
 	}
 	return model
+}
+
+// gpuUtilLabel renders a live GPU utilization reading: "—" when not measured
+// (-1) or the node is CPU/unreachable, else "NN%".
+func gpuUtilLabel(util int) string {
+	if util < 0 {
+		return "—"
+	}
+	return fmt.Sprintf("%d%%", util)
 }
 
 // gpuInfoLabel renders a realized GPU (on a running node) for the `ls` table.

@@ -24,7 +24,7 @@ func TestRenderStatus_TableAndTotals(t *testing.T) {
 	}}
 
 	var b strings.Builder
-	renderStatus(&b, clusters, "EUR")
+	renderStatus(&b, clusters, "EUR", false)
 	out := b.String()
 
 	for _, want := range []string{
