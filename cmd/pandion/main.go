@@ -887,16 +887,20 @@ func fetchGPUUtils(clusters []orchestrator.ClusterStatus) {
 		if err != nil {
 			continue
 		}
-		hostByName := map[string]string{}
+		// Match manifest → status node by IP, not name: providers differ in what
+		// Server.Name is (Lambda encodes the full "pandion-<cluster>--<node>" name,
+		// while the manifest keeps the short node name), so a name key silently
+		// misses and the util read never runs. IP is unambiguous and in both.
+		hostByIP := map[string]string{}
 		for _, mn := range man.Nodes {
-			hostByName[mn.Name] = mn.HostPub
+			hostByIP[mn.IP] = mn.HostPub
 		}
 		for ni := range c.Nodes {
 			n := &c.Nodes[ni]
 			if !n.GPU.Present() || n.IP == "" {
 				continue
 			}
-			if hp, ok := hostByName[n.Name]; ok {
+			if hp, ok := hostByIP[n.IP]; ok {
 				n.GPUUtil = queryGPUUtil(n.IP, hp, signer)
 			}
 		}
