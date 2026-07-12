@@ -54,6 +54,23 @@ func Script(overlayIPByNode map[string]string, selfName string) string {
 		if ip, ok := overlayIPByNode[selfName]; ok {
 			fmt.Fprintf(&b, "export PANDION_SELF_IP=%s\n", ip)
 		}
+		// Distributed rendezvous (M5-R6): a stable rank from the sorted node order,
+		// the world size, and rank-0's overlay IP as the master address — so a
+		// distributed entrypoint can form a group over the mesh with no hardcoded
+		// IPs, e.g. `MASTER_ADDR=$PANDION_MASTER_ADDR torchrun --nnodes
+		// $PANDION_WORLD_SIZE --node-rank $PANDION_RANK …`. Harmless for CPU clusters.
+		if len(names) > 0 {
+			rank := 0
+			for i, n := range names {
+				if n == selfName {
+					rank = i
+				}
+			}
+			fmt.Fprintf(&b, "export PANDION_WORLD_SIZE=%d\n", len(names))
+			fmt.Fprintf(&b, "export PANDION_RANK=%d\n", rank)
+			fmt.Fprintf(&b, "export PANDION_MASTER_ADDR=%s\n", overlayIPByNode[names[0]])
+			fmt.Fprintf(&b, "export PANDION_MASTER_PORT=29500\n")
+		}
 	}
 	return b.String()
 }
