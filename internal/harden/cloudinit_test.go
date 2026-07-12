@@ -253,6 +253,16 @@ func TestBuild_SysctlHardening(t *testing.T) {
 	if strings.Contains(out, "ip_forward") {
 		t.Error("must not set ip_forward (would affect WG routing)")
 	}
+	// IPv6 must be disabled: the nftables lockdown is IPv4-only, so a dual-stack
+	// node would leak egress over IPv6 past the allowlist + metadata block.
+	for _, want := range []string{
+		"net.ipv6.conf.all.disable_ipv6 = 1",
+		"net.ipv6.conf.default.disable_ipv6 = 1",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("IPv6 must be disabled; missing %q", want)
+		}
+	}
 }
 
 func TestBuild_NoAuditByDefault(t *testing.T) {
