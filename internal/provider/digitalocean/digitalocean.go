@@ -133,6 +133,11 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 		if len(cands) == 0 {
 			return provider.Server{}, fmt.Errorf("size %q not found", spec.Type)
 		}
+	} else if spec.GPU.Wanted() {
+		cands = selectGPUSizes(sizes, spec.GPU, "")
+		if len(cands) == 0 {
+			return provider.Server{}, fmt.Errorf("no GPU size matches --gpu model=%q count=%d (try `pandion list-gpus --provider digitalocean`)", spec.GPU.Model, spec.GPU.Count)
+		}
 	} else {
 		cands = selectSizes(sizes, minCores, minRAM*1024, "")
 		if len(cands) == 0 {
@@ -165,11 +170,17 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 			if !contains(s.Regions, region) {
 				continue
 			}
+			// GPU droplets need their CUDA/ROCm-ready base image, not the CPU default
+			// (an explicit --image still wins).
+			img := image
+			if s.GPU && spec.Image == "" {
+				img = gpuImageFor(s)
+			}
 			dr, _, cerr := d.c.Droplets.Create(ctx, &godo.DropletCreateRequest{
 				Name:     dropletName(spec.ClusterID, spec.Name),
 				Region:   region,
 				Size:     s.Slug,
-				Image:    godo.DropletCreateImage{Slug: image},
+				Image:    godo.DropletCreateImage{Slug: img},
 				SSHKeys:  sshKeys,
 				Tags:     tags,
 				UserData: spec.UserData,
@@ -181,7 +192,11 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 				}
 				return provider.Server{}, fmt.Errorf("create %s@%s: %w", s.Slug, region, cerr)
 			}
-			return d.waitActive(ctx, dr.ID, spec.ClusterID)
+			srv, werr := d.waitActive(ctx, dr.ID, spec.ClusterID)
+			if werr == nil && s.GPU {
+				srv.GPU = provider.GPUInfo{Model: normalizeGPUModel(s.GPUModel), Count: s.GPUCount, VRAM: s.GPUVRAM}
+			}
+			return srv, werr
 		}
 	}
 	return provider.Server{}, fmt.Errorf("no available size/region for spec; last error: %v", lastErr)
@@ -297,6 +312,15 @@ func (d *DO) EstimateHourly(ctx context.Context, spec provider.ServerSpec) (prov
 		return provider.Money{}, err
 	}
 	slug := spec.Type
+	if slug == "" && spec.GPU.Wanted() {
+		// price the cheapest GPU size the request would resolve to (so --max-cost
+		// and --dry-run work for GPU droplets, which selectSizes excludes).
+		cands := selectGPUSizes(sizes, spec.GPU, "")
+		if len(cands) == 0 {
+			return provider.Money{}, fmt.Errorf("digitalocean: no GPU size matches the request (cannot price)")
+		}
+		slug = cands[0].Slug
+	}
 	if slug == "" {
 		minCores, minRAM := spec.MinCores, spec.MinRAMGB
 		if minCores == 0 {
@@ -381,10 +405,25 @@ func (d *DO) sizes(ctx context.Context) ([]sizeInfo, error) {
 	}
 	out := make([]sizeInfo, 0, len(all))
 	for _, s := range all {
-		out = append(out, sizeInfo{
+		si := sizeInfo{
 			Slug: s.Slug, Vcpus: s.Vcpus, MemMB: s.Memory, PriceHourly: s.PriceHourly,
 			Regions: s.Regions, Available: s.Available, GPU: s.GPUInfo != nil,
-		})
+		}
+		if s.GPUInfo != nil {
+			si.GPUModel = s.GPUInfo.Model
+			si.GPUCount = s.GPUInfo.Count
+			if s.GPUInfo.VRAM != nil {
+				// DO reports TOTAL VRAM across the box (h100x8 → 640GB); our contract
+				// is per-GPU (like Lambda's 80GB), so divide by the GPU count.
+				total := vramGB(s.GPUInfo.VRAM.Amount, s.GPUInfo.VRAM.Unit)
+				if si.GPUCount > 1 {
+					si.GPUVRAM = total / si.GPUCount
+				} else {
+					si.GPUVRAM = total
+				}
+			}
+		}
+		out = append(out, si)
 	}
 	d.sizeCache = out
 	return out, nil
