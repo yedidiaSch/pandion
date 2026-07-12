@@ -8,6 +8,8 @@ package orchestrator
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
 	"sort"
 	"sync"
 	"time"
@@ -51,6 +53,46 @@ func (o *Orchestrator) Up(ctx context.Context, clusterID, nodeName, userData, lo
 	return o.UpSpec(ctx, clusterID, NodeSpec{Name: nodeName}, userData, loginPubKey)
 }
 
+// maxProvisionAttempts bounds how many times createWithRetry will (re)launch a
+// node whose instance dies DURING BOOT (a transient cloud failure — e.g. Lambda
+// terminating a VM mid-boot). Each attempt launches a fresh instance.
+const maxProvisionAttempts = 3
+
+// provisionRetryDelay is the pause between provisioning attempts. A var so tests
+// can drop it to zero.
+var provisionRetryDelay = 5 * time.Second
+
+// provisionRetryLog receives the "relaunching" notices; stderr in production so a
+// waiting operator sees the recovery, overridable in tests.
+var provisionRetryLog io.Writer = os.Stderr
+
+// createWithRetry launches a server, retrying TRANSIENT boot failures with a
+// fresh instance up to maxProvisionAttempts. Non-transient errors (bad spec,
+// quota, auth) fail immediately — no point relaunching those.
+func (o *Orchestrator) createWithRetry(ctx context.Context, spec provider.ServerSpec) (provider.Server, error) {
+	var lastErr error
+	for attempt := 1; attempt <= maxProvisionAttempts; attempt++ {
+		srv, err := o.P.CreateServer(ctx, spec)
+		if err == nil {
+			return srv, nil
+		}
+		if !provider.IsTransientProvision(err) {
+			return provider.Server{}, err
+		}
+		lastErr = err
+		if attempt < maxProvisionAttempts {
+			fmt.Fprintf(provisionRetryLog, "provision %q: %v — relaunching a fresh instance (attempt %d/%d)\n",
+				spec.Name, err, attempt+1, maxProvisionAttempts)
+			select {
+			case <-ctx.Done():
+				return provider.Server{}, ctx.Err()
+			case <-time.After(provisionRetryDelay):
+			}
+		}
+	}
+	return provider.Server{}, lastErr
+}
+
 // UpSpec is Up with an explicit node spec, so callers can pin the size (Type) and
 // region (RegionPref) — e.g. from `pandion init` defaults. Empty fields keep the
 // provider's auto-selection.
@@ -70,7 +112,7 @@ func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSp
 		return nil, err
 	}
 
-	srv, err := o.P.CreateServer(ctx, provider.ServerSpec{
+	srv, err := o.createWithRetry(ctx, provider.ServerSpec{
 		Name:        nodeName,
 		ClusterID:   clusterID,
 		Type:        spec.Type,
@@ -128,7 +170,7 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 
 			setPhase(i, state.Provisioning)
 			save()
-			srv, err := o.P.CreateServer(gctx, provider.ServerSpec{
+			srv, err := o.createWithRetry(gctx, provider.ServerSpec{
 				Name:        specs[i].Name,
 				ClusterID:   clusterID,
 				UserData:    specs[i].UserData,

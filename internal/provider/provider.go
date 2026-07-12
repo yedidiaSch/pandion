@@ -14,8 +14,25 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// TransientProvisionError marks a provisioning failure that is worth retrying
+// with a FRESH instance — e.g. the cloud terminated the VM during boot
+// (capacity/spot reclaim). The orchestrator relaunches (up to a bound) rather
+// than failing the whole `up`. Providers wrap such errors in this type.
+type TransientProvisionError struct{ Err error }
+
+func (e *TransientProvisionError) Error() string { return e.Err.Error() }
+func (e *TransientProvisionError) Unwrap() error  { return e.Err }
+
+// IsTransientProvision reports whether err (or a wrapped cause) is a transient
+// provisioning failure worth relaunching a fresh instance for.
+func IsTransientProvision(err error) bool {
+	var t *TransientProvisionError
+	return errors.As(err, &t)
+}
 
 // ServerSpec describes a server to create. Type is selected by SPEC (cores/RAM)
 // plus a region preference, never by a hardcoded type name — spike S1 finding F3:
