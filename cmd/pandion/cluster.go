@@ -905,7 +905,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
 			WGPort: overlay.DefaultPort, AllowOverlayInput: true,
 			AllowL2Input:   clusterL2 != nil, // accept decapsulated vxlan0 frames
-			EgressAllowIPs: p.egressAllow,    // cluster.yaml egress_allow / security (P0-2)
+			EgressAllowIPs: resolveEgressAllow(p.egressAllow), // egress_allow / security; hostnames resolved (P0-2)
 			BlockMetadata:  p.blockMeta,      // S-F (honors security.block_metadata_service)
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
