@@ -5,8 +5,39 @@ lifecycle — what is journaled where, which operations are safely re-runnable,
 what happens on crashes/re-runs/races — with concrete findings and
 prioritized recommendations.*
 
-**Status:** review report · **Scope:** state stores, lifecycle idempotency,
-reconciliation, crash recovery · **Date:** 2026-07-13
+**Status:** ✅ **IMPLEMENTED** (all findings resolved) · **Scope:** state stores,
+lifecycle idempotency, reconciliation, crash recovery · **Reviewed:** 2026-07-13 ·
+**Completed:** 2026-07-13
+
+---
+
+## Implementation status
+
+Every finding (F1–F11) and recommendation (R1–R12), plus the two follow-up nits,
+is now on `main`. Mapping to the pull requests that shipped them:
+
+| Finding | Rec | PR |
+|---|---|---|
+| F3 stale local artifacts | R3 | [#116](https://github.com/yedidiaSch/pandion/pull/116) |
+| F4 no cross-process lock | R4 | [#116](https://github.com/yedidiaSch/pandion/pull/116) |
+| F8 swallowed journal saves | R9 | [#116](https://github.com/yedidiaSch/pandion/pull/116) |
+| **F1 `up` not idempotent** | R1 | [#117](https://github.com/yedidiaSch/pandion/pull/117) |
+| F2 TTL bills after power-off | R2 | [#117](https://github.com/yedidiaSch/pandion/pull/117) |
+| F5 id-not-(provider,id) keying | R5 (folded into R1) | [#117](https://github.com/yedidiaSch/pandion/pull/117) |
+| F7 instant destroy retry | R8 | [#118](https://github.com/yedidiaSch/pandion/pull/118) |
+| F11 ambiguous half-down | R12 | [#118](https://github.com/yedidiaSch/pandion/pull/118) |
+| F9 mock can't test cross-process | R10 | [#119](https://github.com/yedidiaSch/pandion/pull/119) |
+| **F6 journal never resumed/read** | R7 | [#120](https://github.com/yedidiaSch/pandion/pull/120) |
+| F10 no schema version | R11 | [#121](https://github.com/yedidiaSch/pandion/pull/121) |
+| Follow-ups: `doctor --json` + reap orphan-journal GC | R7c | [#122](https://github.com/yedidiaSch/pandion/pull/122) |
+
+Notable deltas from the original recommendations: R4 kept the `internal/lockfile`
+name (no rename); R5 was delivered as a provider-mismatch check inside R1's
+preflight rather than a directory re-keying; R7's "GC orphaned journals during
+`reap`" shipped as R7c in the follow-up PR. New operator surface: the `up`
+existence guard, honest TTL/cost copy, `pandion doctor [--json]`,
+`PANDION_MOCK_STATE` (file-backed mock), and schema versioning — all with unit +
+offline-smoke coverage, and real-cloud e2e for the lifecycle-critical paths.
 
 ---
 
@@ -169,7 +200,7 @@ default for ephemeral infra.
 Ordered by severity. Each: problem → concrete scenario → evidence →
 recommendation (cross-referenced to §6).
 
-### F1 — `up` is not idempotent and has no existence guard (CRITICAL)
+### F1 — `up` is not idempotent and has no existence guard (CRITICAL) · ✅ DONE (#117)
 
 **Problem.** `runUp` → `UpSpec`/`UpCluster` never asks the provider (or the
 local journal) whether cluster `<id>` already exists. The flow immediately:
@@ -206,7 +237,7 @@ local journal/manifest exists → refuse with "cluster 'demo' already exists
 first". Scenario B's rollback must also become "roll back only what *this run*
 created" (track the server IDs returned by this run's creates, not the tag).
 
-### F2 — The TTL dead-man's switch powers off; billing continues (HIGH)
+### F2 — The TTL dead-man's switch powers off; billing continues (HIGH) · ✅ DONE (#117)
 
 **Problem.** The on-node dead-man reaps an idle node with `systemctl poweroff`
 (`internal/harden/cloudinit.go:368-400`). A powered-off server **keeps
@@ -233,7 +264,7 @@ delete API… which requires credentials on the node (rejected by the security
 model), so realistically (a) plus R6 (an opt-in `reap --older-than` cron
 suggestion or a `pandion reap --auto` hint printed at `up`).
 
-### F3 — `down` cleans only 2 of 6 local artifacts; the rest go stale (HIGH)
+### F3 — `down` cleans only 2 of 6 local artifacts; the rest go stale (HIGH) · ✅ DONE (#116)
 
 **Problem.** A successful teardown removes the state journal (`Store.Close`)
 and the debug-share records (`reapShares`, `main.go:1391`) — and nothing else.
@@ -254,7 +285,7 @@ Left behind forever: `~/.pandion/keys/<id>/` (manifest + keys + WG conf),
 `keys/<id>` and `lock/<id>.json` on verified teardown (keep logs, they're the
 post-mortem); make manifest loaders fail fast on tombstones; fix the message.
 
-### F4 — No cross-process lock over `~/.pandion` (HIGH)
+### F4 — No cross-process lock over `~/.pandion` (HIGH) · ✅ DONE (#116)
 
 **Problem.** Nothing prevents two Pandion processes from operating on the same
 id concurrently. `up --id x` racing `down --id x` (or a second `up`, or `reap`)
@@ -275,7 +306,7 @@ destroys servers the plan never showed.
 "another pandion command is operating on 'x' (pid N)". Consider renaming
 `internal/lockfile` → `internal/repro` while touching this area.
 
-### F5 — Local state is keyed by id, not (provider, id) (MEDIUM)
+### F5 — Local state is keyed by id, not (provider, id) (MEDIUM) · ✅ DONE (#117)
 
 **Problem.** `state/<id>.json`, `keys/<id>/`, `lock/<id>.json` collide across
 providers. `up --id x --provider=hetzner` then `up --id x
@@ -291,7 +322,7 @@ provider-mismatch check* against the existing journal/manifest ("id 'x' is
 already a hetzner cluster — pick a new id or tear it down first"). A full
 re-keying of the directory layout is not worth the migration cost.
 
-### F6 — The journal is crash-*consistent* but nothing ever resumes from it (MEDIUM)
+### F6 — The journal is crash-*consistent* but nothing ever resumes from it (MEDIUM) · ✅ DONE (#120)
 
 **Problem.** Transitions are journaled before provider mutations precisely so
 "a crash is always resumable" (`state.go:5`, `orchestrator.go:111`). But no
@@ -311,7 +342,7 @@ already re-launches workloads on a deployed cluster, document it as the
 "resume" for the streaming phase; (c) garbage-collect journals whose cluster
 has no provider servers during `reap`.
 
-### F7 — `destroyWithRetry` retries instantly, 3×, and reports only the last error (LOW)
+### F7 — `destroyWithRetry` retries instantly, 3×, and reports only the last error (LOW) · ✅ DONE (#118)
 
 **Problem.** `orchestrator.go:482-490`: three back-to-back attempts with no
 delay and no jitter. A rate-limited (429) provider will burn all three
@@ -324,7 +355,7 @@ pattern like "429, 429, 429" vs "500, timeout, 404-now-gone".
 seam change. (`createWithRetry` already does this correctly with
 `provisionRetryDelay` — mirror it.)
 
-### F8 — Journal write failures are silently swallowed in the cluster path (LOW)
+### F8 — Journal write failures are silently swallowed in the cluster path (LOW) · ✅ DONE (#116)
 
 **Problem.** `save := func() { …; _ = o.S.Save(c) }` (`orchestrator.go:157`).
 A broken state dir (permissions, disk full) produces a cluster with **no
@@ -336,7 +367,7 @@ where you later want the journal. The single-node path returns these errors
 provisioning — provider truth still covers teardown), consistent with the
 "cache, not truth" philosophy but no longer silent.
 
-### F9 — The mock provider can't exercise cross-process state logic (LOW, test gap)
+### F9 — The mock provider can't exercise cross-process state logic (LOW, test gap) · ✅ DONE (#119)
 
 **Problem.** Mock state is in-memory per process (`mock.go:18-22, 128`).
 Consequences: `pandion up --provider=mock` then `pandion ls --provider=mock`
@@ -351,7 +382,7 @@ concurrency) all run in-process.
 in-memory default for unit tests. This single change makes F1/F3/F4/F6
 regression-testable offline in `ci_smoke.sh`.
 
-### F10 — No schema version in journal or manifest (LOW, future-proofing)
+### F10 — No schema version in journal or manifest (LOW, future-proofing) · ✅ DONE (#121)
 
 **Problem.** Neither `state.Cluster` (`state.go:36-41`) nor `clusterManifest`
 (`cluster.go:396-401`) carries a version field. Compatibility is already
@@ -362,7 +393,7 @@ guesswork; a field *rename* breaks silently (JSON zero values).
 **Recommendation.** R11: add `"v": 1` to both on write; readers treat absent
 as v0. Two lines now, a migration seam forever.
 
-### F11 — Aux-reap failure leaves an ambiguous "half-down" (INFO)
+### F11 — Aux-reap failure leaves an ambiguous "half-down" (INFO) · ✅ DONE (#118)
 
 **Observation, not a bug:** if `ReapAux` fails after all servers are destroyed,
 `Down` errors out *before* `Store.Close` (`orchestrator.go:474-479`) — correct
@@ -378,11 +409,12 @@ remain". **Recommendation** R12: append "safe to re-run `pandion down --id X`
 ## 5. Idempotency matrix (current behavior)
 
 "Re-run" = running the same command again after success; "crash" = process
-killed midway. ✅ safe/converges · ⚠ partial · ❌ unsafe.
+killed midway. ✅ safe/converges · ⚠ partial · ❌ unsafe. *(Updated to reflect the
+implemented fixes; the `up` and `CreateServer` rows were the original ❌ findings.)*
 
 | Command | Re-run after success | Crash midway | Notes |
 |---|---|---|---|
-| `up --id X` | ❌ duplicates servers (DO/Scaleway) or corrupts journal + may roll back the healthy cluster (Hetzner) — **F1** | ⚠ setup-phase Ctrl+C rolls back cleanly (`cluster.go:581-602`); a hard kill leaves tagged servers recoverable only via `down`/`reap` (journal never read, **F6**) | keys/manifest overwritten before the new run is known-good |
+| `up --id X` | ✅ refused with a fix hint if the id already names a live cluster — the preflight runs under the per-id flock (was ❌ duplicate/orphan/roll-back, **F1**, fixed #117) | ⚠ setup-phase Ctrl+C rolls back cleanly (`cluster.go:581-602`); a hard kill leaves tagged servers, now surfaced by `pandion doctor` (**F6**, #120) and reap-GC'd | preflight refuses before keys/manifest are overwritten |
 | `down --id X` | ✅ re-lists, destroys nothing, verifies, re-reaps aux — fully re-entrant | ✅ journal keeps TEARING_DOWN; re-run converges | leaves keys/lock/logs stale — **F3** |
 | `reap` | ✅ (reuses `Down` per cluster) | ✅ per-cluster granularity; `firstErr` reported, rest continue | plan can go stale between list and confirm — **F4** |
 | `start --id X` | ✅ tmux launch guarded ("a re-start is idempotent", `start.go:58`) | ✅ | fails confusingly on a stale manifest — F3 |
@@ -391,28 +423,26 @@ killed midway. ✅ safe/converges · ⚠ partial · ❌ unsafe.
 | `debug share` / `unshare` | ✅ provision script idempotent (`debugshare.go:152`); unshare of absent share is a no-op message | ✅ | share records are the one artifact `down` cleans |
 | `init` / `login` / `logout` | ✅ keychain set/overwrite; init prompts before reconfigure | ✅ | |
 | provider `DestroyServer` | ✅ contractually, all 6 backends | — | `provider.go:95-97` |
-| provider `CreateServer` | ❌ no idempotency key/uniqueness contract at the seam — name collisions are provider-dependent (Hetzner unique, DO not) | — | root enabler of F1 scenario A |
+| provider `CreateServer` | ⚠ still no idempotency key at the seam, but the `up` preflight (#117) refuses a re-up before any create, so F1 scenario A can no longer happen through the CLI | — | guarded one layer up rather than at the seam |
 
 ---
 
 ## 6. Recommendations, prioritized
 
-| # | Change | Fixes | Effort | Where |
-|---|---|---|---|---|
-| **R1** | `up` existence preflight: refuse when `ListByTag(id)` ≠ ∅ or a live local journal/manifest exists (include provider-mismatch check); scope failure rollback to the servers created by *this run* | F1, F5 | **S–M** | `cmd/pandion/main.go` (runUp), `cluster.go:721-726` |
-| **R2** | Honest TTL semantics: rename copy to "idle power-off", state that billing continues until `down`/`reap`, adjust `--max-cost` and TODO/README wording; print a reap hint at `up` for long TTLs | F2 | **S** | `harden/cloudinit.go` copy, `orchestrator.go` budget messages, README/TODO |
-| **R3** | Clean or tombstone `keys/<id>` + `lock/<id>.json` on verified teardown; manifest loaders fail fast on tombstone; fix the `down` message | F3 | **M** | `runDown`, `loadManifest`, `orchestrator.Down` |
-| **R4** | Per-id advisory flock around mutating commands; rename `internal/lockfile` → `internal/repro` to free the name | F4 | **M** | new `internal/flock`; call sites in cmd/pandion |
-| **R8** | Backoff in `destroyWithRetry` (mirror `provisionRetryDelay`), keep intermediate errors | F7 | **S** | `orchestrator.go:482-490` |
-| **R9** | Warn (once) on failed journal saves in the cluster path | F8 | **S** | `orchestrator.go:157` |
-| **R12** | Append "safe to re-run" to `Down`'s two partial-failure errors | F11 | **S** | `orchestrator.go:460, 469, 476` |
-| **R7** | `pandion doctor` (or `ls --local`): report local-state divergence from provider truth with per-line fix commands; GC orphaned journals during `reap` | F6 | **M** | new cmd; reuses existing loaders |
-| **R10** | Optional file-backed mock state so `ci_smoke.sh` can regression-test F1/F3/F4/F6 offline | F9 | **M** | `internal/provider/mock` |
-| **R11** | `"v": 1` schema version in journal + manifest JSON | F10 | **S** | `state.go`, `cluster.go` |
+| # | Change | Fixes | Effort | Where | Status |
+|---|---|---|---|---|---|
+| **R1** | `up` existence preflight: refuse when `ListByTag(id)` ≠ ∅ or a live local journal/manifest exists (include provider-mismatch check); scope failure rollback to the servers created by *this run* | F1, F5 | **S–M** | `cmd/pandion/main.go` (runUp), `cluster.go:721-726` | ✅ #117 |
+| **R2** | Honest TTL semantics: rename copy to "idle power-off", state that billing continues until `down`/`reap`, adjust `--max-cost` and TODO/README wording; print a reap hint at `up` for long TTLs | F2 | **S** | `harden/cloudinit.go` copy, `orchestrator.go` budget messages, README/TODO | ✅ #117 |
+| **R3** | Clean or tombstone `keys/<id>` + `lock/<id>.json` on verified teardown; manifest loaders fail fast on tombstone; fix the `down` message | F3 | **M** | `runDown`, `loadManifest`, `orchestrator.Down` | ✅ #116 |
+| **R4** | Per-id advisory flock around mutating commands; rename `internal/lockfile` → `internal/repro` to free the name | F4 | **M** | new `internal/flock`; call sites in cmd/pandion | ✅ #116 |
+| **R8** | Backoff in `destroyWithRetry` (mirror `provisionRetryDelay`), keep intermediate errors | F7 | **S** | `orchestrator.go:482-490` | ✅ #118 |
+| **R9** | Warn (once) on failed journal saves in the cluster path | F8 | **S** | `orchestrator.go:157` | ✅ #116 |
+| **R12** | Append "safe to re-run" to `Down`'s two partial-failure errors | F11 | **S** | `orchestrator.go:460, 469, 476` | ✅ #118 |
+| **R7** | `pandion doctor` (or `ls --local`): report local-state divergence from provider truth with per-line fix commands; GC orphaned journals during `reap` | F6 | **M** | new cmd; reuses existing loaders | ✅ #120 (+#122) |
+| **R10** | Optional file-backed mock state so `ci_smoke.sh` can regression-test F1/F3/F4/F6 offline | F9 | **M** | `internal/provider/mock` | ✅ #119 |
+| **R11** | `"v": 1` schema version in journal + manifest JSON | F10 | **S** | `state.go`, `cluster.go` | ✅ #121 |
 
-Suggested order: **R1 + R2 + R3** (they close the three ways money or access
-is silently lost), then **R4 + R8 + R9 + R12** (one small hardening PR), then
-**R7 + R10 + R11** (observability + testability).
+Executed in this order (all merged): **R3 + R4 + R9** with the UX plan (#116); **R1 + R2 + R5** (#117); **R8 + R12** (#118); then **R10** (#119), **R7** (#120), **R11** (#121), and the **R7c + `doctor --json`** follow-ups (#122).
 
 Overlap note: R3 and R4 correspond to items P0.2 and P0.5 of
 `docs/ux-upgrade-plan.md`; this report supplies the state-layer design detail
