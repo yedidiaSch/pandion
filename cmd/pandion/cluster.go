@@ -908,10 +908,10 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		rules := firewall.NFTables(firewall.Spec{
 			AllowDNS: true, SSHFromCIDR: operatorCIDR,
 			WGPort: overlay.DefaultPort, AllowOverlayInput: true,
-			AllowL2Input:   clusterL2 != nil, // accept decapsulated vxlan0 frames
+			AllowL2Input:   clusterL2 != nil,                  // accept decapsulated vxlan0 frames
 			EgressAllowIPs: resolveEgressAllow(p.egressAllow), // egress_allow / security; hostnames resolved (P0-2)
-			BlockMetadata:  p.blockMeta,      // S-F (honors security.block_metadata_service)
-			AuditOnly:      auditFW,          // --firewall-audit: dry-run, log not drop (P2.2)
+			BlockMetadata:  p.blockMeta,                       // S-F (honors security.block_metadata_service)
+			AuditOnly:      auditFW,                           // --firewall-audit: dry-run, log not drop (P2.2)
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {

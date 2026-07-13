@@ -119,8 +119,8 @@ func WithRegionPref(regions ...string) Option {
 // key as the username).
 func New(apiKey string, opts ...Option) *Lambda {
 	l := &Lambda{
-		apiKey:   apiKey,
-		baseURL:  defaultBaseURL,
+		apiKey:      apiKey,
+		baseURL:     defaultBaseURL,
 		http:        &http.Client{Timeout: 30 * time.Second},
 		minGap:      300 * time.Millisecond,
 		maxRetry:    5,
