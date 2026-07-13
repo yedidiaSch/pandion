@@ -29,6 +29,10 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if c.Updated.IsZero() {
 		t.Error("Save should stamp Updated")
 	}
+	// Save stamps the schema version (F10/R11)
+	if c.Version != SchemaVersion {
+		t.Errorf("Save should stamp Version=%d, got %d", SchemaVersion, c.Version)
+	}
 
 	got, err := s.Load("pipeline")
 	if err != nil {
@@ -36,6 +40,9 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 	if got.ID != "pipeline" || got.Provider != "hetzner" || len(got.Nodes) != 2 {
 		t.Fatalf("round-trip mismatch: %+v", got)
+	}
+	if got.Version != SchemaVersion {
+		t.Errorf("loaded Version = %d, want %d", got.Version, SchemaVersion)
 	}
 	if got.Nodes[0].ServerID != "111" || got.Nodes[0].Phase != Running || got.Nodes[1].Phase != Planned {
 		t.Fatalf("node fields lost: %+v", got.Nodes)

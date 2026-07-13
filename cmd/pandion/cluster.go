@@ -395,8 +395,14 @@ type l2Segment struct {
 	Profile string `json:"profile"`
 }
 
+// manifestSchemaVersion is the current manifest schema (F10/R11): stamped on
+// write so a future field rename/migration has a seam. A manifest written before
+// versioning has no "v" key and reads back as 0 (v0).
+const manifestSchemaVersion = 1
+
 // clusterManifest is written to ~/.pandion/keys/<id>/manifest.json at `up`.
 type clusterManifest struct {
+	Version  int            `json:"v"` // on-disk schema version (0 = pre-versioning)
 	ID       string         `json:"id"`
 	Provider string         `json:"provider,omitempty"` // the backend that created it (so `down` needs no --provider)
 	Nodes    []nodeManifest `json:"nodes"`
@@ -429,7 +435,7 @@ func saveManifest(id, providerName string, plans []*nodePlan, seg *l2Segment) er
 // provider) so `attach`/`lockdown`/`down` work for both the single-node and cluster
 // flows — `down` reads the provider from here, so it needs no --provider.
 func writeManifest(id, providerName string, nodes []nodeManifest, seg *l2Segment) error {
-	b, err := json.MarshalIndent(clusterManifest{ID: id, Provider: providerName, Nodes: nodes, L2: seg}, "", "  ")
+	b, err := json.MarshalIndent(clusterManifest{Version: manifestSchemaVersion, ID: id, Provider: providerName, Nodes: nodes, L2: seg}, "", "  ")
 	if err != nil {
 		return err
 	}
