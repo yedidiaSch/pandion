@@ -12,8 +12,8 @@ import (
 func TestResolveEgressAllow(t *testing.T) {
 	// deterministic stub resolver
 	table := map[string][]net.IP{
-		"github.com": {net.ParseIP("140.82.112.3"), net.ParseIP("140.82.112.4")},
-		"dual.example": {net.ParseIP("2606:4700::1"), net.ParseIP("1.2.3.4")}, // v6 dropped, v4 kept
+		"github.com":     {net.ParseIP("140.82.112.3"), net.ParseIP("140.82.112.4")},
+		"dual.example":   {net.ParseIP("2606:4700::1"), net.ParseIP("1.2.3.4")}, // v6 dropped, v4 kept
 		"v6only.example": {net.ParseIP("2606:4700::1")},
 	}
 	lookup := func(h string) ([]net.IP, error) {
@@ -24,16 +24,16 @@ func TestResolveEgressAllow(t *testing.T) {
 	}
 
 	got := resolveEgressAllowWith([]string{
-		"10.0.0.5",           // bare IPv4 → kept
-		"192.168.1.0/24",     // IPv4 CIDR → kept
-		"github.com",         // hostname → two IPv4s
-		"dual.example",       // mixed → only the IPv4
-		"v6only.example",     // no IPv4 → dropped (warned)
-		"nope.invalid",       // unresolvable → dropped (warned)
-		"  10.0.0.5  ",       // dup after trim
-		"::1",                // IPv6 literal → dropped
-		"2001:db8::/32",      // IPv6 CIDR → dropped
-		"",                   // empty → skipped
+		"10.0.0.5",       // bare IPv4 → kept
+		"192.168.1.0/24", // IPv4 CIDR → kept
+		"github.com",     // hostname → two IPv4s
+		"dual.example",   // mixed → only the IPv4
+		"v6only.example", // no IPv4 → dropped (warned)
+		"nope.invalid",   // unresolvable → dropped (warned)
+		"  10.0.0.5  ",   // dup after trim
+		"::1",            // IPv6 literal → dropped
+		"2001:db8::/32",  // IPv6 CIDR → dropped
+		"",               // empty → skipped
 	}, lookup)
 
 	// sorted + de-duplicated, IPv4-only

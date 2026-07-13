@@ -25,7 +25,7 @@ import (
 type TransientProvisionError struct{ Err error }
 
 func (e *TransientProvisionError) Error() string { return e.Err.Error() }
-func (e *TransientProvisionError) Unwrap() error  { return e.Err }
+func (e *TransientProvisionError) Unwrap() error { return e.Err }
 
 // IsTransientProvision reports whether err (or a wrapped cause) is a transient
 // provisioning failure worth relaunching a fresh instance for.
