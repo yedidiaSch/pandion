@@ -41,10 +41,21 @@ func TestSelectSizes_CheapestFirst_FiltersSpecRegionGPU(t *testing.T) {
 }
 
 func TestOrderRegions_PreferredFirst(t *testing.T) {
-	got := orderRegions([]string{"nyc3", "fra1", "sfo3"}, []string{"fra1", "lon1"})
+	got := orderRegions([]string{"nyc3", "fra1", "sfo3"}, []string{"fra1", "lon1"}, false)
 	want := []string{"fra1", "nyc3", "sfo3"} // fra1 first (preferred+present), lon1 ignored (absent)
 	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("orderRegions = %v, want %v", got, want)
+	}
+}
+
+// strict (explicit --region) must not append other regions as fallback.
+func TestOrderRegions_StrictOnlyPreferred(t *testing.T) {
+	all := []string{"nyc3", "fra1", "sfo3"}
+	if got := orderRegions(all, []string{"fra1"}, true); len(got) != 1 || got[0] != "fra1" {
+		t.Fatalf("strict orderRegions(fra1) = %v, want [fra1]", got)
+	}
+	if got := orderRegions(all, []string{"lon1"}, true); len(got) != 0 {
+		t.Fatalf("strict orderRegions(absent) = %v, want empty", got)
 	}
 }
 

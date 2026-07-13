@@ -52,17 +52,26 @@ func selectTypes(types []typeInfo, minCores, minRAMMB int) []typeInfo {
 	return ok
 }
 
-// orderRegions puts preferred regions first (in the given order), then the rest.
-func orderRegions(all, preferred []string) []string {
+// orderRegions puts preferred regions first (in the given order). When strict is
+// false it appends every other region as availability fallback; when strict is
+// true it returns ONLY the preferred regions that exist — so an explicit
+// --region is never silently satisfied in a different region (widen with a
+// comma-separated list).
+func orderRegions(all, preferred []string, strict bool) []string {
 	seen := map[string]bool{}
+	exists := make(map[string]bool, len(all))
+	for _, a := range all {
+		exists[a] = true
+	}
 	var out []string
 	for _, p := range preferred {
-		for _, a := range all {
-			if a == p && !seen[a] {
-				out = append(out, a)
-				seen[a] = true
-			}
+		if exists[p] && !seen[p] {
+			out = append(out, p)
+			seen[p] = true
 		}
+	}
+	if strict {
+		return out
 	}
 	for _, a := range all {
 		if !seen[a] {

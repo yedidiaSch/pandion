@@ -210,7 +210,7 @@ func runUp(args []string) {
 	syncMode := fs.String("sync-mode", "source", "workspace sync: source (build on node) | binaries (upload prebuilt as-is, no .gitignore filtering, no build)")
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	size := fs.String("size", "", "provider server type/size (e.g. cpx21); default: `pandion init` default, else auto-select")
-	region := fs.String("region", "", "preferred region/location, comma-separated fallbacks (e.g. nbg1,fsn1); default: config default, else provider's choice")
+	region := fs.String("region", "", "region/location; comma-separated to allow fallbacks (e.g. nbg1,fsn1). An explicit --region is honored strictly — it won't silently land in another region on a capacity blip. Default: config default, else provider's choice")
 	gpu := fs.String("gpu", "", "provision a GPU node: MODEL[:COUNT], e.g. a100 or a100:2 (the provider must offer GPUs; see `pandion list-gpus`)")
 	gpuIdleUtil := fs.Int("gpu-idle-util", harden.DefaultGPUIdleUtil, "GPU node: utilization %% at/below which the GPU counts as idle for the dead-man's-switch (so headless jobs keep the node alive)")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")

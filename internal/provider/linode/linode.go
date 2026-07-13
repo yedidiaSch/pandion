@@ -160,10 +160,11 @@ func (l *Linode) CreateServer(ctx context.Context, spec provider.ServerSpec) (pr
 		return provider.Server{}, err
 	}
 	pref := l.regionPref
-	if len(spec.RegionPref) > 0 {
+	strictRegion := len(spec.RegionPref) > 0
+	if strictRegion {
 		pref = spec.RegionPref
 	}
-	regions = orderRegions(regions, pref)
+	regions = orderRegions(regions, pref, strictRegion)
 
 	var authKeys []string
 	if spec.LoginPubKey != "" {
@@ -206,6 +207,11 @@ func (l *Linode) CreateServer(ctx context.Context, spec provider.ServerSpec) (pr
 			}
 			return l.waitRunning(ctx, inst.ID, spec.ClusterID)
 		}
+	}
+	if strictRegion {
+		return provider.Server{}, fmt.Errorf(
+			"no capacity for the requested type in region(s) %s — retry, widen with a comma-separated --region, or omit --region to search all; last error: %v",
+			strings.Join(spec.RegionPref, ","), lastErr)
 	}
 	return provider.Server{}, fmt.Errorf("no available type/region for spec; last error: %v", lastErr)
 }
