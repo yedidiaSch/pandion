@@ -864,8 +864,13 @@ func runReap(args []string) {
 	plan, err := o.ReapPlan(context.Background(), *olderThan)
 	must(err)
 	if len(plan) == 0 {
+		// nothing to destroy, but stale local journals for this provider (clusters
+		// already gone) can still be GC'd (R7c).
+		gc := gcOrphanJournals(p)
 		if *jsonOut {
 			must(renderReapJSON(os.Stdout, p.Name(), plan, 0))
+		} else if gc > 0 {
+			fmt.Printf("reap: no clusters to remove; cleared %d orphaned local state record(s).\n", gc)
 		} else {
 			fmt.Println("reap: no Pandion clusters to remove.")
 		}
@@ -910,6 +915,12 @@ func runReap(args []string) {
 	// (no-op for reaped clusters this laptop never created).
 	for _, c := range plan {
 		tombstoneManifest(c.ClusterID)
+	}
+	// GC orphaned journals for THIS provider: local state whose cluster no longer
+	// exists at the provider (R7c). reap already holds provider truth, so it is the
+	// natural place. Journals for other providers are left alone.
+	if gc := gcOrphanJournals(p); gc > 0 && !*jsonOut {
+		fmt.Printf("cleared %d orphaned local state record(s) (no servers at %s).\n", gc, p.Name())
 	}
 	if *jsonOut {
 		must(renderReapJSON(os.Stdout, p.Name(), plan, n))
@@ -1771,6 +1782,45 @@ func preflightNoExistingCluster(p provider.Provider, id, provName string) {
 		fmt.Fprintln(os.Stderr, msg)
 		os.Exit(codeUsage)
 	}
+}
+
+// gcOrphanJournals removes local state journals for p's provider whose cluster no
+// longer exists at the provider (R7c) — reap is the natural caller since it holds
+// provider truth. It only touches this provider's journals, skips any id whose
+// per-id flock is held (a concurrent up/down owns it), and tombstones the manifest
+// so reconnect commands still fast-fail. Returns the number cleared.
+func gcOrphanJournals(p provider.Provider) int {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	servers, err := p.ListAllTagged(ctx)
+	cancel()
+	if err != nil {
+		return 0 // couldn't establish truth — never GC on uncertainty
+	}
+	live := map[string]bool{}
+	for _, s := range servers {
+		live[s.ClusterID] = true
+	}
+	st := mustStore()
+	dir := filepath.Join(pandionDir(), "state")
+	_ = os.MkdirAll(dir, 0o755)
+	n := 0
+	for _, id := range localClusterIDs() {
+		c, err := st.Load(id)
+		if err != nil || c.Provider != p.Name() || live[id] {
+			continue
+		}
+		// don't race a concurrent op on this id: if the flock is held, skip it.
+		lk, lerr := flock.TryLock(filepath.Join(dir, id+".lock"))
+		if lerr != nil {
+			continue
+		}
+		if st.Close(id) == nil {
+			tombstoneManifest(id)
+			n++
+		}
+		lk.Unlock()
+	}
+	return n
 }
 
 // localClusterIDs returns the cluster ids that still have a local state journal
