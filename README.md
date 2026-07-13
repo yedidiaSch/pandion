@@ -120,6 +120,28 @@ cosign verify-blob \
 sha256sum -c checksums.txt --ignore-missing
 ```
 
+### Shell completion
+
+Pandion generates completion scripts for bash, zsh, and fish (command- and
+flag-aware). Install the one for your shell:
+
+```bash
+pandion completion bash | sudo tee /etc/bash_completion.d/pandion    # bash
+pandion completion zsh  > "${fpath[1]}/_pandion"                     # zsh (then restart)
+pandion completion fish > ~/.config/fish/completions/pandion.fish    # fish
+```
+
+Run `pandion completion <shell>` on a terminal and it also prints the matching
+install one-liner (on stderr, so redirecting stdout to a file stays clean).
+
+## Documentation
+
+- [Getting started](docs/getting-started.md) — install → configure → up → down.
+- [cluster.yaml reference](docs/cluster-yaml.md) — every field (generated from the schema).
+- [Reference](docs/reference.md) — env vars, exit codes, config precedence, `~/.pandion` layout.
+- [Troubleshooting](docs/troubleshooting.md) — common errors and fixes.
+- [Examples](examples/) — single-node, Docker engine, GPU, and Python `setup:` workloads.
+
 ## Quickstart
 
 The quickest way to get set up is the interactive wizard — it picks a default provider, stores

@@ -10,7 +10,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -85,7 +84,7 @@ type shareRecord struct {
 //
 //	pandion debug share --id ID [--node N] (--pid P | --program NAME) [--expires 2h]
 func runDebugShare(args []string) {
-	fs := flag.NewFlagSet("debug share", flag.ExitOnError)
+	fs := newCmdFlagSet("debug share")
 	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node name (default: the first node)")
 	pid := fs.Int("pid", 0, "the running PID to grant (required, or use --program)")
@@ -104,6 +103,7 @@ func runDebugShare(args []string) {
 
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "debug share: no manifest for %q: %v\n", *id, err)
 		os.Exit(3)
 	}
@@ -179,12 +179,15 @@ func runDebugShare(args []string) {
 	audit.Event("debug.share", "id", *id, "node", target.Name, "share", shareID,
 		"expiry", expiry.Format(time.RFC3339), "pid", targetPID)
 
-	fmt.Printf("shared debug of PID %d on %q/%s (expires %s):\n\n", targetPID, *id, target.Name,
-		expiry.Format("2006-01-02 15:04 MST"))
-	fmt.Println(token)
-	fmt.Println("\n# send that token to your teammate. they run:")
-	fmt.Println("#   pandion debug join <token>")
-	fmt.Printf("# revoke any time:  pandion debug unshare --id %s --share %s   (or --all)\n", *id, shareID)
+	// The token embeds a private SSH key + WireGuard config — it IS the access.
+	// Keep stdout token-ONLY (so `pandion debug share … | pbcopy` is script-safe),
+	// and put the secret warning + instructions on stderr (P3.4).
+	exp := expiry.Format("2006-01-02 15:04 MST")
+	fmt.Fprintf(os.Stderr, "⚠ this token IS the access — anyone holding it can attach to PID %d on %q/%s until %s.\n", targetPID, *id, target.Name, exp)
+	fmt.Fprintln(os.Stderr, "  share it over a PRIVATE channel (not email/Slack in the clear); it can't be rotated, only revoked.")
+	fmt.Fprintln(os.Stderr, "  the teammate runs:  pandion debug join <token>")
+	fmt.Fprintf(os.Stderr, "  revoke any time:    pandion debug unshare --id %s --share %s   (or --all)\n\n", *id, shareID)
+	fmt.Println(token) // stdout: the token, and nothing else
 }
 
 // resolveTargetPID returns the PID to grant: the explicit --pid, else the newest
@@ -259,7 +262,7 @@ func runDebugJoin(args []string) {
 		os.Exit(4)
 	}
 
-	dir := filepath.Join(envHome(), ".pandion", "guest", bundle.ClusterID+"-"+bundle.Node)
+	dir := filepath.Join(pandionDir(), "guest", bundle.ClusterID+"-"+bundle.Node)
 	must(os.MkdirAll(dir, 0o700))
 	keyPath := filepath.Join(dir, "id_ed25519")
 	khPath := filepath.Join(dir, "known_hosts")
@@ -319,7 +322,7 @@ func buildServerAttachConfig(b shareBundle, keyPath, khPath string) map[string]a
 
 // runDebugUnshare revokes one or all shares for a cluster (key + PID + WG peer + record).
 func runDebugUnshare(args []string) {
-	fs := flag.NewFlagSet("debug unshare", flag.ExitOnError)
+	fs := newCmdFlagSet("debug unshare")
 	id := fs.String("id", "", "cluster id (required)")
 	share := fs.String("share", "", "share id to revoke")
 	all := fs.Bool("all", false, "revoke every share for the cluster")
@@ -392,7 +395,7 @@ func operatorConn(id string, node nodeManifest) (gossh.Signer, gossh.PublicKey) 
 }
 
 func loadLoginSigner(id string) (gossh.Signer, error) {
-	p := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
+	p := filepath.Join(pandionDir(), "keys", id, "login_ed25519")
 	pem, err := os.ReadFile(p)
 	if err != nil {
 		return nil, fmt.Errorf("cannot read login key %s: %w", p, err)
@@ -515,7 +518,7 @@ func unpackToken(tok string) (shareBundle, error) {
 // --- share records + guest-IP allocation ---
 
 func sharesDir(id string) string {
-	return filepath.Join(envHome(), ".pandion", "keys", id, "shares")
+	return filepath.Join(pandionDir(), "keys", id, "shares")
 }
 func shareRecordPath(id, shareID string) string {
 	return filepath.Join(sharesDir(id), shareID+".json")

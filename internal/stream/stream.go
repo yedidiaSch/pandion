@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 )
 
 // palette of ANSI foreground colors cycled per node.
@@ -59,13 +60,29 @@ func (p *Printer) logFor(node string) *os.File {
 	if err := os.MkdirAll(p.logDir, 0o700); err != nil {
 		return nil
 	}
-	f, err := os.OpenFile(filepath.Join(p.logDir, node+".log"),
-		os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	path := filepath.Join(p.logDir, node+".log")
+	// Rotate before opening if the log has grown past the cap (keep one generation),
+	// then APPEND — so an `attach` you run to inspect a crash no longer TRUNCATES the
+	// evidence the previous session captured (P4.3).
+	rotateIfLarge(path)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil
 	}
+	// session separator so re-attached output is distinguishable from the last run.
+	fmt.Fprintf(f, "----- attached %s -----\n", time.Now().UTC().Format(time.RFC3339))
 	p.logs[node] = f
 	return f
+}
+
+// maxLogBytes caps a per-node log before rotation. One generation is kept
+// (<node>.log.1); older output is discarded.
+const maxLogBytes = 10 << 20 // 10 MiB
+
+func rotateIfLarge(path string) {
+	if fi, err := os.Stat(path); err == nil && fi.Size() > maxLogBytes {
+		_ = os.Rename(path, path+".1")
+	}
 }
 
 // Print renders one line from node's stdout ("out") or stderr ("err").

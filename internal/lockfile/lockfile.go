@@ -36,9 +36,18 @@ type Lock struct {
 	Nodes          []NodeLock `json:"nodes"`
 }
 
+// base is the Pandion state dir: $PANDION_HOME (replaces ~/.pandion, P2.5) or
+// <home>/.pandion.
+func base(home string) string {
+	if h := strings.TrimSpace(os.Getenv("PANDION_HOME")); h != "" {
+		return h
+	}
+	return filepath.Join(home, ".pandion")
+}
+
 // Path is ~/.pandion/lock/<id>.json.
 func Path(home, id string) string {
-	return filepath.Join(home, ".pandion", "lock", id+".json")
+	return filepath.Join(base(home), "lock", id+".json")
 }
 
 // Save writes the lock (0600, creating the dir).

@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -20,6 +21,7 @@ import (
 	"time"
 
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 
 	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/config"
@@ -399,10 +401,15 @@ type clusterManifest struct {
 	Provider string         `json:"provider,omitempty"` // the backend that created it (so `down` needs no --provider)
 	Nodes    []nodeManifest `json:"nodes"`
 	L2       *l2Segment     `json:"l2,omitempty"`
+	// DestroyedAt tombstones a torn-down cluster (RFC3339). `down`/`reap` set it
+	// instead of deleting the manifest so post-mortem logs stay reachable and every
+	// reconnect command (attach/ssh/start/lockdown/…) fast-fails with a clear
+	// "was torn down" instead of hanging against dead IPs. See loadManifest.
+	DestroyedAt string `json:"destroyed_at,omitempty"`
 }
 
 func manifestPath(id string) string {
-	return filepath.Join(envHome(), ".pandion", "keys", id, "manifest.json")
+	return filepath.Join(pandionDir(), "keys", id, "manifest.json")
 }
 
 func saveManifest(id, providerName string, plans []*nodePlan, seg *l2Segment) error {
@@ -468,6 +475,23 @@ func l2HostAddr(subnet string, h int) (ipOnly, withPrefix string) {
 	return ip, fmt.Sprintf("%s/%d", ip, ones)
 }
 
+// tornDownError is returned by loadManifest for a tombstoned (already destroyed)
+// cluster. Reconnect commands detect it (errors.As) to fast-fail with a clear
+// message and exit codeNotFound instead of dialing dead IPs.
+type tornDownError struct {
+	id   string
+	when string // RFC3339 destroyed_at, verbatim from the manifest
+}
+
+func (e *tornDownError) Error() string {
+	when := e.when
+	if t, err := time.Parse(time.RFC3339, e.when); err == nil {
+		when = t.Local().Format("2006-01-02 15:04")
+	}
+	return fmt.Sprintf("cluster %q was torn down on %s; nothing to connect to (logs kept in %s)",
+		e.id, when, filepath.Join(pandionDir(), "logs", e.id))
+}
+
 func loadManifest(id string) (*clusterManifest, error) {
 	b, err := os.ReadFile(manifestPath(id))
 	if err != nil {
@@ -477,7 +501,43 @@ func loadManifest(id string) (*clusterManifest, error) {
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
+	if m.DestroyedAt != "" {
+		return nil, &tornDownError{id: id, when: m.DestroyedAt}
+	}
 	return &m, nil
+}
+
+// bailIfTornDown fast-fails a reconnect command when loadManifest reports the
+// cluster was already torn down: it prints the tombstone message and exits
+// codeNotFound. For any other (or nil) error it returns, leaving the caller's own
+// error handling intact.
+func bailIfTornDown(err error) {
+	var td *tornDownError
+	if errors.As(err, &td) {
+		fmt.Fprintln(os.Stderr, td.Error())
+		os.Exit(codeNotFound)
+	}
+}
+
+// tombstoneManifest marks a cluster's manifest destroyed (keeping the file and the
+// post-mortem logs) so later reconnect attempts fail fast. A missing manifest is a
+// no-op — nothing to tombstone. Called on a successful down/reap.
+func tombstoneManifest(id string) {
+	b, err := os.ReadFile(manifestPath(id))
+	if err != nil {
+		return // no local manifest (e.g. reaped a cluster this laptop never created)
+	}
+	var m clusterManifest
+	if err := json.Unmarshal(b, &m); err != nil {
+		return
+	}
+	if m.DestroyedAt != "" {
+		return // already tombstoned
+	}
+	m.DestroyedAt = time.Now().UTC().Format(time.RFC3339)
+	if out, err := json.MarshalIndent(m, "", "  "); err == nil {
+		_ = os.WriteFile(manifestPath(id), out, 0o600)
+	}
 }
 
 // upClusterHetzner provisions a hardened N-node cluster and forms the WireGuard
@@ -543,7 +603,7 @@ func clusterWantsGPU(cl *config.Cluster) bool {
 	return false
 }
 
-func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) {
+func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string, jsonOut bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	specs := make([]orchestrator.NodeSpec, len(cl.Nodes))
@@ -559,6 +619,10 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string) 
 	}
 	nodes, est, err := o.PlanUp(ctx, specs, windows)
 	must(err)
+	if jsonOut {
+		must(renderDryRunJSON(os.Stdout, o.P.Name(), id, nodes, est))
+		return
+	}
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
@@ -668,7 +732,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 		plans[i] = &nodePlan{name: n.Name, host: host, wg: wg, overlayIP: oip, run: n.Run,
 			sync: resolveSync(n, cl.Defaults), runUser: runUser,
-			caps: capsFor(n.NeedsCaps, n.PrivilegedPorts), pkgs: pkgs, image: eff.Image,
+			caps: capsFor(cl.NodeCaps(n), n.PrivilegedPorts), pkgs: pkgs, image: eff.Image,
 			egressAllow: eff.EgressAllow, blockMeta: eff.BlockMetadata,
 			engine: eff.Engine, containerImg: eff.ContainerImage, setup: eff.Setup}
 
@@ -738,18 +802,22 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	ensureCloudFirewall(ctx, o, id)
 
 	// persist keys for later attach/debug
-	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)
+	keyDir := filepath.Join(pandionDir(), "keys", id)
 	must(login.Save(keyDir, "login_ed25519"))
 
 	// wait for each node's cloud-init to finish (toolchain + wg iface up), pinned
-	fmt.Println("waiting for cloud-init on all nodes...")
+	statusln("waiting for cloud-init on all nodes...")
 	for _, p := range plans {
 		onAttempt := func(n int, reason string) { fmt.Printf("  %s attempt %d: %s\n", p.name, n, reason) }
-		if _, err := envssh.RunWithRetry(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-			"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
-			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, err)
+		stopHB := startHeartbeat("cloud-init readiness on " + p.name)
+		_, cierr := envssh.RunWithRetry(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
+			"cloud-init status --wait || true", 5*time.Second, onAttempt)
+		stopHB()
+		if cierr != nil {
+			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, cierr)
+			stageDeadlineHint("cloud-init readiness", cierr, prov, id)
 			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
-			return
+			os.Exit(codeInfraDegraded)
 		}
 	}
 
@@ -773,7 +841,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if err := runSetup(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, p.setup); err != nil {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
 			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
-			os.Exit(1)
+			os.Exit(codeInfraDegraded)
 		}
 	}
 
@@ -784,6 +852,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fail := func(err error) {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
 			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+			os.Exit(codeInfraDegraded) // build-window failure left the cluster up — don't lie with exit 0
 		}
 		if p.engine == "docker" {
 			fmt.Printf("[%s] pulling image %s...\n", p.name, p.containerImg)
@@ -855,7 +924,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		cmds = append(cmds, fmt.Sprintf("wg set wg0 peer %s allowed-ips %s/32", opWG.Public, operatorOverlayIP))
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, joinAmp(cmds)); err != nil {
 			fmt.Fprintf(os.Stderr, "mesh setup failed on %s: %v (cluster left up)\n", p.name, err)
-			return
+			os.Exit(codeInfraDegraded)
 		}
 	}
 
@@ -875,7 +944,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			}
 			if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, joinAmp(cmds)); err != nil {
 				fmt.Fprintf(os.Stderr, "L2 FDB setup failed on %s: %v (cluster left up)\n", p.name, err)
-				return
+				os.Exit(codeInfraDegraded)
 			}
 		}
 	}
@@ -986,6 +1055,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	}
 	fmt.Printf("operator overlay config: %s\n", confPath)
 	fmt.Printf("  join: sudo wg-quick up %s   (reach nodes at 10.99.0.1..%d)\n", confPath, len(plans))
+	// surface the silent idle-poweroff default (P2.6): nodes power themselves off.
+	statusln("idle poweroff: nodes power off after their idle TTL (default " + shortDur(harden.DefaultIdleTTL) + "; set per node with `ttl:`, or disable with --no-ttl).")
 
 	// run per-node commands with MULTIPLEXED streaming (M4): color-coded, prefixed
 	// by node, tee'd to per-node logs. From here Ctrl+C detaches (streaming=true),
@@ -1000,10 +1071,16 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fmt.Printf("  teardown: pandion down --provider=%s --id %s\n", prov, id)
 		return
 	}
-	streamCluster(streamCtx, id, plans, login)
+	code := streamCluster(streamCtx, id, plans, login)
 
 	audit.Event("up.complete", "id", id, "provider", prov, "nodes", len(plans))
 	fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+	// A crashed workload (or a failed launch) must not exit 0 — mirror `pandion
+	// ssh -- cmd` and propagate the worst node's status so `up … && deploy` stops.
+	// A clean run or a Ctrl+C detach returns 0.
+	if code != 0 {
+		os.Exit(code)
+	}
 }
 
 // streamCluster runs each node's command concurrently and multiplexes output.
@@ -1034,21 +1111,67 @@ func launchRun(ctx context.Context, addr string, signer gossh.Signer, pinned gos
 	return nil
 }
 
+// exitAggregator tracks the worst (highest) workload exit code seen across the
+// streamed nodes — 0 means every workload exited cleanly or the user detached.
+// It is safe for the per-node streaming goroutines to call concurrently.
+type exitAggregator struct {
+	mu   sync.Mutex
+	code int
+}
+
+func (a *exitAggregator) record(c int) {
+	a.mu.Lock()
+	if c > a.code {
+		a.code = c
+	}
+	a.mu.Unlock()
+}
+
+func (a *exitAggregator) worst() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.code
+}
+
+// parseExitMarker recognizes the `__pandion_exit__ N` sentinel a finished workload
+// appends to its run log and returns its exit code. ok is false for any other log
+// line. A malformed/absent code parses as a generic failure (codeError) rather
+// than a silent 0, so a corrupted marker still surfaces as non-zero.
+func parseExitMarker(line string) (code int, ok bool) {
+	raw, ok := strings.CutPrefix(line, runExitMarker)
+	if !ok {
+		return 0, false
+	}
+	raw = strings.TrimSpace(raw)
+	if raw == "0" {
+		return 0, true
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n == 0 {
+		return codeError, true
+	}
+	return n, true
+}
+
 // tailLog streams a node's run log (multiplexed) until ctx is cancelled (detach)
 // or the workload exits. On exit it reports the code — a non-zero code is a
 // crash, and the node is left up for GDB/SSH (§5) — then stops tailing this node.
-func tailLog(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, node string, printer *stream.Printer) {
+// It returns the workload's exit code (0 on a clean exit or on detach) so callers
+// can propagate a crash as a non-zero process status (mirrors `pandion ssh`).
+func tailLog(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, node string, printer *stream.Printer) int {
 	nctx, ncancel := context.WithCancel(ctx)
 	defer ncancel()
 	var exited bool
+	var exitCode int
 	err := envssh.Stream(nctx, addr, "root", signer, pinned, "tail -n +1 -F "+runLogPath,
 		func(s, line string) {
-			if code, ok := strings.CutPrefix(line, runExitMarker); ok {
+			if code, ok := parseExitMarker(line); ok {
 				exited = true
-				if code = strings.TrimSpace(code); code == "0" {
+				exitCode = code
+				if code == 0 {
 					printer.Print(node, "out", "process exited cleanly (code 0)")
 				} else {
-					printer.Print(node, "err", "process exited (code "+code+") — node left up for GDB/SSH")
+					printer.Print(node, "err", fmt.Sprintf("process exited (code %d) — node left up for GDB/SSH", code))
 				}
 				ncancel() // workload is done; unwind this node's stream
 				return
@@ -1058,9 +1181,13 @@ func tailLog(ctx context.Context, addr string, signer gossh.Signer, pinned gossh
 	if err != nil && ctx.Err() == nil && !exited {
 		printer.Print(node, "err", "log stream ended: "+err.Error())
 	}
+	return exitCode
 }
 
-func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *sshkeys.KeyPair) {
+// streamCluster launches and multiplexes the run commands, returning the worst
+// workload exit code (0 = all clean, or the user detached) so `up` can exit with
+// a crashed workload's own status instead of a misleading 0.
+func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *sshkeys.KeyPair) int {
 	var runnable []*nodePlan
 	for _, p := range plans {
 		if strings.TrimSpace(p.run) != "" {
@@ -1068,7 +1195,7 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		}
 	}
 	if len(runnable) == 0 {
-		return
+		return 0
 	}
 
 	// launch each command in a detached tmux session (survives Ctrl+C) teeing to
@@ -1083,25 +1210,27 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 		}
 		if err := launchRun(ctx, p.ip+":22", login.Signer, p.host.Public, runCmd); err != nil {
 			fmt.Fprintf(os.Stderr, "launch on %s failed: %v\n", p.name, err)
-			return
+			return codeInfraDegraded
 		}
 	}
 
-	logDir := filepath.Join(envHome(), ".pandion", "logs", id)
+	logDir := filepath.Join(pandionDir(), "logs", id)
 	printer := stream.NewPrinter(os.Stdout, logDir, colorEnabled())
 	defer printer.Close()
-	fmt.Printf("streaming %d node command(s) (Ctrl+C detaches; reattach: pandion attach --id %s)\n", len(runnable), id)
-	fmt.Println("----------------------------------------------------------------")
+	statusf("streaming %d node command(s) (Ctrl+C detaches; reattach: pandion attach --id %s)\n", len(runnable), id)
+	statusln("----------------------------------------------------------------")
 
 	var wg sync.WaitGroup
+	var agg exitAggregator
 	for _, p := range runnable {
 		wg.Add(1)
 		go func(p *nodePlan) {
 			defer wg.Done()
-			tailLog(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, printer)
+			agg.record(tailLog(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, printer))
 		}(p)
 	}
 	wg.Wait()
+	return agg.worst()
 }
 
 // attachCluster reconnects to a running cluster's streams from its persisted
@@ -1110,9 +1239,10 @@ func streamCluster(ctx context.Context, id string, plans []*nodePlan, login *ssh
 func attachCluster(id string) error {
 	man, err := loadManifest(id)
 	if err != nil {
+		bailIfTornDown(err)
 		return fmt.Errorf("no manifest for %q (is the id correct? manifest lives in ~/.pandion/keys/%s/): %w", id, id, err)
 	}
-	pemPath := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
+	pemPath := filepath.Join(pandionDir(), "keys", id, "login_ed25519")
 	pem, err := os.ReadFile(pemPath)
 	if err != nil {
 		return fmt.Errorf("read login key %s: %w", pemPath, err)
@@ -1129,7 +1259,7 @@ func attachCluster(id string) error {
 	go func() { <-sig; fmt.Println("\n^C — detaching; cluster left running."); cancel() }()
 	defer signal.Stop(sig)
 
-	printer := stream.NewPrinter(os.Stdout, filepath.Join(envHome(), ".pandion", "logs", id), colorEnabled())
+	printer := stream.NewPrinter(os.Stdout, filepath.Join(pandionDir(), "logs", id), colorEnabled())
 	defer printer.Close()
 	fmt.Printf("attaching to %d node(s) of cluster %q (Ctrl+C detaches)...\n", len(man.Nodes), id)
 	fmt.Println("----------------------------------------------------------------")
@@ -1151,7 +1281,16 @@ func attachCluster(id string) error {
 	return nil
 }
 
-// colorEnabled reports whether to colorize output (respects NO_COLOR).
+// colorEnabled reports whether to colorize console output. ANSI is emitted only
+// when NO_COLOR is unset AND stdout is a real terminal (P1.4) — so piping `up` to
+// a file or through a pager captures clean text, not escape codes. The stream-log
+// files are already teed raw; this governs only the console writer.
 func colorEnabled() bool {
-	return os.Getenv("NO_COLOR") == ""
+	return colorEnabledFor(os.Getenv("NO_COLOR"), term.IsTerminal(int(os.Stdout.Fd())))
+}
+
+// colorEnabledFor is the pure predicate behind colorEnabled, split out so it can be
+// unit-tested without a real terminal.
+func colorEnabledFor(noColor string, stdoutIsTTY bool) bool {
+	return noColor == "" && stdoutIsTTY
 }

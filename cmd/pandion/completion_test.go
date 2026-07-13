@@ -16,7 +16,7 @@ func TestCompletionScripts_ContainCommandsAndProviders(t *testing.T) {
 		{"zsh", zshCompletion()},
 		{"fish", fishCompletion()},
 	} {
-		for _, cmd := range completionCommands {
+		for _, cmd := range registeredCommandNames() {
 			if !strings.Contains(tc.script, cmd) {
 				t.Errorf("%s completion missing subcommand %q", tc.name, cmd)
 			}

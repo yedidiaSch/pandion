@@ -1,0 +1,27 @@
+# Pandion cluster — starter topology. Edit, then:
+#   pandion validate -f cluster.yaml     # check it against the schema
+#   pandion up -f cluster.yaml           # provision, sync, build, and run
+#   pandion down --id my-cluster         # tear it all down
+#
+# Docs: docs/cluster-yaml.md   ·   more examples: examples/
+apiVersion: pandion/v1
+name: my-cluster                 # cluster id (lowercase, digits, '-'); also the default --id
+
+# Applied to every node unless the node overrides it.
+defaults:
+  # sync a local directory to each node and build it there (source mode).
+  sync:
+    path: .                      # local dir to upload (this directory)
+    build: make                  # build command run on each node after sync (or remove)
+  # toolchain:
+  #   packages: [libzmq3-dev]    # extra apt packages added to the C++ toolchain
+
+# Each node is one hardened cloud host. Node IPs are injected as environment
+# variables named $PANDION_<NODE>_IP (uppercased, '-' -> '_'), e.g. the worker
+# below reaches the server via $PANDION_SERVER_IP.
+nodes:
+  - name: server
+    run: ./server                # command to run (leave off for a deploy-only node)
+
+  - name: worker
+    run: ./worker $PANDION_SERVER_IP

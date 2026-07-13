@@ -8,12 +8,15 @@ package config
 import (
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
 	"gopkg.in/yaml.v3"
 )
+
+//go:generate go run ./gen
 
 //go:embed schema.json
 var schemaJSON []byte
@@ -109,6 +112,34 @@ type Security struct {
 	EncryptVolumes        *bool    `yaml:"encrypt_volumes"`
 	BlockMetadataService  *bool    `yaml:"block_metadata_service"`
 	AuditLog              *bool    `yaml:"audit_log"`
+	// Capabilities are added back on top of the drop-all default, alongside the
+	// node-level needs_caps (they mean the same thing — extra ambient caps).
+	Capabilities []string `yaml:"capabilities"`
+}
+
+// NodeCaps returns the capabilities to grant a node on top of the drop-all
+// default: the node's needs_caps plus any security.capabilities from the node and
+// the cluster defaults (deduped, order-preserving). This is what makes
+// security.capabilities actually take effect (rather than validate-and-ignore).
+func (c *Cluster) NodeCaps(n Node) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(caps []string) {
+		for _, cap := range caps {
+			if cap != "" && !seen[cap] {
+				seen[cap] = true
+				out = append(out, cap)
+			}
+		}
+	}
+	add(n.NeedsCaps)
+	if n.Sec != nil {
+		add(n.Sec.Capabilities)
+	}
+	if c.Defaults.Sec != nil {
+		add(c.Defaults.Sec.Capabilities)
+	}
+	return out
 }
 
 // Lifecycle mirrors the session/teardown defaults.
@@ -324,7 +355,13 @@ func Validate(data []byte) error {
 		return fmt.Errorf("compile schema: %w", err)
 	}
 	if err := sch.Validate(raw); err != nil {
-		return err // jsonschema.ValidationError has a detailed message
+		// Translate the validator's JSON-pointer output into YAML line/column +
+		// dotted paths + "did you mean" suggestions (P2.1); fall back to the raw
+		// message if translation somehow doesn't apply.
+		if se := translateSchemaError(data, err); se != nil {
+			return se
+		}
+		return err
 	}
 	return nil
 }
@@ -336,6 +373,12 @@ func Load(path string) (*Cluster, error) {
 		return nil, err
 	}
 	if err := Validate(data); err != nil {
+		// carry the filename into the friendly errors so they print file:line:col.
+		var se *SchemaErrors
+		if errors.As(err, &se) {
+			se.File = path
+			return nil, se
+		}
 		return nil, fmt.Errorf("%s: %w", path, err)
 	}
 	var c Cluster
