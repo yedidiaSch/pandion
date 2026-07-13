@@ -705,6 +705,8 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			fmt.Printf("  inspect:  pandion ssh --id %s -- 'journalctl -k | grep pandion-audit'\n", id)
 		} else {
 			fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
+			// keep hostname egress-allow rules fresh as CDN IPs rotate (P2.1 follow-up)
+			installEgressRefresh(ctx, addr, login.Signer, host.Public, egressAllowHostnames(opt.egressAllow))
 		}
 	}
 

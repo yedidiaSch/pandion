@@ -71,17 +71,20 @@ of runway: breadth-of-proof beats new mechanism.
 
 ## P2 — Capability improvements (still nftables)
 
-### 4. DNS-name egress allowlisting — 🚧 **provision-time resolution done; re-resolution is follow-up**
-`--egress-allow` (and `egress_allow` in cluster.yaml) now accepts **hostnames**,
+### 4. DNS-name egress allowlisting — ✅ **done** (provision-time resolution + on-node re-resolution)
+`--egress-allow` (and `egress_allow` in cluster.yaml) accepts **hostnames**,
 resolved to IPv4 at provision time and fed into the nftables egress set
-(`cmd/pandion/egressallow.go`, unit-tested; `scripts/e2e_egress_dns.sh` proves a
-resolved host is reachable while an un-allowlisted one is denied). IPs/CIDRs pass
-through; IPv6 is dropped (nodes are IPv4-only); unresolvable names are skipped
-with a warning.
+(`cmd/pandion/egressallow.go`, unit-tested; `scripts/e2e_egress_dns.sh`). IPs/CIDRs
+pass through; IPv6 is dropped (nodes are IPv4-only); unresolvable names are
+skipped with a warning.
 
-**Still open:** this resolves *once*. If a name's IPs rotate (CDNs), the rule
-goes stale — periodic **on-node re-resolution** (a small agent/cron that
-re-resolves and updates the nftables set) is the remaining piece.
+**Re-resolution** (rotating CDN IPs): when there are hostname entries, `up`
+installs an on-node systemd timer (`internal/harden.EgressRefreshInstall`,
+default every 2 min) that re-resolves the hostnames and **adds** their current
+IPv4s to the nft set — add-only, so a live IP is never briefly denied; stale IPs
+just go unused. Wired into single-node `up` and cluster `up -f` (skipped in
+audit mode). Unit-tested; `scripts/e2e_egress_refresh.sh` proves it by flushing
+the set and confirming the refresher repopulates it from DNS.
 
 ### 5. Audit / dry-run mode — ✅ **done** (`up --firewall-audit`, `up -f`, `lockdown --audit`)
 Audit mode renders the firewall with `policy accept` (nothing enforced) plus a
