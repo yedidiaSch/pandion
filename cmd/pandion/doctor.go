@@ -13,6 +13,17 @@ import (
 	"time"
 )
 
+// doctorRow is one line of the doctor report (also the JSON element).
+type doctorRow struct {
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	Local    string `json:"local"`         // torn-down | journal | manifest
+	Cloud    *int   `json:"cloud"`         // live server count; null = not checked
+	Status   string `json:"status"`        // running | stale | torn-down | LEAK | unchecked
+	Leak     bool   `json:"leak"`          // true only for the LEAK status
+	Fix      string `json:"fix,omitempty"` // the command that resolves it, if any
+}
+
 // runDoctor reports where the local state under ~/.pandion diverges from the
 // provider's truth (F6/R7): stale journals/manifests for clusters that no longer
 // exist, tombstones that still have running servers (a real leak), and local
@@ -23,11 +34,16 @@ import (
 // or CI can gate on it.
 func runDoctor(args []string) {
 	fs := newCmdFlagSet("doctor")
+	jsonOut := fs.Bool("json", false, "emit the report as JSON (stable schema)")
 	_ = fs.Parse(args)
 
 	ids := localStateIDs()
 	if len(ids) == 0 {
-		fmt.Println("no local Pandion state under", filepath.Join(pandionDir(), "{state,keys}"))
+		if *jsonOut {
+			fmt.Println("[]")
+		} else {
+			fmt.Println("no local Pandion state under", filepath.Join(pandionDir(), "{state,keys}"))
+		}
 		return
 	}
 
@@ -76,22 +92,39 @@ func runDoctor(args []string) {
 	}
 
 	sort.Strings(ids)
+	rows := make([]doctorRow, 0, len(ids))
 	leaks := 0
-	fmt.Printf("%-24s %-12s %-14s %-8s %s\n", "CLUSTER", "PROVIDER", "LOCAL", "CLOUD", "STATUS")
 	for _, id := range ids {
 		f := facts[id]
 		n, checked := running[id]
-		cloud := "?"
-		if checked {
-			cloud = fmt.Sprintf("%d", n)
-		}
 		status, fix := classifyDoctor(f.tombstoned, checked, n)
-		if strings.HasPrefix(status, "LEAK") {
+		leak := strings.HasPrefix(status, "LEAK")
+		if leak {
 			leaks++
 		}
-		fmt.Printf("%-24s %-12s %-14s %-8s %s\n", id, dashIfEmpty(f.provider), f.localLabel(), cloud, status)
-		if fix != "" {
-			fmt.Printf("  ↳ %s\n", strings.ReplaceAll(fix, "<id>", id))
+		row := doctorRow{ID: id, Provider: f.provider, Local: f.localLabel(), Status: status, Leak: leak, Fix: strings.ReplaceAll(fix, "<id>", id)}
+		if checked {
+			nn := n
+			row.Cloud = &nn
+		}
+		rows = append(rows, row)
+	}
+
+	if *jsonOut {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		must(enc.Encode(rows))
+	} else {
+		fmt.Printf("%-24s %-12s %-14s %-8s %s\n", "CLUSTER", "PROVIDER", "LOCAL", "CLOUD", "STATUS")
+		for _, r := range rows {
+			cloud := "?"
+			if r.Cloud != nil {
+				cloud = fmt.Sprintf("%d", *r.Cloud)
+			}
+			fmt.Printf("%-24s %-12s %-14s %-8s %s\n", r.ID, dashIfEmpty(r.Provider), r.Local, cloud, r.Status)
+			if r.Fix != "" {
+				fmt.Printf("  ↳ %s\n", r.Fix)
+			}
 		}
 	}
 

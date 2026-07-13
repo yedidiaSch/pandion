@@ -140,6 +140,20 @@ if denv doctor >/dev/null 2>&1; then
 fi
 docout="$(denv doctor 2>/dev/null || true)"
 case "$docout" in *"LEAK"*) : ;; *) echo "[smoke] FAIL: doctor output missing LEAK"; exit 1 ;; esac
+# --json emits a machine-readable report (stable schema) with the leak flag
+docjson="$(denv doctor --json 2>/dev/null || true)"
+case "$docjson" in *'"leak": true'*|*'"leak":true'*) : ;; *) echo "[smoke] FAIL: doctor --json missing leak flag"; exit 1 ;; esac
 denv down --provider=mock --id demo --yes >/dev/null 2>&1 || true
+
+# `pandion reap` GCs orphaned local journals for clusters already gone (R7c).
+echo "[smoke] reap clears an orphaned local journal (R7c)"
+RH="$tmp/reap-home"; RS="$tmp/reap-mockstate"; mkdir -p "$RH"
+renv(){ HOME="$RH" USERPROFILE="$RH" PANDION_MOCK_STATE="$RS" "$BIN" "$@"; }
+renv up --provider=mock --id ghost -- 'echo hi' >/dev/null 2>&1 || { echo "[smoke] FAIL: reap-setup up failed"; exit 1; }
+# the server vanishes at the provider but the local journal remains
+printf '{"seq":1,"servers":{}}' > "$RS/mock-state.json"
+[ -f "$RH/.pandion/state/ghost.json" ] || { echo "[smoke] FAIL: expected an orphan journal to exist"; exit 1; }
+renv reap --provider=mock --yes >/dev/null 2>&1 || true
+[ -f "$RH/.pandion/state/ghost.json" ] && { echo "[smoke] FAIL: reap did not GC the orphaned journal"; exit 1; }
 
 echo "[smoke] OK on ${RUNNER_OS:-$(uname -s)}"

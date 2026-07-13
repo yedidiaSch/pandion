@@ -69,7 +69,7 @@ func init() {
 		{Name: "reap", Synopsis: "destroy orphaned Pandion nodes at the provider",
 			Args: "[--older-than DUR] [--yes] [--json]", Example: "pandion reap --older-than 2h --yes", Flags: []string{"provider", "older-than", "yes", "json"}, Handler: runReap},
 		{Name: "doctor", Synopsis: "report where local state diverges from the provider (stale/leaked)",
-			Args: "", Example: "pandion doctor", Handler: runDoctor},
+			Args: "[--json]", Example: "pandion doctor", Flags: []string{"json"}, Handler: runDoctor},
 		{Name: "login", Synopsis: "store a provider API token in the OS keychain",
 			Args: "[--provider N]", Example: "pandion login --provider hetzner", Flags: []string{"provider"}, Handler: runLogin},
 		{Name: "logout", Synopsis: "remove a stored provider API token",

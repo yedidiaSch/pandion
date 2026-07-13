@@ -3,6 +3,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -39,5 +40,21 @@ func TestClassifyDoctor(t *testing.T) {
 				t.Errorf("leak detection = %v, want %v (status %q)", strings.HasPrefix(status, "LEAK"), c.wantLeak, status)
 			}
 		})
+	}
+}
+
+// TestDoctorRowJSON pins the --json schema: an unchecked cloud is null, a checked
+// one is a number, and the leak flag is present.
+func TestDoctorRowJSON(t *testing.T) {
+	n := 2
+	checked, _ := json.Marshal(doctorRow{ID: "a", Provider: "hetzner", Local: "torn-down", Cloud: &n, Status: "LEAK (2 running)", Leak: true, Fix: "pandion down --id a"})
+	for _, want := range []string{`"cloud":2`, `"leak":true`, `"status":"LEAK (2 running)"`} {
+		if !strings.Contains(string(checked), want) {
+			t.Errorf("checked row JSON missing %q:\n%s", want, checked)
+		}
+	}
+	unchecked, _ := json.Marshal(doctorRow{ID: "b", Local: "journal", Status: "unchecked"})
+	if !strings.Contains(string(unchecked), `"cloud":null`) {
+		t.Errorf("unchecked row must serialize cloud as null:\n%s", unchecked)
 	}
 }
