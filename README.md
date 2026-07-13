@@ -406,6 +406,7 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 | `pandion debug join <token>` · `unshare --id ID --all` | Accept a shared grant · revoke it |
 | `pandion ls` / `status [--json]` | List live clusters/nodes with uptime and live cost |
 | `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
+| `pandion doctor` | Report where local state diverges from the provider (stale/leaked) and how to fix it |
 | `pandion down --id ID` | Idempotent, verified teardown (provider read from the manifest; `--provider` optional) |
 | `pandion validate [-f cluster.yaml]` | Schema-check a topology |
 | `pandion lockdown --id ID` | Lockout-safe public deny-all (SSH over the overlay only) |
