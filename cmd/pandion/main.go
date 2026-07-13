@@ -104,6 +104,13 @@ func splitRunCmd(args []string) (flags []string, runCmd string) {
 func newProvider(name string) (provider.Provider, error) {
 	switch name {
 	case "mock", "":
+		// PANDION_MOCK_STATE=<dir> makes the mock durable across processes so
+		// offline flows (up → separate ls/up/down) behave like a real provider —
+		// used by ci_smoke to regression-test re-up collision etc. (R10). Unset =
+		// the in-memory default (fast unit tests; repeated CLI `up` stays free).
+		if dir := strings.TrimSpace(os.Getenv("PANDION_MOCK_STATE")); dir != "" {
+			return mock.NewPersistent(filepath.Join(dir, "mock-state.json")), nil
+		}
 		return mock.New(), nil
 	case "hetzner":
 		token, err := providerToken("hetzner", "HCLOUD_TOKEN")
@@ -267,11 +274,11 @@ func runUp(args []string) {
 		lk := lockClusterOrExit(*id)
 		defer lk.Unlock()
 		// refuse to provision onto an id that already names a live cluster (F1/R1):
-		// with the flock held, this check-then-create can't race. Mock creates
-		// nothing (and its `demo` id is meant to be reusable), so it is exempt.
-		if p.Name() != "mock" {
-			preflightNoExistingCluster(p, *id, p.Name())
-		}
+		// with the flock held, this check-then-create can't race. Correct for every
+		// provider — an in-memory mock reports nothing across processes (so repeated
+		// `up --provider=mock` stays free), while a persistent mock (PANDION_MOCK_STATE)
+		// collides just like a cloud provider, which is what makes F1 offline-testable.
+		preflightNoExistingCluster(p, *id, p.Name())
 	}
 
 	// multi-node path: -f cluster.yaml. A top-level `--gpu` applies as the cluster

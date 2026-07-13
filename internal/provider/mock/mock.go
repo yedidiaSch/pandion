@@ -7,7 +7,10 @@ package mock
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +23,14 @@ type Mock struct {
 	mu      sync.Mutex
 	seq     int
 	servers map[string]provider.Server
+
+	// persistPath, when non-empty, makes the server set durable across processes:
+	// it is loaded on New* and rewritten after every mutation, so a second
+	// `pandion` invocation sees the first one's servers. That is what lets
+	// ci_smoke exercise re-up collision (F1/R10) offline. The default New() stays
+	// purely in-memory (fast unit tests). Failure-injection fields are never
+	// persisted — only the server set and id sequence are.
+	persistPath string
 
 	// FailDestroyOnce makes the next DestroyServer call fail exactly once,
 	// to exercise the orchestrator's retry path (risk H7).
@@ -134,8 +145,60 @@ func (m *Mock) EstimateHourly(_ context.Context, spec provider.ServerSpec) (prov
 	return provider.Money{Amount: 0.01, Currency: "EUR"}, nil
 }
 
-// New returns an empty mock provider.
+// New returns an empty in-memory mock provider (no cross-process persistence).
 func New() *Mock { return &Mock{servers: map[string]provider.Server{}} }
+
+// NewPersistent returns a mock whose server set is stored at path (JSON) so it
+// survives across processes — used by the CLI when PANDION_MOCK_STATE is set, so
+// offline flows (`up` then a separate `ls`/`up`/`down`) behave like a real
+// provider. A missing/unreadable file starts empty.
+func NewPersistent(path string) *Mock {
+	m := &Mock{servers: map[string]provider.Server{}, persistPath: path}
+	m.load()
+	return m
+}
+
+// mockState is the on-disk shape for a persistent mock.
+type mockState struct {
+	Seq     int                        `json:"seq"`
+	Servers map[string]provider.Server `json:"servers"`
+}
+
+// load reads the persisted server set (best-effort; a missing file is empty).
+func (m *Mock) load() {
+	if m.persistPath == "" {
+		return
+	}
+	b, err := os.ReadFile(m.persistPath)
+	if err != nil {
+		return
+	}
+	var st mockState
+	if json.Unmarshal(b, &st) != nil {
+		return
+	}
+	if st.Servers != nil {
+		m.servers = st.Servers
+	}
+	m.seq = st.Seq
+}
+
+// saveLocked persists the server set atomically. The caller must hold m.mu.
+// Best-effort: a write failure leaves the previous file intact.
+func (m *Mock) saveLocked() {
+	if m.persistPath == "" {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(m.persistPath), 0o755)
+	b, err := json.Marshal(mockState{Seq: m.seq, Servers: m.servers})
+	if err != nil {
+		return
+	}
+	tmp := m.persistPath + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, m.persistPath)
+	}
+}
 
 // Name implements provider.Provider.
 func (m *Mock) Name() string { return "mock" }
@@ -192,6 +255,7 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		GPU:       gpu,
 	}
 	m.servers[s.ID] = s
+	m.saveLocked()
 	return s, nil
 }
 
@@ -208,6 +272,7 @@ func (m *Mock) DestroyServer(_ context.Context, id string) error {
 		return fmt.Errorf("mock: simulated destroy failure for %s (%d remaining)", id, m.FailDestroyN)
 	}
 	delete(m.servers, id)
+	m.saveLocked()
 	return nil
 }
 

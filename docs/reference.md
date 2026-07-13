@@ -10,6 +10,7 @@ Env vars, exit codes, configuration precedence, and the on-disk layout.
 | `PANDION_PROFILE` | Selects the operator profile (same as the global `--profile` flag). |
 | `PANDION_LOG` | `debug\|info\|warn\|error` — tees the structured audit trail to stderr. The global `--verbose` flag forces `debug`. |
 | `NO_COLOR` | When set, disables ANSI color. Color is also auto-disabled when stdout is not a TTY. |
+| `PANDION_MOCK_STATE` | Directory in which the `mock` provider persists its server set across processes (default: in-memory, per-process). Used to exercise offline lifecycle flows in tests; not needed for normal use. |
 | `HCLOUD_TOKEN`, `DIGITALOCEAN_TOKEN`, `VULTR_API_KEY`, `LINODE_TOKEN`, `SCW_SECRET_KEY` (+ `SCW_ACCESS_KEY`, `SCW_DEFAULT_PROJECT_ID`) | Provider credentials, if not stored via `pandion login`. |
 
 ## Global flags
