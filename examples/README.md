@@ -11,5 +11,5 @@ Each directory is a self-contained, runnable topology. Validate any of them with
 | [python-setup](python-setup/) | A Python workload with pip deps via `setup:` (no C++ toolchain). |
 | [zmq-cluster](zmq-cluster/) | A multi-node, source-synced C++ cluster over the overlay. |
 
-All example configs are validated in CI. See the
-[cluster.yaml reference](../docs/cluster-yaml.md) for every field.
+All example configs are validated in CI. Run `pandion validate -f <dir>/cluster.yaml` to
+schema-check any topology — it reports every field and pinpoints any error.

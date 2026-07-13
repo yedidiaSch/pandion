@@ -6,6 +6,45 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 
 ## [Unreleased]
 
+### Added
+- **`pandion doctor` — reconcile local state against the provider.** The crash-consistent
+  journal was written but never read back, so stale or leaked state was invisible. `doctor`
+  walks `~/.pandion/{state,keys}`, reconciles each cluster against its provider (when the
+  credentials are available; the mock is checkable via `PANDION_MOCK_STATE`), and prints a
+  per-cluster status with the fix command: **LEAK** (tombstoned locally but still running at
+  the provider — a real money leak → `pandion down`, and `doctor` exits non-zero so CI can
+  gate on it), **stale** (local state, provider empty), and informational **running /
+  torn-down / unchecked**. `pandion doctor --json` emits the same report as a stable JSON
+  array for scripts/CI.
+- **`up` existence guard (state idempotency).** `up` had no preflight, so a re-run could
+  duplicate servers, orphan the previous set, or fail a name collision *after* rewriting the
+  journal. `up` now refuses (under the per-id lock, so check-then-create can't race) when
+  running servers already exist for the id, or when a live local manifest names a *different*
+  provider — while still allowing a clean re-up after teardown or out-of-band deletion.
+- **`reap` garbage-collects orphaned state journals.** `reap` now deletes local journals for
+  its provider whose cluster no longer exists remotely — even when nothing is destroyable —
+  skipping any id whose per-id lock is held and never GC-ing on an uncertain provider list.
+- **Versioned state journal + manifest schemas.** Every write is stamped `"v": 1`
+  (`state.SchemaVersion` / `manifestSchemaVersion`); pre-versioning records read back as v0.
+  This is the migration seam for any future incompatible change.
+- **CLI UX overhaul (P0–P4).** A full pass over trust and surface: honest exit codes, stale
+  local state cleared on `down`, a safer `--id` default, a single command registry feeding
+  `--help`/completion, TTY-aware color (`NO_COLOR`), wider `--json` coverage, friendly config
+  validation errors, `cluster.yaml` scaffolding, `PANDION_HOME`, and a cross-process state lock.
+
+### Fixed
+- **Teardown retries with backoff and reports every attempt.** `down`'s destroy retry ran
+  three times back-to-back with no delay and surfaced only the last error, so a rate-limited
+  (429) provider burned all attempts in milliseconds and the pattern was invisible. It now uses
+  exponential backoff (1s/3s/9s, honoring context) and joins the errors across attempts.
+- **Actionable partial-teardown messages.** A partial `down` now tells you the state and the
+  fix — "teardown incomplete … safe to re-run `pandion down`; idempotent", and for an aux-reap
+  failure "servers destroyed (billing stopped); re-run to finish" — so a leaked key or firewall
+  isn't mistaken for a still-billing node.
+- **Honest idle-TTL cost copy.** The idle TTL powers a node *off* (it does not destroy it) and
+  stopped nodes keep billing; corrected the `up` notice, `--max-cost` help, and cost docs that
+  implied spend stopped at the TTL.
+
 ## [0.7.1] — 2026-07-12
 
 ### Fixed
