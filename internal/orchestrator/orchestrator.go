@@ -326,7 +326,10 @@ func (o *Orchestrator) Status(ctx context.Context) ([]ClusterStatus, string, err
 // CostEstimate is the `--max-cost` preflight projection.
 type CostEstimate struct {
 	Hourly    float64 // Σ per-node gross hourly (in Currency)
-	Projected float64 // Σ per-node hourly × its idle-TTL window (spend before self-stop)
+	Projected float64 // Σ per-node hourly × its idle-TTL window. NOTE: the idle TTL
+	// powers a node OFF, it does not destroy it — billing continues after power-off
+	// until `down`/`reap`. So this is spend over the active window, not a cap on the
+	// total a forgotten cluster can accrue (F2).
 	Currency  string
 	Unbounded bool // a node has no TTL ⇒ projected spend is infinite
 }

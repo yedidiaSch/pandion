@@ -215,7 +215,7 @@ func runUp(args []string) {
 	gpuIdleUtil := fs.Int("gpu-idle-util", harden.DefaultGPUIdleUtil, "GPU node: utilization %% at/below which the GPU counts as idle for the dead-man's-switch (so headless jobs keep the node alive)")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
-	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
+	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if spend over the idle-TTL window (hourly × TTL) exceeds this (provider currency; 0 = off). Note: the idle TTL powers the node OFF, not down — billing continues until `pandion down`/`reap`")
 	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
 	jsonOut := fs.Bool("json", false, "with --dry-run: emit the plan + projected cost as JSON")
 	noRun := fs.Bool("no-run", false, "deploy only: provision + sync + build but do NOT launch the run command (start it later with `pandion start`)")
@@ -266,6 +266,12 @@ func runUp(args []string) {
 	if !*dryRun {
 		lk := lockClusterOrExit(*id)
 		defer lk.Unlock()
+		// refuse to provision onto an id that already names a live cluster (F1/R1):
+		// with the flock held, this check-then-create can't race. Mock creates
+		// nothing (and its `demo` id is meant to be reusable), so it is exempt.
+		if p.Name() != "mock" {
+			preflightNoExistingCluster(p, *id, p.Name())
+		}
 	}
 
 	// multi-node path: -f cluster.yaml. A top-level `--gpu` applies as the cluster
@@ -1681,7 +1687,7 @@ func idleTTLNotice(ttl time.Duration) string {
 	if ttl <= 0 {
 		return "idle poweroff: disabled (--no-ttl) — this node runs until you tear it down."
 	}
-	return fmt.Sprintf("idle poweroff: node powers off after %s with no SSH (--ttl to change, --no-ttl to disable).", shortDur(ttl))
+	return fmt.Sprintf("idle poweroff: node powers off after %s with no SSH (--ttl to change, --no-ttl to disable). Note: power-off is not teardown — it still bills until `pandion down`/`reap`.", shortDur(ttl))
 }
 
 // stderrIsTTY reports whether stderr is an interactive terminal — used to gate
@@ -1712,6 +1718,52 @@ func lockClusterOrExit(id string) *flock.Lock {
 		return nil
 	}
 	return l
+}
+
+// upPreflight decides whether `up` may create a cluster with this id on p. It is
+// the read-only core of the idempotency guard (F1/R1): `up` has no existence check
+// today, so a re-run duplicates servers (providers that allow duplicate names),
+// orphans the previous set (its keys/manifest get overwritten), or — on Hetzner —
+// fails the name collision after the journal was already rewritten and rolls back
+// the healthy original. This returns a user-facing refusal message when a live
+// cluster with that id already exists, or "" to proceed. Split out (no exit, no
+// I/O beyond the provider call) so it is unit-testable with a seeded mock.
+//
+// localProvider is the provider recorded in this id's local manifest ("" if none):
+// a live manifest naming a DIFFERENT provider is a collision even when the target
+// provider has nothing, because the old cluster may still be running and billing,
+// invisible to a ListByTag on the new provider (F5). A ListByTag error is treated
+// as "proceed" — the per-id flock still prevents concurrent self-collision, and
+// the provider stays the source of truth for teardown.
+func upPreflight(ctx context.Context, p provider.Provider, id, provName, localProvider string) string {
+	if localProvider != "" && localProvider != provName {
+		return fmt.Sprintf("cluster %q already exists locally as a %s cluster — its servers may still be running.\n  tear it down first:  pandion down --id %s\n  or choose another --id.", id, localProvider, id)
+	}
+	servers, err := p.ListByTag(ctx, id)
+	if err != nil {
+		return ""
+	}
+	if len(servers) > 0 {
+		return fmt.Sprintf("cluster %q already exists at %s (%d server(s) running) — `up` would duplicate or orphan it.\n  tear it down first:  pandion down --provider=%s --id %s\n  or choose another --id.", id, provName, len(servers), provName, id)
+	}
+	return ""
+}
+
+// preflightNoExistingCluster runs upPreflight against the live manifest + provider
+// and exits codeUsage with the refusal message if the id is already taken. Called
+// under the per-id flock (so check-then-provision is race-free), for real providers
+// only — mock creates nothing and its default `demo` id is meant to be reusable.
+func preflightNoExistingCluster(p provider.Provider, id, provName string) {
+	localProv := ""
+	if m, err := loadManifest(id); err == nil {
+		localProv = m.Provider // a tombstoned (torn-down) manifest yields an error → "" → not a collision
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if msg := upPreflight(ctx, p, id, provName, localProv); msg != "" {
+		fmt.Fprintln(os.Stderr, msg)
+		os.Exit(codeUsage)
+	}
 }
 
 // localClusterIDs returns the cluster ids that still have a local state journal
