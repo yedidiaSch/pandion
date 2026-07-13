@@ -124,4 +124,22 @@ menv2(){ HOME="$MH" USERPROFILE="$MH" "$BIN" "$@"; } # no PANDION_MOCK_STATE
 menv2 up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 && menv2 up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 \
   || { echo "[smoke] FAIL: in-memory mock repeated up regressed"; exit 1; }
 
+# `pandion doctor` reports local-vs-provider divergence offline via the persistent
+# mock (F6/R7): a running cluster is "running"; a tombstoned-but-alive one LEAKs.
+echo "[smoke] doctor reports running vs leaked state (F6/R7)"
+DH="$tmp/doc-home"; DS="$tmp/doc-mockstate"; mkdir -p "$DH/.pandion/keys/demo"
+denv(){ HOME="$DH" USERPROFILE="$DH" PANDION_MOCK_STATE="$DS" "$BIN" "$@"; }
+denv up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 || { echo "[smoke] FAIL: doctor-setup up failed"; exit 1; }
+# capture output (doctor exits non-zero on a leak; avoid pipefail masking grep)
+docout="$(denv doctor 2>/dev/null || true)"
+case "$docout" in *"running"*) : ;; *) echo "[smoke] FAIL: doctor did not report the running cluster"; exit 1 ;; esac
+# tombstone the manifest while the server is still live -> LEAK, non-zero exit
+printf '{"id":"demo","provider":"mock","nodes":[],"destroyed_at":"2020-01-01T00:00:00Z"}' > "$DH/.pandion/keys/demo/manifest.json"
+if denv doctor >/dev/null 2>&1; then
+  echo "[smoke] FAIL: doctor did not flag a tombstoned-but-running cluster (LEAK)"; exit 1
+fi
+docout="$(denv doctor 2>/dev/null || true)"
+case "$docout" in *"LEAK"*) : ;; *) echo "[smoke] FAIL: doctor output missing LEAK"; exit 1 ;; esac
+denv down --provider=mock --id demo --yes >/dev/null 2>&1 || true
+
 echo "[smoke] OK on ${RUNNER_OS:-$(uname -s)}"
