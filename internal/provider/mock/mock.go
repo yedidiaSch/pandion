@@ -25,8 +25,15 @@ type Mock struct {
 	// to exercise the orchestrator's retry path (risk H7).
 	FailDestroyOnce bool
 
+	// FailDestroyN makes the next N DestroyServer calls fail (decremented per
+	// call), to exercise the destroy backoff + error aggregation (F7/R8).
+	FailDestroyN int
+
 	// ReapAuxCalls counts ReapAux invocations (test observability).
 	ReapAuxCalls int
+	// FailReapAux makes ReapAux return an error, to exercise Down's "servers gone
+	// but aux reap failed" partial-teardown message (F11/R12).
+	FailReapAux bool
 
 	// FailCreateFor makes CreateServer fail for these node names, to exercise
 	// partial-cluster-failure handling (M10).
@@ -47,6 +54,9 @@ func (m *Mock) ReapAux(_ context.Context, _ string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.ReapAuxCalls++
+	if m.FailReapAux {
+		return fmt.Errorf("mock: simulated aux-reap failure")
+	}
 	return nil
 }
 
@@ -192,6 +202,10 @@ func (m *Mock) DestroyServer(_ context.Context, id string) error {
 	if m.FailDestroyOnce {
 		m.FailDestroyOnce = false
 		return fmt.Errorf("mock: simulated transient destroy failure for %s", id)
+	}
+	if m.FailDestroyN > 0 {
+		m.FailDestroyN--
+		return fmt.Errorf("mock: simulated destroy failure for %s (%d remaining)", id, m.FailDestroyN)
 	}
 	delete(m.servers, id)
 	return nil

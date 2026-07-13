@@ -4,6 +4,7 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,9 @@ import (
 
 func newOrch(t *testing.T) (*Orchestrator, *mock.Mock) {
 	t.Helper()
+	// keep retry-backed paths instant under test (create + destroy).
+	provisionRetryDelay = 0
+	destroyRetryBaseDelay = 0
 	st, err := state.NewStore(t.TempDir())
 	if err != nil {
 		t.Fatalf("state store: %v", err)
@@ -194,5 +198,63 @@ func TestReapPlan_OlderThanFiltersOutYoungClusters(t *testing.T) {
 	}
 	if len(plan) != 0 {
 		t.Fatalf("young cluster should be filtered out, got %d", len(plan))
+	}
+}
+
+// TestDestroyWithRetry_AggregatesErrors covers R8/F7: when every attempt fails,
+// the error names each attempt (so a "429,429,429" pattern is visible) rather
+// than returning only the last error.
+func TestDestroyWithRetry_AggregatesErrors(t *testing.T) {
+	destroyRetryBaseDelay = 0
+	m := mock.New()
+	m.FailDestroyN = 5 // more than the attempt budget → always fails
+	err := destroyWithRetry(context.Background(), m, "srv-x", 3)
+	if err == nil {
+		t.Fatal("want error after exhausting retries, got nil")
+	}
+	for _, want := range []string{"attempt 1", "attempt 2", "attempt 3"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("aggregated error missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
+// TestDestroyWithRetry_SucceedsAfterTransient covers the recovery path: two
+// transient failures then success within the budget returns nil.
+func TestDestroyWithRetry_SucceedsAfterTransient(t *testing.T) {
+	destroyRetryBaseDelay = 0
+	m := mock.New()
+	m.FailDestroyN = 2 // fail twice, third attempt succeeds
+	if err := destroyWithRetry(context.Background(), m, "srv-y", 3); err != nil {
+		t.Fatalf("want success on the 3rd attempt, got %v", err)
+	}
+}
+
+// TestDown_AuxReapFailure_SafeToRerunHint covers R12/F11: when servers are
+// destroyed but aux-reap fails, the error says money has stopped and re-running
+// is safe — not a bare "reap aux resources failed".
+func TestDown_AuxReapFailure_SafeToRerunHint(t *testing.T) {
+	o, m := newOrch(t)
+	ctx := context.Background()
+	if _, err := o.Up(ctx, "c-aux", "n", "", ""); err != nil {
+		t.Fatalf("up: %v", err)
+	}
+	m.FailReapAux = true
+	err := o.Down(ctx, "c-aux")
+	if err == nil {
+		t.Fatal("want Down to error when aux-reap fails")
+	}
+	for _, want := range []string{"servers", "billing stopped", "re-run", "idempotent"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("aux-reap error missing %q:\n%s", want, err.Error())
+		}
+	}
+	if m.Count() != 0 {
+		t.Fatalf("servers should be gone even though aux-reap failed, got %d", m.Count())
+	}
+	// re-run converges cleanly once the (transient) aux failure clears.
+	m.FailReapAux = false
+	if err := o.Down(ctx, "c-aux"); err != nil {
+		t.Fatalf("re-run down should converge: %v", err)
 	}
 }

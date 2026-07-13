@@ -7,6 +7,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -480,25 +481,50 @@ func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
 		return err
 	}
 	if len(left) != 0 {
-		return fmt.Errorf("teardown incomplete: %d server(s) remain for %q", len(left), clusterID)
+		return fmt.Errorf("teardown incomplete: %d server(s) remain for %q — safe to re-run `pandion down --id %s`; teardown is idempotent and converges", len(left), clusterID, clusterID)
 	}
 
 	// clean up cluster-scoped auxiliary resources (e.g. registered SSH keys) so
 	// nothing leaks, if the provider supports it (C4).
 	if reaper, ok := o.P.(provider.AuxReaper); ok {
 		if rerr := reaper.ReapAux(ctx, clusterID); rerr != nil {
-			return fmt.Errorf("reap aux resources for %q: %w", clusterID, rerr)
+			// The servers are already destroyed here (billing has stopped); only an
+			// auxiliary resource (key/firewall/volume) failed to reap. Re-running is
+			// safe and idempotent — say so, so the operator doesn't think money leaks.
+			return fmt.Errorf("servers destroyed, but reaping aux resources for %q failed: %w — servers are gone (billing stopped); re-run `pandion down --id %s` to finish (idempotent)", clusterID, rerr, clusterID)
 		}
 	}
 	return o.S.Close(clusterID)
 }
 
+// destroyRetryBaseDelay is the first pause between destroy attempts; it grows ~3x
+// per attempt (1s, 3s, 9s…). A var so tests can drop it to zero. Mirrors
+// provisionRetryDelay on the creation side.
+var destroyRetryBaseDelay = 1 * time.Second
+
+// destroyWithRetry destroys a server, retrying with exponential backoff up to
+// `attempts` times. DestroyServer is contractually idempotent, so retrying after a
+// partial success is safe. Unlike the old instant 3× loop it (a) backs off so a
+// rate-limited (429) provider isn't hammered in milliseconds, honoring ctx, and
+// (b) aggregates every attempt's error — so "429, 429, 429" is visible in the
+// message instead of only the last error hiding the pattern (F7/R8).
 func destroyWithRetry(ctx context.Context, p provider.Provider, id string, attempts int) error {
-	var err error
+	var errs []error
+	delay := destroyRetryBaseDelay
 	for i := 0; i < attempts; i++ {
-		if err = p.DestroyServer(ctx, id); err == nil {
+		err := p.DestroyServer(ctx, id)
+		if err == nil {
 			return nil
 		}
+		errs = append(errs, fmt.Errorf("attempt %d: %w", i+1, err))
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return errors.Join(append(errs, ctx.Err())...)
+			case <-time.After(delay):
+			}
+			delay *= 3
+		}
 	}
-	return err
+	return errors.Join(errs...)
 }
