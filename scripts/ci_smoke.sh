@@ -107,4 +107,21 @@ case "$out" in *"example: pandion up"*) : ;; *) echo "[smoke] FAIL: 'up -h' miss
 out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" completion bash 2>/dev/null)"
 case "$out" in *"ls) flags="*"--json"*) : ;; *) echo "[smoke] FAIL: completion not command-aware for ls"; exit 1 ;; esac
 
+# A PERSISTENT mock (PANDION_MOCK_STATE) survives across processes, so the `up`
+# idempotency guard (F1/R1) is regression-testable offline: re-up of a live id is
+# refused, and re-up after down is allowed (R10).
+echo "[smoke] persistent mock: re-up of a live id is refused, allowed after down (F1/R10)"
+MH="$tmp/idem-home"; MSTATE="$tmp/idem-mockstate"; mkdir -p "$MH"
+menv(){ HOME="$MH" USERPROFILE="$MH" PANDION_MOCK_STATE="$MSTATE" "$BIN" "$@"; }
+menv up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 || { echo "[smoke] FAIL: first persistent-mock up failed"; exit 1; }
+if menv up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1; then
+  echo "[smoke] FAIL: re-up of a live id was not refused (F1)"; exit 1
+fi
+menv down --provider=mock --id demo --yes >/dev/null 2>&1 || { echo "[smoke] FAIL: persistent-mock down failed"; exit 1; }
+menv up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 || { echo "[smoke] FAIL: re-up after down was not allowed"; exit 1; }
+# and the DEFAULT in-memory mock still allows repeated up (no persistence, no regression)
+menv2(){ HOME="$MH" USERPROFILE="$MH" "$BIN" "$@"; } # no PANDION_MOCK_STATE
+menv2 up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 && menv2 up --provider=mock --id demo -- 'echo hi' >/dev/null 2>&1 \
+  || { echo "[smoke] FAIL: in-memory mock repeated up regressed"; exit 1; }
+
 echo "[smoke] OK on ${RUNNER_OS:-$(uname -s)}"
