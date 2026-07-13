@@ -47,10 +47,21 @@ func TestHourlyIn_RegionOverride(t *testing.T) {
 }
 
 func TestOrderRegions_PreferredFirst(t *testing.T) {
-	got := orderRegions([]string{"us-east", "eu-central", "us-west"}, []string{"eu-central", "ap-south"})
+	got := orderRegions([]string{"us-east", "eu-central", "us-west"}, []string{"eu-central", "ap-south"}, false)
 	want := []string{"eu-central", "us-east", "us-west"} // eu-central first, ap-south ignored (absent)
 	if len(got) != 3 || got[0] != want[0] || got[1] != want[1] || got[2] != want[2] {
 		t.Fatalf("orderRegions = %v, want %v", got, want)
+	}
+}
+
+// strict (explicit --region) must not append other regions as fallback.
+func TestOrderRegions_StrictOnlyPreferred(t *testing.T) {
+	all := []string{"us-east", "eu-central", "us-west"}
+	if got := orderRegions(all, []string{"eu-central"}, true); len(got) != 1 || got[0] != "eu-central" {
+		t.Fatalf("strict orderRegions(eu-central) = %v, want [eu-central]", got)
+	}
+	if got := orderRegions(all, []string{"ap-south"}, true); len(got) != 0 {
+		t.Fatalf("strict orderRegions(absent) = %v, want empty", got)
 	}
 }
 

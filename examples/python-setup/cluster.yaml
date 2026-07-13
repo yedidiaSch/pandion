@@ -1,0 +1,12 @@
+# A Python workload with pip deps installed via `setup:` (no C++ toolchain).
+#   pandion up -f cluster.yaml --id py
+apiVersion: pandion/v1
+name: python-setup
+defaults:
+  setup:
+    - 'pip3 install --quiet requests'
+  sync:
+    path: .
+nodes:
+  - name: app
+    run: 'python3 app.py'

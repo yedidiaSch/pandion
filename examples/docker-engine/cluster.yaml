@@ -1,0 +1,10 @@
+# Run the workload inside a hardened container instead of natively.
+#   pandion up -f cluster.yaml --id docker
+apiVersion: pandion/v1
+name: docker-engine
+defaults:
+  engine: docker
+  container_image: python:3.12-slim
+nodes:
+  - name: app
+    run: 'python -c "print(\"2+2 =\", 2+2)"'

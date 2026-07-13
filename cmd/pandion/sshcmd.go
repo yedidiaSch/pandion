@@ -28,13 +28,50 @@ func knownHostsLine(addr, hostPub string) string {
 // Pandion. This is the supported way to reach a node "left up for GDB/SSH" (§5).
 //
 //	pandion ssh --id ID [--node NAME] [--overlay] [-- <command>]
+//
+// addConnFlags registers the --overlay/--public pair on a connect command. Both
+// are accepted everywhere (P1.3): each command has a default and either flag is an
+// explicit override, so the polarity difference between ssh/cp/code (public by
+// default) and debug (overlay by default) is no longer a cognitive trap.
+func addConnFlags(fs *flag.FlagSet, defaultOverlay bool) (overlay, public *bool) {
+	def := "default"
+	if defaultOverlay {
+		overlay = fs.Bool("overlay", false, "connect over the WireGuard overlay IP (default)")
+		public = fs.Bool("public", false, "connect over the node's PUBLIC IP")
+	} else {
+		overlay = fs.Bool("overlay", false, "connect over the WireGuard overlay IP (requires the overlay joined)")
+		public = fs.Bool("public", false, "connect over the node's PUBLIC IP ("+def+")")
+	}
+	return overlay, public
+}
+
+// resolveOverlay reconciles the --overlay/--public pair into a single decision:
+// an explicitly-set flag wins over the command default; setting both is an error.
+func resolveOverlay(fs *flag.FlagSet, overlay, public *bool, defaultOverlay bool) bool {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["overlay"] && set["public"] {
+		fmt.Fprintln(os.Stderr, "--overlay and --public are mutually exclusive")
+		os.Exit(2)
+	}
+	switch {
+	case set["overlay"]:
+		return *overlay
+	case set["public"]:
+		return !*public
+	default:
+		return defaultOverlay
+	}
+}
+
 func runSSH(args []string) {
 	flagArgs, cmd := splitRunCmd(args)
-	fs := flag.NewFlagSet("ssh", flag.ExitOnError)
+	fs := newCmdFlagSet("ssh")
 	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node name (default: the first node)")
-	useOverlay := fs.Bool("overlay", false, "connect over the WireGuard overlay IP (requires the overlay joined)")
+	useOverlayF, publicF := addConnFlags(fs, false)
 	_ = fs.Parse(flagArgs)
+	useOverlay := resolveOverlay(fs, useOverlayF, publicF, false)
 	if *id == "" {
 		fmt.Fprintln(os.Stderr, "ssh: --id is required")
 		os.Exit(2)
@@ -42,6 +79,7 @@ func runSSH(args []string) {
 
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "ssh: no manifest for %q (is the id correct?): %v\n", *id, err)
 		os.Exit(3)
 	}
@@ -55,7 +93,7 @@ func runSSH(args []string) {
 		os.Exit(3)
 	}
 
-	conn, cleanup := dialInfo("ssh", *id, target, *useOverlay)
+	conn, cleanup := dialInfo("ssh", *id, target, useOverlay)
 	defer cleanup()
 
 	sshArgs := append(conn.opts(), "root@"+conn.addr)
@@ -93,7 +131,7 @@ func dialInfo(cmdName, id string, target nodeManifest, useOverlay bool) (connInf
 		fmt.Fprintf(os.Stderr, "%s: node has no reachable address (try/omit --overlay)\n", cmdName)
 		os.Exit(3)
 	}
-	keyPath := filepath.Join(envHome(), ".pandion", "keys", id, "login_ed25519")
+	keyPath := filepath.Join(pandionDir(), "keys", id, "login_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
 		fmt.Fprintf(os.Stderr, "%s: login key not found (%s): %v\n", cmdName, keyPath, err)
 		os.Exit(3)
@@ -126,11 +164,12 @@ func runClient(bin string, args []string) {
 //
 //	pandion cp --id ID [--node NAME] [--overlay] SRC DST
 func runCP(args []string) {
-	fs := flag.NewFlagSet("cp", flag.ExitOnError)
+	fs := newCmdFlagSet("cp")
 	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node name (default: the first node)")
-	useOverlay := fs.Bool("overlay", false, "use the WireGuard overlay IP")
+	useOverlayF, publicF := addConnFlags(fs, false)
 	_ = fs.Parse(args)
+	useOverlay := resolveOverlay(fs, useOverlayF, publicF, false)
 	rest := fs.Args()
 	if *id == "" || len(rest) != 2 {
 		fmt.Fprintln(os.Stderr, "usage: pandion cp --id ID [--node NAME] SRC DST   (prefix a node path with ':')")
@@ -144,6 +183,7 @@ func runCP(args []string) {
 
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "cp: no manifest for %q: %v\n", *id, err)
 		os.Exit(3)
 	}
@@ -152,7 +192,7 @@ func runCP(args []string) {
 		fmt.Fprintf(os.Stderr, "cp: node not found in cluster %q\n", *id)
 		os.Exit(3)
 	}
-	conn, cleanup := dialInfo("cp", *id, target, *useOverlay)
+	conn, cleanup := dialInfo("cp", *id, target, useOverlay)
 	defer cleanup()
 
 	runClient("scp", append(conn.opts(), "-p", scpEndpoint(conn.addr, src), scpEndpoint(conn.addr, dst)))
@@ -205,18 +245,20 @@ func writeClusterKnownHosts(path string, nodes []nodeManifest) error {
 //
 //	pandion code --id ID [--node NAME] [--overlay] [--print]
 func runCode(args []string) {
-	fs := flag.NewFlagSet("code", flag.ExitOnError)
+	fs := newCmdFlagSet("code")
 	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node name (default: the first node)")
-	useOverlay := fs.Bool("overlay", false, "use the WireGuard overlay IP")
+	useOverlayF, publicF := addConnFlags(fs, false)
 	printOnly := fs.Bool("print", false, "print the SSH config block and exit (don't write files)")
 	_ = fs.Parse(args)
+	useOverlay := resolveOverlay(fs, useOverlayF, publicF, false)
 	if *id == "" {
 		fmt.Fprintln(os.Stderr, "code: --id is required")
 		os.Exit(2)
 	}
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "code: no manifest for %q: %v\n", *id, err)
 		os.Exit(3)
 	}
@@ -226,14 +268,14 @@ func runCode(args []string) {
 		os.Exit(3)
 	}
 	addr := target.IP
-	if *useOverlay {
+	if useOverlay {
 		addr = target.OverlayIP
 	}
 	if addr == "" {
 		fmt.Fprintln(os.Stderr, "code: node has no reachable address (try/omit --overlay)")
 		os.Exit(3)
 	}
-	keyDir := filepath.Join(envHome(), ".pandion", "keys", *id)
+	keyDir := filepath.Join(pandionDir(), "keys", *id)
 	keyPath := filepath.Join(keyDir, "login_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
 		fmt.Fprintf(os.Stderr, "code: login key not found (%s): %v\n", keyPath, err)
@@ -259,7 +301,7 @@ func runCode(args []string) {
 		printUsage()
 		return
 	}
-	cfgDir := filepath.Join(envHome(), ".pandion", "ssh")
+	cfgDir := filepath.Join(pandionDir(), "ssh")
 	must(os.MkdirAll(cfgDir, 0o700))
 	cfgPath := filepath.Join(cfgDir, *id+"-"+target.Name+".config")
 	must(os.WriteFile(cfgPath, []byte(block), 0o600))

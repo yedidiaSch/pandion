@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"flag"
 	"fmt"
 	"net"
 	"os"
@@ -44,6 +43,16 @@ func runRelayDispatch(args []string) {
 	}
 }
 
+// requireID exits with usage guidance when a required --id was omitted. Relay
+// subcommands operate on a real cluster, so — like ssh/cp/code — they refuse to
+// guess rather than default to a destructive/meaningless "demo".
+func requireID(cmd, id string) {
+	if id == "" {
+		fmt.Fprintf(os.Stderr, "%s: --id is required\n", cmd)
+		os.Exit(2)
+	}
+}
+
 const relayRecordingsDir = "/var/lib/pandion-relay/recordings"
 
 // runRelayRecordings lists the recorded sessions on the relay node, and with
@@ -51,10 +60,11 @@ const relayRecordingsDir = "/var/lib/pandion-relay/recordings"
 //
 //	pandion relay recordings --id ID [--fetch DIR]
 func runRelayRecordings(args []string) {
-	fs := flag.NewFlagSet("relay recordings", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("relay recordings")
+	id := fs.String("id", "", "cluster id (required)")
 	fetch := fs.String("fetch", "", "download recordings into this local directory")
 	_ = fs.Parse(args)
+	requireID("relay recordings", *id)
 
 	rec, err := loadRelayRecord(*id)
 	if err != nil {
@@ -62,6 +72,7 @@ func runRelayRecordings(args []string) {
 		os.Exit(1)
 	}
 	man, err := loadManifest(*id)
+	bailIfTornDown(err)
 	must(err)
 	var relayNode *nodeManifest
 	for i := range man.Nodes {
@@ -133,7 +144,7 @@ type relayShareRecord struct {
 }
 
 func relaySharesDir(id string) string {
-	return filepath.Join(envHome(), ".pandion", "keys", id, "relay-shares")
+	return filepath.Join(pandionDir(), "keys", id, "relay-shares")
 }
 
 // runRelayShare mints a scoped, expiring, browser-SSH grant to a node and prints a
@@ -143,14 +154,15 @@ func relaySharesDir(id string) string {
 //
 //	pandion relay share --id ID --node TARGET [--expires 4h] [--user pandion-lab]
 func runRelayShare(args []string) {
-	fs := flag.NewFlagSet("relay share", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("relay share")
+	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "target node to share (required)")
 	expires := fs.Duration("expires", 4*time.Hour, "how long the link is valid")
 	user := fs.String("user", "pandion-lab", "scoped non-root login user on the target")
 	readOnly := fs.Bool("read-only", false, "view-only: the participant sees the terminal but cannot type")
 	record := fs.Bool("record", false, "record the terminal session on the relay node (fetch with `relay recordings`)")
 	_ = fs.Parse(args)
+	requireID("relay share", *id)
 	initAudit()
 
 	if *node == "" {
@@ -163,6 +175,7 @@ func runRelayShare(args []string) {
 		os.Exit(1)
 	}
 	man, err := loadManifest(*id)
+	bailIfTornDown(err)
 	must(err)
 	var target *nodeManifest
 	for i := range man.Nodes {
@@ -271,11 +284,12 @@ func relayShareProvisionScript(user, scopedPub string, expiry time.Time, shareID
 // runRelayUnshare revokes one or all relay grants: remove the target's authorized_keys
 // entry and the relay's spool session, then delete the local record.
 func runRelayUnshare(args []string) {
-	fs := flag.NewFlagSet("relay unshare", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("relay unshare")
+	id := fs.String("id", "", "cluster id (required)")
 	share := fs.String("share", "", "share id to revoke")
 	all := fs.Bool("all", false, "revoke every relay grant for this cluster")
 	_ = fs.Parse(args)
+	requireID("relay unshare", *id)
 	initAudit()
 
 	recs := loadRelayShareRecords(*id)
@@ -316,9 +330,10 @@ func runRelayUnshare(args []string) {
 
 // runRelayStatus lists live relay grants for a cluster.
 func runRelayStatus(args []string) {
-	fs := flag.NewFlagSet("relay status", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("relay status")
+	id := fs.String("id", "", "cluster id (required)")
 	_ = fs.Parse(args)
+	requireID("relay status", *id)
 	recs := loadRelayShareRecords(*id)
 	if rec, err := loadRelayRecord(*id); err == nil {
 		fmt.Printf("relay: %s/  (node %q)\n", rec.baseURL(), rec.Node)
@@ -377,7 +392,7 @@ func (r *relayRecord) baseURL() string {
 }
 
 func relayRecordPath(id string) string {
-	return filepath.Join(envHome(), ".pandion", "keys", id, "relay.json")
+	return filepath.Join(pandionDir(), "keys", id, "relay.json")
 }
 
 // runRelayUp deploys the browser-SSH relay onto a designated cluster node: uploads
@@ -386,13 +401,14 @@ func relayRecordPath(id string) string {
 //
 //	pandion relay up --id ID [--node NAME] [--port 8443] [--relay-binary PATH]
 func runRelayUp(args []string) {
-	fs := flag.NewFlagSet("relay up", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("relay up")
+	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node to host the relay (default: first node)")
 	port := fs.Int("port", 8443, "public TLS port for the relay")
 	domain := fs.String("domain", "", "public DNS name for browser-trusted Let's Encrypt TLS (implies :443)")
 	relayBin := fs.String("relay-binary", "", "prebuilt linux pandion-relay binary (default: build from source)")
 	_ = fs.Parse(args)
+	requireID("relay up", *id)
 	initAudit()
 
 	// Let's Encrypt (TLS-ALPN-01) is answered on :443; force it unless the operator
@@ -406,6 +422,7 @@ func runRelayUp(args []string) {
 
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "relay up: %v\n", err)
 		os.Exit(1)
 	}

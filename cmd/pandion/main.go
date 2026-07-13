@@ -10,20 +10,24 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"text/tabwriter"
 	"time"
 
 	"github.com/yedidiaSch/pandion/internal/audit"
 	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/firewall"
+	"github.com/yedidiaSch/pandion/internal/flock"
 	"github.com/yedidiaSch/pandion/internal/gpucache"
 	"github.com/yedidiaSch/pandion/internal/harden"
 	"github.com/yedidiaSch/pandion/internal/lockfile"
@@ -51,59 +55,38 @@ var version = "dev"
 
 func main() {
 	if len(os.Args) < 2 {
-		usage()
+		usageErr()
 		os.Exit(2)
 	}
-	// resolve the global --profile / $PANDION_PROFILE selector once and strip it from
-	// the args before per-command parsing (it applies to every command).
-	args := initProfile(os.Args[2:])
-	switch os.Args[1] {
-	case "init":
-		runInit(args)
-	case "version":
+	// Strip the global selectors (--profile/--verbose/--quiet) from ANYWHERE ahead of
+	// the run command, so they work both before and after the verb (`pandion --quiet
+	// up …` and `pandion up --quiet …`). initProfile stops at the first `--`, leaving
+	// a run command's own args untouched.
+	args := initProfile(os.Args[1:])
+	if len(args) == 0 {
+		usageErr()
+		os.Exit(2)
+	}
+	verb := args[0]
+	rest := args[1:]
+	// The universal discovery gestures resolve BEFORE per-command parsing, print to
+	// stdout, and exit 0 (P1.1) — `help`/`-h`/`--help` for the command list (or a
+	// single command's help), `--version`/`-V` as an alias of the version command.
+	switch verb {
+	case "help", "-h", "--help":
+		if len(rest) > 0 {
+			printCommandHelp(strings.TrimLeft(rest[0], "-"))
+		} else {
+			usage()
+		}
+		return
+	case "--version", "-V":
 		fmt.Println("pandion", version)
-	case "demo":
-		runDemo()
-	case "up":
-		runUp(args)
-	case "build":
-		runBuild(args)
-	case "down":
-		runDown(args)
-	case "validate":
-		runValidate(args)
-	case "lockdown":
-		runLockdown(args)
-	case "reap":
-		runReap(args)
-	case "attach":
-		runAttach(args)
-	case "start":
-		runStart(args)
-	case "ssh":
-		runSSH(args)
-	case "cp":
-		runCP(args)
-	case "code":
-		runCode(args)
-	case "debug":
-		runDebugDispatch(args)
-	case "relay":
-		runRelayDispatch(args)
-	case "ls", "status":
-		runLs(args)
-	case "profiles":
-		runProfiles(args)
-	case "list-gpus":
-		runListGPUs(args)
-	case "completion":
-		runCompletion(args)
-	case "login":
-		runLogin(args)
-	case "logout":
-		runLogout(args)
-	default:
-		usage()
+		return
+	}
+	if !dispatch(verb, rest) {
+		fmt.Fprintf(os.Stderr, "unknown command %q\n\n", verb)
+		usageErr()
 		os.Exit(2)
 	}
 }
@@ -210,8 +193,8 @@ func applyUpDefaults(size, region string, ttl time.Duration, ttlSet, noTTL bool,
 
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
-	fs := flag.NewFlagSet("up", flag.ExitOnError)
-	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean|vultr|linode|scaleway|lambda (default: from `pandion init` or your credentials)")
+	fs := newCmdFlagSet("up")
+	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda (aliases in parens; default: from `pandion init` or your credentials)")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
@@ -227,21 +210,23 @@ func runUp(args []string) {
 	syncMode := fs.String("sync-mode", "source", "workspace sync: source (build on node) | binaries (upload prebuilt as-is, no .gitignore filtering, no build)")
 	runAsUser := fs.String("run-as", harden.DefaultRunUser, "unprivileged user to run the workload as (or 'root')")
 	size := fs.String("size", "", "provider server type/size (e.g. cpx21); default: `pandion init` default, else auto-select")
-	region := fs.String("region", "", "preferred region/location, comma-separated fallbacks (e.g. nbg1,fsn1); default: config default, else provider's choice")
+	region := fs.String("region", "", "region/location; comma-separated to allow fallbacks (e.g. nbg1,fsn1). An explicit --region is honored strictly — it won't silently land in another region on a capacity blip. Default: config default, else provider's choice")
 	gpu := fs.String("gpu", "", "provision a GPU node: MODEL[:COUNT], e.g. a100 or a100:2 (the provider must offer GPUs; see `pandion list-gpus`)")
 	gpuIdleUtil := fs.Int("gpu-idle-util", harden.DefaultGPUIdleUtil, "GPU node: utilization %% at/below which the GPU counts as idle for the dead-man's-switch (so headless jobs keep the node alive)")
 	ttl := fs.Duration("ttl", harden.DefaultIdleTTL, "idle poweroff after no SSH for this long (security)")
 	noTTL := fs.Bool("no-ttl", false, "disable the idle dead-man's-switch")
 	maxCost := fs.Float64("max-cost", 0, "budget cap: refuse to provision if projected spend (hourly × TTL) exceeds this (provider currency; 0 = off)")
 	dryRun := fs.Bool("dry-run", false, "preview the plan + projected cost and exit; create nothing")
+	jsonOut := fs.Bool("json", false, "with --dry-run: emit the plan + projected cost as JSON")
 	noRun := fs.Bool("no-run", false, "deploy only: provision + sync + build but do NOT launch the run command (start it later with `pandion start`)")
 	lock := fs.String("lock", "", "reproducibility: pin toolchain versions from this lockfile (H2)")
 	encWorkspace := fs.Bool("encrypt-workspace", false, "encrypt the workspace at rest with LUKS (ephemeral key; S-E)")
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
-	file := fs.String("f", "", "cluster.yaml for a multi-node topology")
+	fShort, fLong := addFileFlag(fs, "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
+	file := func() *string { s := resolveFileFlag(fs, fShort, fLong); return &s }()
 
 	// seed unspecified knobs from the operator's `pandion init` defaults (an explicit
 	// flag always wins; --ttl needs the fs.Visit check because it has a non-empty default).
@@ -276,17 +261,24 @@ func runUp(args []string) {
 		}
 	}
 
+	// serialize against a concurrent up/down/reap on the same id (P0.5) for the
+	// mutating paths only — a dry-run is read-only and takes no lock.
+	if !*dryRun {
+		lk := lockClusterOrExit(*id)
+		defer lk.Unlock()
+	}
+
 	// multi-node path: -f cluster.yaml. A top-level `--gpu` applies as the cluster
 	// default (per-node `gpu:` in the topology overrides); GPU nodes are provisioned,
 	// hardened, and meshed like any other (M5).
 	if *file != "" {
-		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu, *firewallAudit)
+		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu, *firewallAudit, *jsonOut)
 		return
 	}
 
 	// dry-run works for any pricing provider, incl. mock (offline preview).
 	if *dryRun {
-		dryRunSingle(o, *id, *node, *size, splitCSV(*region), ttlOrZero(*ttl, *noTTL), gpuReq)
+		dryRunSingle(o, *id, *node, *size, splitCSV(*region), ttlOrZero(*ttl, *noTTL), gpuReq, *jsonOut)
 		return
 	}
 
@@ -359,9 +351,10 @@ type hetznerUpOpts struct {
 // upCluster provisions a multi-node topology from cluster.yaml. M3.2a: mock
 // provider only (concurrent provisioning + barrier). The real Hetzner mesh path
 // (per-node hardened cloud-init + WG mesh + discovery) lands in M3.2b.
-func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool, gpuFlag string, auditFW bool) {
+func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxCost float64, dryRun bool, lockPath string, noRun bool, gpuFlag string, auditFW bool, jsonOut bool) {
 	cl, err := config.Load(file)
 	must(err)
+	warnUnappliedFields(file) // never silently ignore accepted-but-unapplied fields (P2.2)
 	if id == "demo" || id == "" {
 		id = cl.Name // default the cluster id to the topology name
 	}
@@ -380,7 +373,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 
 	// dry-run works for any pricing provider, incl. mock (offline preview).
 	if dryRun {
-		dryRunCluster(o, cl, id)
+		dryRunCluster(o, cl, id, jsonOut)
 		return
 	}
 
@@ -406,7 +399,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 		fmt.Printf("  %-12s %-8s ip=%s\n", n.Name, n.Phase, n.IP)
 	}
 	fmt.Printf("barrier passed: all %d nodes RUNNING. teardown: pandion down --id %s\n", len(c.Nodes), id)
-	fmt.Println("note: mock provider creates no cloud resources; real mesh + IPC land in M3.2b/M3.3.")
+	fmt.Println("note: mock provider is in-memory only — no cloud resources, no WireGuard mesh, and no remote workload execution. Use a real --provider to run this cluster.")
 }
 
 // small helpers shared by the cluster flow
@@ -556,6 +549,9 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
 	fmt.Printf("UP (%s): cluster %q node %q running at %s (host fp %s)\n",
 		prov, c.ID, node, ip, host.Fingerprint())
+	// Surface the consequential silent default up front: the node powers ITSELF off
+	// after the idle TTL (P2.6) — otherwise a forgotten node just vanishes.
+	statusln(idleTTLNotice(opt.idleTTL))
 
 	// cloud-edge firewall (defense-in-depth, M8) — tied to the firewall posture.
 	if opt.firewall {
@@ -563,7 +559,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 
 	// 4) persist keys for later attach/down (0600)
-	keyDir := filepath.Join(envHome(), ".pandion", "keys", id)
+	keyDir := filepath.Join(pandionDir(), "keys", id)
 	must(host.Save(keyDir, "host_ed25519"))
 	must(login.Save(keyDir, "login_ed25519"))
 
@@ -572,15 +568,19 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	//    `cloud-init status --wait` blocks until packages + hardening are applied
 	//    (S1/F4) — so the toolchain is READY before we run the user command.
 	addr := ip + ":22"
-	fmt.Println("connecting (host-key pinned; waiting for cloud-init + toolchain)...")
+	statusln("connecting (host-key pinned; waiting for cloud-init + toolchain)...")
 	onAttempt := func(n int, reason string) { fmt.Printf("  attempt %d: %s\n", n, reason) }
-	if _, err := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
-		"cloud-init status --wait || true", 5*time.Second, onAttempt); err != nil {
-		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", err)
+	stopHB := startHeartbeat("cloud-init readiness on " + node)
+	_, rerr := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
+		"cloud-init status --wait || true", 5*time.Second, onAttempt)
+	stopHB()
+	if rerr != nil {
+		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", rerr)
+		stageDeadlineHint("cloud-init readiness", rerr, prov, id)
 		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
-		return
+		os.Exit(codeInfraDegraded)
 	}
-	fmt.Println("node ready (cloud-init complete).")
+	statusln("node ready (cloud-init complete).")
 
 	// reproducibility (H2): record the resolved toolchain versions so a later
 	// `up --lock ~/.pandion/lock/<id>.json` reproduces this environment.
@@ -597,16 +597,18 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	//     lockdown) so the build can fetch dependencies (P0-1). native builds on the
 	//     host as the run user; docker builds inside the hardened container.
 	workdir := ""
+	// failNode reports a build-window failure, leaves the node up for debugging, and
+	// exits NON-ZERO (codeInfraDegraded) so scripts/CI don't read a left-up cluster
+	// as success. It never returns — callers need no follow-up `return`.
 	failNode := func(err error) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
 		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+		os.Exit(codeInfraDegraded)
 	}
 	// setup commands (non-apt software) run first — after apt packages, before the
-	// build — while egress is open. A failure is fail-fast: report it, leave the node
-	// up for debugging, and exit NON-ZERO so scripts/CI notice.
+	// build — while egress is open.
 	if err := runSetup(ctx, addr, login.Signer, host.Public, node, opt.setup); err != nil {
 		failNode(err)
-		os.Exit(1)
 	}
 	if opt.engine == "docker" {
 		// pull the image NOW (egress is still open); the post-lockdown `docker run`
@@ -615,14 +617,12 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
 			"docker pull "+shellQuote(opt.containerImage)); err != nil {
 			failNode(fmt.Errorf("docker pull failed: %v\n%s", err, out))
-			return
 		}
 		if opt.sync != nil {
 			fmt.Println("workspace sync...")
 			wd, err := syncFiles(ctx, addr, login.Signer, host.Public, *opt.sync, "root")
 			if err != nil {
 				failNode(err)
-				return
 			}
 			workdir = wd
 			if b := strings.TrimSpace(opt.sync.Build); b != "" {
@@ -630,7 +630,6 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 				if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
 					dockerRun(opt.containerImage, workdir, b, nil)); err != nil {
 					failNode(fmt.Errorf("container build failed: %v\n%s", err, out))
-					return
 				}
 			}
 		}
@@ -639,7 +638,6 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
 		if err != nil {
 			failNode(err)
-			return
 		}
 		workdir = wd
 	}
@@ -694,7 +692,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
 			fmt.Printf("firewall apply failed: %v\n%s(node left running)\n", err, out)
 			fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
-			return
+			os.Exit(codeInfraDegraded)
 		}
 		sshScope := "any source"
 		if operatorCIDR != "" {
@@ -747,7 +745,6 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// is reachable again with `pandion attach --id ID`.
 	if err := launchRun(ctx, addr, login.Signer, host.Public, runShell); err != nil {
 		failNode(fmt.Errorf("launch failed: %v", err))
-		return
 	}
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
@@ -756,25 +753,68 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	defer signal.Stop(sigCh)
 	go func() { <-sigCh; fmt.Println("\n^C — detaching from stream; node left running."); streamCancel() }()
 
-	printer := stream.NewPrinter(os.Stdout, filepath.Join(envHome(), ".pandion", "logs", id), colorEnabled())
+	printer := stream.NewPrinter(os.Stdout, filepath.Join(pandionDir(), "logs", id), colorEnabled())
 	defer printer.Close()
-	fmt.Printf("streaming (Ctrl+C detaches; reattach: pandion attach --id %s)\n", id)
-	fmt.Println("----------------------------------------------------------------")
-	tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
+	statusf("streaming (Ctrl+C detaches; reattach: pandion attach --id %s)\n", id)
+	statusln("----------------------------------------------------------------")
+	code := tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
 
 	audit.Event("up.complete", "id", id, "node", node, "provider", prov, "ip", ip)
 	fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+	// Propagate a crashed workload's own exit code (mirrors `pandion ssh -- cmd`);
+	// a clean exit or a Ctrl+C detach returns 0.
+	if code != 0 {
+		os.Exit(code)
+	}
+}
+
+// addFileFlag registers -f and its long alias --file (P1.3), pointing at the same
+// concept. Call resolveFileFlag after Parse to get the effective path (an explicit
+// --file wins; otherwise -f / its default).
+func addFileFlag(fs *flag.FlagSet, def, usage string) (short, long *string) {
+	short = fs.String("f", def, usage)
+	long = fs.String("file", "", "alias for -f")
+	return short, long
+}
+
+func resolveFileFlag(fs *flag.FlagSet, short, long *string) string {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if set["file"] {
+		return *long
+	}
+	return *short
 }
 
 func runValidate(args []string) {
-	fs := flag.NewFlagSet("validate", flag.ExitOnError)
-	file := fs.String("f", "cluster.yaml", "path to cluster.yaml")
+	fs := newCmdFlagSet("validate")
+	fShort, fLong := addFileFlag(fs, "cluster.yaml", "path to cluster.yaml")
+	showEff := fs.Bool("show-effective", false, "also print the effective value + source of each resolved knob (P2.4)")
 	_ = fs.Parse(args)
-	if _, err := config.Load(*file); err != nil {
+	file := resolveFileFlag(fs, fShort, fLong)
+	if _, err := config.Load(file); err != nil {
 		fmt.Fprintf(os.Stderr, "invalid: %v\n", err)
 		os.Exit(2) // usage/validation failure per the CLI spec
 	}
-	fmt.Printf("%s: valid\n", *file)
+	fmt.Printf("%s: valid\n", file)
+	warnUnappliedFields(file)
+	if *showEff {
+		fmt.Println()
+		showEffective(os.Stdout, file)
+	}
+}
+
+// warnUnappliedFields prints a warning for each schema field that validates but has
+// no backend consumer yet (P2.2), so a "valid" config that sets one isn't silently
+// ignored. Best-effort: an unreadable file simply warns nothing.
+func warnUnappliedFields(path string) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	for _, w := range config.Warnings(data) {
+		fmt.Fprintf(os.Stderr, "warning: %s: %s\n", path, w)
+	}
 }
 
 // runReap finds every Pandion-tagged server at the provider and destroys orphans
@@ -782,7 +822,7 @@ func runValidate(args []string) {
 // controlling laptop is gone (C4). Confirms in a TTY unless --yes.
 // runAttach reconnects to a running cluster's multiplexed streams.
 func runAttach(args []string) {
-	fs := flag.NewFlagSet("attach", flag.ExitOnError)
+	fs := newCmdFlagSet("attach")
 	id := fs.String("id", "", "cluster id (required)")
 	_ = fs.Parse(args)
 	if *id == "" {
@@ -796,10 +836,11 @@ func runAttach(args []string) {
 }
 
 func runReap(args []string) {
-	fs := flag.NewFlagSet("reap", flag.ExitOnError)
+	fs := newCmdFlagSet("reap")
 	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
 	olderThan := fs.Duration("older-than", 0, "only reap clusters whose oldest node is at least this age (e.g. 2h)")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	jsonOut := fs.Bool("json", false, "emit a machine-readable sweep result (implies non-interactive; pass --yes)")
 	_ = fs.Parse(args)
 
 	p, err := newProvider(resolveProviderOrExit(*prov))
@@ -810,38 +851,95 @@ func runReap(args []string) {
 	plan, err := o.ReapPlan(context.Background(), *olderThan)
 	must(err)
 	if len(plan) == 0 {
-		fmt.Println("reap: no Pandion clusters to remove.")
+		if *jsonOut {
+			must(renderReapJSON(os.Stdout, p.Name(), plan, 0))
+		} else {
+			fmt.Println("reap: no Pandion clusters to remove.")
+		}
 		return
 	}
-	fmt.Printf("reap: %d cluster(s) at %s:\n", len(plan), p.Name())
 	total := 0
+	if !*jsonOut {
+		fmt.Printf("reap: %d cluster(s) at %s:\n", len(plan), p.Name())
+	}
 	for _, c := range plan {
-		fmt.Printf("  %-24s %d node(s)  oldest %s\n", c.ClusterID, c.Servers, c.OldestAge.Round(time.Second))
+		if !*jsonOut {
+			fmt.Printf("  %-24s %d node(s)  oldest %s\n", c.ClusterID, c.Servers, c.OldestAge.Round(time.Second))
+		}
 		total += c.Servers
 	}
-	if !*yes {
-		fmt.Printf("destroy all %d node(s)? this is irreversible. [y/N]: ", total)
-		var ans string
-		_, _ = fmt.Scanln(&ans)
-		if ans != "y" && ans != "Y" {
-			fmt.Println("aborted; nothing changed.")
+	if *jsonOut && !*yes {
+		fmt.Fprintln(os.Stderr, "reap --json is non-interactive; pass --yes to confirm.")
+		os.Exit(2)
+	}
+	if !*jsonOut && !*yes {
+		// reap can destroy EVERY Pandion cluster at this provider, so — unlike
+		// `down` — it refuses to proceed non-interactively without an explicit
+		// --yes rather than reading (and misinterpreting) empty piped stdin.
+		if !isTTY() {
+			fmt.Fprintln(os.Stderr, "reap destroys every matching Pandion cluster at this provider; non-interactive: pass --yes to confirm.")
+			os.Exit(2)
+		}
+		if !confirmYes(fmt.Sprintf("destroy all %d node(s)? this is irreversible. [y/N]: ", total)) {
 			return
 		}
 	}
+	// serialize against a concurrent up/down/start on any planned id (P0.5): take
+	// every per-cluster lock up front; if one is held, refuse the whole reap rather
+	// than racing a live operation on that cluster.
+	for _, c := range plan {
+		lk := lockClusterOrExit(c.ClusterID)
+		defer lk.Unlock()
+	}
 	n, err := o.Reap(context.Background(), plan)
 	audit.Event("reap", "provider", p.Name(), "clusters", n, "planned", len(plan))
-	fmt.Printf("reaped %d/%d cluster(s).\n", n, len(plan))
+	// tombstone the local manifests we know about so reconnect commands fast-fail
+	// (no-op for reaped clusters this laptop never created).
+	for _, c := range plan {
+		tombstoneManifest(c.ClusterID)
+	}
+	if *jsonOut {
+		must(renderReapJSON(os.Stdout, p.Name(), plan, n))
+	} else {
+		fmt.Printf("reaped %d/%d cluster(s).\n", n, len(plan))
+	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "reap: %v\n", err)
+		if !*jsonOut {
+			fmt.Fprintf(os.Stderr, "reap: %v\n", err)
+		}
 		os.Exit(8)
 	}
+}
+
+// renderReapJSON emits a stable sweep result (P1.5): the planned clusters (id +
+// server count + oldest-age) and how many were reaped. Always emits the envelope,
+// even for an empty plan.
+func renderReapJSON(w io.Writer, providerName string, plan []orchestrator.ReapCandidate, reaped int) error {
+	type jsonCluster struct {
+		ID              string `json:"id"`
+		Servers         int    `json:"servers"`
+		OldestAgeSecond int64  `json:"oldest_age_seconds"`
+	}
+	jc := make([]jsonCluster, 0, len(plan))
+	for _, c := range plan {
+		jc = append(jc, jsonCluster{ID: c.ClusterID, Servers: c.Servers, OldestAgeSecond: int64(c.OldestAge.Seconds())})
+	}
+	out := struct {
+		Provider string        `json:"provider"`
+		Planned  int           `json:"planned"`
+		Reaped   int           `json:"reaped"`
+		Clusters []jsonCluster `json:"clusters"`
+	}{Provider: providerName, Planned: len(plan), Reaped: reaped, Clusters: jc}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 // runLs (aka `status`) lists every Pandion cluster alive at the provider with
 // uptime and live cost — the fleet-wide view over the reconcile source of truth
 // (works with no local state). Cost is shown when the provider prices its types.
 func runLs(args []string) {
-	fs := flag.NewFlagSet("ls", flag.ExitOnError)
+	fs := newCmdFlagSet("ls")
 	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
 	gpuUtil := fs.Bool("gpu-util", false, "also show live GPU utilization %% per node (SSHes nvidia-smi; needs public SSH reachability)")
@@ -1001,15 +1099,19 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 // renderStatus writes the `ls`/`status` table + totals. Separated from runLs so
 // the output format is unit-testable without a live provider.
 func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency string, showGPUUtil bool) {
-	if currency == "" {
-		currency = "?"
+	// An unpriced provider publishes no rates: show "unpriced" in the money headers
+	// (not a bare "?", which reads as broken) and an explanatory footer (P4.4).
+	priced := currency != ""
+	curLabel := currency
+	if !priced {
+		curLabel = "unpriced"
 	}
 	tw := tabwriter.NewWriter(w, 0, 2, 2, ' ', 0)
 	utilCol := ""
 	if showGPUUtil {
 		utilCol = "\tUTIL%"
 	}
-	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tGPU%s\tREGION\tUPTIME\t%s/hr\t~%s spent\n", utilCol, currency, currency)
+	fmt.Fprintf(tw, "CLUSTER\tNODE\tTYPE\tGPU%s\tREGION\tUPTIME\t%s/hr\t~%s spent\n", utilCol, curLabel, curLabel)
 	var totHourly, totAccrued float64
 	totNodes := 0
 	for _, c := range clusters {
@@ -1031,9 +1133,14 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 		totNodes += len(c.Nodes)
 	}
 	tw.Flush()
-	fmt.Fprintf(w, "\n%d cluster(s), %d node(s) — ~%.4f %s/hr, est. %.4f %s spent so far.\n",
-		len(clusters), totNodes, totHourly, currency, totAccrued, currency)
-	fmt.Fprintln(w, "(cost is an estimate: server age × hourly rate — your provider invoice is authoritative.)")
+	if priced {
+		fmt.Fprintf(w, "\n%d cluster(s), %d node(s) — ~%s %s/hr, est. %s %s spent so far.\n",
+			len(clusters), totNodes, fmtAmount(totHourly), currency, fmtAmount(totAccrued), currency)
+		fmt.Fprintln(w, "(cost is an estimate: server age × hourly rate — your provider invoice is authoritative.)")
+	} else {
+		fmt.Fprintf(w, "\n%d cluster(s), %d node(s).\n", len(clusters), totNodes)
+		fmt.Fprintln(w, "(unpriced: this provider publishes no rates through Pandion — see your provider invoice for cost.)")
+	}
 }
 
 // shortDur renders an uptime compactly: "8m", "3h07m", "2d5h".
@@ -1064,11 +1171,20 @@ func dashIfEmpty(s string) string {
 	return s
 }
 
+// fmtAmount is the ONE money-formatting rule used everywhere (ls/receipt/dry-run):
+// 2 decimals at or above 0.01, 4 below (so sub-cent hourly rates stay legible).
+func fmtAmount(v float64) string {
+	if v >= 0.01 || v <= -0.01 || v == 0 {
+		return fmt.Sprintf("%.2f", v)
+	}
+	return fmt.Sprintf("%.4f", v)
+}
+
 func money(m provider.Money) string {
 	if !m.Known() {
 		return "—"
 	}
-	return fmt.Sprintf("%.4f", m.Amount)
+	return fmtAmount(m.Amount)
 }
 
 // ttlOrZero resolves the effective idle-TTL: 0 when --no-ttl.
@@ -1082,7 +1198,7 @@ func ttlOrZero(ttl time.Duration, noTTL bool) time.Duration {
 // runListGPUs prints the GPU SKUs a provider can serve, priced — offline for the
 // mock provider, so the GPU catalog is browsable without spending a cent (G0).
 func runListGPUs(args []string) {
-	fs := flag.NewFlagSet("list-gpus", flag.ExitOnError)
+	fs := newCmdFlagSet("list-gpus")
 	prov := fs.String("provider", "", "provider to query (default: from `pandion init` or your credentials)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	refresh := fs.Bool("refresh", false, "bypass the local cache and re-fetch the live catalog")
@@ -1135,11 +1251,15 @@ func runListGPUs(args []string) {
 }
 
 // dryRunSingle previews the single-node `up` (spec-discovered type) and exits.
-func dryRunSingle(o *orchestrator.Orchestrator, id, node, size string, regionPref []string, window time.Duration, gpu provider.GPUReq) {
+func dryRunSingle(o *orchestrator.Orchestrator, id, node, size string, regionPref []string, window time.Duration, gpu provider.GPUReq, jsonOut bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	nodes, est, err := o.PlanUp(ctx, []orchestrator.NodeSpec{{Name: node, Type: size, RegionPref: regionPref, GPU: gpu}}, []time.Duration{window})
 	must(err)
+	if jsonOut {
+		must(renderDryRunJSON(os.Stdout, o.P.Name(), id, nodes, est))
+		return
+	}
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
@@ -1168,9 +1288,10 @@ func parseGPUFlag(s string) (provider.GPUReq, error) {
 // renderDryRun writes the `--dry-run` plan + projected cost. Separated so the
 // format is unit-testable without a live provider.
 func renderDryRun(w io.Writer, providerName, clusterID string, nodes []orchestrator.DryRunNode, est orchestrator.CostEstimate) {
+	priced := est.Currency != ""
 	cur := est.Currency
-	if cur == "" {
-		cur = "?"
+	if !priced {
+		cur = "unpriced"
 	}
 	fmt.Fprintf(w, "DRY RUN — pandion up (provider=%s): nothing will be created.\n", providerName)
 	fmt.Fprintf(w, "cluster: %s\n", clusterID)
@@ -1182,12 +1303,62 @@ func renderDryRun(w io.Writer, providerName, clusterID string, nodes []orchestra
 			money(n.Hourly), projMoney(n.Hourly, n.Window))
 	}
 	tw.Flush()
-	proj := fmt.Sprintf("%.4f %s", est.Projected, cur)
+	if !priced {
+		fmt.Fprintf(w, "\n%d node(s) — unpriced: %s publishes no rates through Pandion.\n", len(nodes), providerName)
+		return
+	}
+	proj := fmt.Sprintf("%s %s", fmtAmount(est.Projected), cur)
 	if est.Unbounded {
 		proj = "unbounded (a node has no TTL)"
 	}
-	fmt.Fprintf(w, "\n%d node(s): ~%.4f %s/hr; projected ~%s over TTL.\n", len(nodes), est.Hourly, cur, proj)
+	fmt.Fprintf(w, "\n%d node(s): ~%s %s/hr; projected ~%s over TTL.\n", len(nodes), fmtAmount(est.Hourly), cur, proj)
 	fmt.Fprintln(w, "(estimate — an auto-selected size may vary with live availability; no resources created.)")
+}
+
+// renderDryRunJSON emits the `up --dry-run` plan as a stable JSON envelope (P1.5):
+// per-node size/region/gpu/ttl/hourly/projected, plus cluster totals. Auto-chosen
+// values are flagged so a script can tell "cpx21 (auto)" from an explicit size.
+func renderDryRunJSON(w io.Writer, providerName, clusterID string, nodes []orchestrator.DryRunNode, est orchestrator.CostEstimate) error {
+	type jsonNode struct {
+		Name         string  `json:"name"`
+		Size         string  `json:"size"`
+		SizeAuto     bool    `json:"size_auto"`
+		GPU          string  `json:"gpu,omitempty"`
+		Region       string  `json:"region"`
+		RegionAuto   bool    `json:"region_auto"`
+		TTLSeconds   int64   `json:"ttl_seconds"`
+		Hourly       float64 `json:"hourly"`
+		ProjectedTTL float64 `json:"projected_over_ttl"`
+	}
+	jn := make([]jsonNode, 0, len(nodes))
+	for _, n := range nodes {
+		gpu := ""
+		if n.GPU.Wanted() {
+			gpu = gpuLabel(n.GPU)
+		}
+		jn = append(jn, jsonNode{
+			Name: n.Name, Size: autoIf(n.Size), SizeAuto: n.Size == "",
+			GPU: gpu, Region: autoIf(n.Region), RegionAuto: n.Region == "",
+			TTLSeconds: int64(n.Window.Seconds()),
+			Hourly:     n.Hourly.Amount, ProjectedTTL: n.Hourly.Amount * n.Window.Hours(),
+		})
+	}
+	out := struct {
+		Provider       string     `json:"provider"`
+		ID             string     `json:"id"`
+		DryRun         bool       `json:"dry_run"`
+		Currency       string     `json:"currency"`
+		Nodes          []jsonNode `json:"nodes"`
+		TotalHourly    float64    `json:"total_hourly"`
+		TotalProjected float64    `json:"total_projected"`
+		Unbounded      bool       `json:"unbounded"`
+	}{
+		Provider: providerName, ID: clusterID, DryRun: true, Currency: est.Currency,
+		Nodes: jn, TotalHourly: est.Hourly, TotalProjected: est.Projected, Unbounded: est.Unbounded,
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func autoIf(s string) string {
@@ -1299,11 +1470,55 @@ func renderReceipt(w io.Writer, r receipt) {
 		fmt.Fprintf(&b, ", ran %s", shortDur(r.ran))
 	}
 	if r.priced {
-		fmt.Fprintf(&b, " · total ~%.2f %s", r.total, r.currency)
+		fmt.Fprintf(&b, " · total ~%s %s", fmtAmount(r.total), r.currency)
 	} else {
 		b.WriteString(" · cost unknown")
 	}
 	fmt.Fprintln(w, b.String())
+}
+
+// renderReceiptJSON emits a stable teardown receipt envelope (P1.5). dryRun=true
+// marks a preview (nothing destroyed). The schema always carries every field so
+// scripts can parse it unconditionally, mirroring renderStatusJSON.
+func renderReceiptJSON(w io.Writer, r receipt, id, providerName string, servers []provider.Server, dryRun bool) error {
+	type jsonServer struct {
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+		Region string `json:"region"`
+		IP     string `json:"ip"`
+	}
+	js := make([]jsonServer, 0, len(servers))
+	for _, s := range servers {
+		js = append(js, jsonServer{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP})
+	}
+	out := struct {
+		ID         string       `json:"id"`
+		Provider   string       `json:"provider"`
+		DryRun     bool         `json:"dry_run"`
+		Destroyed  int          `json:"destroyed"`
+		Servers    []jsonServer `json:"servers"`
+		RanSeconds int64        `json:"ran_seconds"`
+		RanKnown   bool         `json:"ran_known"`
+		Priced     bool         `json:"priced"`
+		TotalCost  float64      `json:"total_cost"`
+		Currency   string       `json:"currency"`
+		GPUs       []string     `json:"gpus"`
+	}{
+		ID: id, Provider: providerName, DryRun: dryRun,
+		Destroyed: len(servers), Servers: js,
+		RanSeconds: int64(r.ran.Seconds()), RanKnown: r.ranKnown,
+		Priced: r.priced, TotalCost: r.total, Currency: r.currency,
+		GPUs: r.gpus,
+	}
+	if out.GPUs == nil {
+		out.GPUs = []string{}
+	}
+	if dryRun {
+		out.Destroyed = 0
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	return enc.Encode(out)
 }
 
 func ttlLabel(d time.Duration) string {
@@ -1317,23 +1532,53 @@ func projMoney(m provider.Money, window time.Duration) string {
 	if !m.Known() || window <= 0 {
 		return "—"
 	}
-	return fmt.Sprintf("%.4f", m.Amount*window.Hours())
+	return fmtAmount(m.Amount * window.Hours())
 }
 
 func estMoney(m provider.Money, age time.Duration) string {
 	if !m.Known() {
 		return "—"
 	}
-	return fmt.Sprintf("%.4f", m.Amount*age.Hours())
+	return fmtAmount(m.Amount * age.Hours())
 }
 
 func runDown(args []string) {
-	fs := flag.NewFlagSet("down", flag.ExitOnError)
+	fs := newCmdFlagSet("down")
 	prov := fs.String("provider", "", "provider (default: read from the cluster's manifest)")
-	id := fs.String("id", "demo", "cluster id")
+	id := fs.String("id", "", "cluster id (required, except the mock demo)")
 	dryRun := fs.Bool("dry-run", false, "list what would be destroyed; destroy nothing")
 	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	jsonOut := fs.Bool("json", false, "emit a machine-readable teardown receipt (implies non-interactive; pass --yes)")
 	_ = fs.Parse(args)
+
+	// Resolve a missing --id safely — a bare `pandion down` must never guess at a
+	// real cluster. Under the mock provider it still targets the "demo" id (keeps
+	// `pandion demo` one-liners working); with a real provider it requires an
+	// explicit id, or — as an ergonomic escape hatch — auto-selects the sole local
+	// cluster, forcing a named confirmation prompt so the choice is visible.
+	autoPicked := false
+	if *id == "" {
+		tentative := *prov
+		if tentative == "" {
+			tentative = resolveProvider("")
+		}
+		if tentative == "mock" {
+			*id = "demo"
+		} else {
+			ids := localClusterIDs()
+			switch len(ids) {
+			case 1:
+				*id = ids[0]
+				autoPicked = true
+			case 0:
+				fmt.Fprintln(os.Stderr, "down: --id is required (no local clusters found). Pass --id <name>.")
+				os.Exit(2)
+			default:
+				fmt.Fprintf(os.Stderr, "down: --id is required; local clusters: %s\n", strings.Join(ids, ", "))
+				os.Exit(2)
+			}
+		}
+	}
 
 	// prefer the provider recorded in the cluster's manifest, so `down --id X` needs
 	// no --provider; fall back to the flag/config resolution.
@@ -1354,29 +1599,52 @@ func runDown(args []string) {
 	initAudit()
 	ctx := context.Background()
 
-	// preview against the provider (the reconcile source of truth).
+	// preview against the provider (the reconcile source of truth). --json is a
+	// machine consumer, so it stays silent here and emits one object at the end.
 	servers, err := p.ListByTag(ctx, *id)
 	must(err)
-	if len(servers) > 0 {
-		fmt.Printf("cluster %q at %s — %d server(s) to destroy:\n", *id, p.Name(), len(servers))
-		for _, s := range servers {
-			fmt.Printf("  %-26s %-10s %-8s %s\n", s.Name, dashIfEmpty(s.Type), dashIfEmpty(s.Region), s.IP)
+	if !*jsonOut {
+		if len(servers) > 0 {
+			fmt.Printf("cluster %q at %s — %d server(s) to destroy:\n", *id, p.Name(), len(servers))
+			for _, s := range servers {
+				fmt.Printf("  %-26s %-10s %-8s %s\n", s.Name, dashIfEmpty(s.Type), dashIfEmpty(s.Region), s.IP)
+			}
+		} else {
+			fmt.Printf("cluster %q at %s: no live servers.\n", *id, p.Name())
 		}
-	} else {
-		fmt.Printf("cluster %q at %s: no live servers (teardown will also reap keys/firewall/state).\n", *id, p.Name())
 	}
 	if *dryRun {
-		fmt.Println("dry-run: nothing destroyed.")
+		if *jsonOut {
+			must(renderReceiptJSON(os.Stdout, receipt{}, *id, p.Name(), servers, true))
+		} else {
+			fmt.Println("dry-run: nothing destroyed.")
+		}
 		return
 	}
+	// serialize against a concurrent up/reap on this id (P0.5).
+	lk := lockClusterOrExit(*id)
+	defer lk.Unlock()
 	// confirm only in a terminal (scripts/CI run non-interactively — proceed).
-	if !*yes && len(servers) > 0 && isTTY() {
-		fmt.Printf("destroy %d server(s)? this is irreversible. [y/N]: ", len(servers))
-		var ans string
-		_, _ = fmt.Scanln(&ans)
-		if ans != "y" && ans != "Y" {
-			fmt.Println("aborted; nothing changed.")
-			return
+	// --json is non-interactive by contract: require --yes rather than prompt.
+	if *jsonOut && !*yes && len(servers) > 0 {
+		fmt.Fprintln(os.Stderr, "down --json is non-interactive; pass --yes to confirm.")
+		os.Exit(2)
+	}
+	// An auto-picked id (no --id given) always demands confirmation so the chosen
+	// cluster is named out loud; non-interactively that requires an explicit --yes.
+	if !*jsonOut && !*yes && len(servers) > 0 {
+		if autoPicked && !isTTY() {
+			fmt.Fprintf(os.Stderr, "down: no --id given and stdin is not a TTY; pass --id %s and/or --yes.\n", *id)
+			os.Exit(2)
+		}
+		if autoPicked {
+			if !confirmYes(fmt.Sprintf("no --id given; destroy the only cluster %q (%d server(s))? [y/N]: ", *id, len(servers))) {
+				return
+			}
+		} else if isTTY() {
+			if !confirmYes(fmt.Sprintf("destroy %d server(s)? this is irreversible. [y/N]: ", len(servers))) {
+				return
+			}
 		}
 	}
 	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
@@ -1388,9 +1656,15 @@ func runDown(args []string) {
 	}
 	rcpt := buildReceipt(ctx, p, servers, created)
 	must(o.Down(ctx, *id))
-	reapShares(*id) // revoke + delete any outstanding debug shares (no leak)
+	reapShares(*id)        // revoke + delete any outstanding debug shares (no leak)
+	tombstoneManifest(*id) // mark the manifest destroyed so attach/ssh/start/lockdown fast-fail
 	audit.Event("down.complete", "id", *id, "provider", p.Name())
+	if *jsonOut {
+		must(renderReceiptJSON(os.Stdout, rcpt, *id, p.Name(), servers, false))
+		return
+	}
 	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
+	fmt.Printf("  local state cleared; keys + logs kept in ~/.pandion/{keys,logs}/%s (reconnect commands now report it torn down).\n", *id)
 	renderReceipt(os.Stdout, rcpt)
 }
 
@@ -1398,6 +1672,85 @@ func runDown(args []string) {
 func isTTY() bool {
 	fi, err := os.Stdin.Stat()
 	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// idleTTLNotice renders the idle-poweroff notice for the start of `up` (P2.6). An
+// idle node powers ITSELF off after this window (a safety default that otherwise
+// bites silently); 0 means the dead-man's-switch is disabled.
+func idleTTLNotice(ttl time.Duration) string {
+	if ttl <= 0 {
+		return "idle poweroff: disabled (--no-ttl) — this node runs until you tear it down."
+	}
+	return fmt.Sprintf("idle poweroff: node powers off after %s with no SSH (--ttl to change, --no-ttl to disable).", shortDur(ttl))
+}
+
+// stderrIsTTY reports whether stderr is an interactive terminal — used to gate
+// human-only hints (e.g. the completion install one-liner) so redirected/piped
+// output stays clean.
+func stderrIsTTY() bool {
+	fi, err := os.Stderr.Stat()
+	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+}
+
+// lockClusterOrExit takes the per-cluster cross-process advisory lock so two
+// mutating commands (up/down/start/lockdown/reap) can't interleave writes to the
+// same cluster's state. On contention it prints who holds it and exits
+// codeRefused (nothing changed). A non-contention lock error (e.g. an unwritable
+// state dir) is a warning, not a hard stop — the command proceeds unlocked, since
+// the provider stays the source of truth. Returns nil in that case (Unlock is safe
+// on nil). Callers `defer l.Unlock()`.
+func lockClusterOrExit(id string) *flock.Lock {
+	dir := filepath.Join(pandionDir(), "state")
+	_ = os.MkdirAll(dir, 0o755)
+	l, err := flock.TryLock(filepath.Join(dir, id+".lock"))
+	if err != nil {
+		if flock.IsBusy(err) {
+			fmt.Fprintf(os.Stderr, "%q: %v\n", id, err)
+			os.Exit(codeRefused)
+		}
+		fmt.Fprintf(os.Stderr, "warning: could not acquire state lock for %q: %v (proceeding)\n", id, err)
+		return nil
+	}
+	return l
+}
+
+// localClusterIDs returns the cluster ids that still have a local state journal
+// under ~/.pandion/state. It's the local view of "which clusters exist" and is
+// used to resolve a missing --id when exactly one is known (down auto-pick).
+func localClusterIDs() []string {
+	entries, err := os.ReadDir(filepath.Join(pandionDir(), "state"))
+	if err != nil {
+		return nil
+	}
+	var ids []string
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), ".json") {
+			ids = append(ids, strings.TrimSuffix(e.Name(), ".json"))
+		}
+	}
+	return ids
+}
+
+// confirmYes prints prompt and reads a line from stdin, returning true only on an
+// explicit y/Y. A closed/empty stdin (EOF — e.g. piped with nothing to read) is
+// called out distinctly so the abort isn't mistaken for a silent no-op; any other
+// answer is a normal decline.
+func confirmYes(prompt string) bool {
+	fmt.Print(prompt)
+	var ans string
+	if _, err := fmt.Scanln(&ans); err != nil {
+		if errors.Is(err, io.EOF) {
+			fmt.Println("no confirmation received — aborted.")
+		} else {
+			fmt.Println("aborted; nothing changed.")
+		}
+		return false
+	}
+	if ans != "y" && ans != "Y" {
+		fmt.Println("aborted; nothing changed.")
+		return false
+	}
+	return true
 }
 
 func runDemo() {
@@ -1411,7 +1764,7 @@ func runDemo() {
 }
 
 func mustStore() *state.Store {
-	st, err := state.NewStore(filepath.Join(envHome(), ".pandion", "state"))
+	st, err := state.NewStore(filepath.Join(pandionDir(), "state"))
 	must(err)
 	return st
 }
@@ -1421,55 +1774,136 @@ func envHome() string {
 	return h
 }
 
+// pandionDir is the base directory for all Pandion state (state journal, keys,
+// logs, config, lockfiles). It is $PANDION_HOME when set — which REPLACES
+// ~/.pandion outright (P2.5), handy for tests, shared machines, and XDG layouts —
+// otherwise ~/.pandion. Every path under Pandion's control hangs off this.
+func pandionDir() string {
+	if h := strings.TrimSpace(os.Getenv("PANDION_HOME")); h != "" {
+		return h
+	}
+	return filepath.Join(envHome(), ".pandion")
+}
+
 // initAudit wires the structured infra-action trail: always appended to
 // ~/.pandion/logs/audit.jsonl, and also echoed to stderr when PANDION_LOG is set
 // (L3). Called by the commands that touch infrastructure.
 func initAudit() {
-	dir := filepath.Join(envHome(), ".pandion", "logs")
+	dir := filepath.Join(pandionDir(), "logs")
 	_ = os.MkdirAll(dir, 0o700)
 	var w io.Writer = io.Discard
 	if f, err := os.OpenFile(filepath.Join(dir, "audit.jsonl"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600); err == nil {
 		w = f // intentionally kept open for the process lifetime (a short-lived CLI)
 	}
 	level, verbose := audit.LevelFromEnv()
+	// --verbose (global flag) wins over the env: force the debug trail to stderr.
+	if logVerbose {
+		level, verbose = slog.LevelDebug, true
+	}
 	if verbose {
 		w = io.MultiWriter(w, os.Stderr)
 	}
 	audit.Init(w, level)
 }
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage:")
-	fmt.Fprintln(os.Stderr, "  pandion [--profile NAME] <cmd> …   ($PANDION_PROFILE also accepted)")
-	fmt.Fprintln(os.Stderr, "")
-	fmt.Fprintln(os.Stderr, "  pandion init   (set up a default provider + credentials so bare commands work)")
-	fmt.Fprintln(os.Stderr, "  pandion up   [--provider mock|hetzner|digitalocean] [--id ID] [--node NAME] [--size TYPE] [--region R] [--gpu MODEL[:N]] [--dry-run] [--no-run] [--lock FILE] [--encrypt-workspace] -- <run cmd>")
-	fmt.Fprintln(os.Stderr, "  pandion build [dir] [up-flags…] [-- <run cmd>]   (auto-detect toolchain, upload + build the project in the cloud)")
-	fmt.Fprintln(os.Stderr, "  pandion down [--provider mock|hetzner|digitalocean] [--id ID] [--dry-run] [--yes]")
-	fmt.Fprintln(os.Stderr, "  pandion validate [-f cluster.yaml]")
-	fmt.Fprintln(os.Stderr, "  pandion lockdown --id ID   (public deny-all; SSH over overlay only)")
-	fmt.Fprintln(os.Stderr, "  pandion reap [--older-than DUR] [--yes]   (destroy orphaned Pandion nodes)")
-	fmt.Fprintln(os.Stderr, "  pandion attach --id ID   (reconnect to a running cluster's streams)")
-	fmt.Fprintln(os.Stderr, "  pandion start --id ID [--node NAME] [--detach]   (launch run commands on a deployed cluster/node)")
-	fmt.Fprintln(os.Stderr, "  pandion ssh --id ID [--node NAME] [--overlay] [-- CMD]   (SSH into a node, host-key pinned)")
-	fmt.Fprintln(os.Stderr, "  pandion cp --id ID [--node NAME] SRC DST   (scp to/from a node; prefix a node path with ':')")
-	fmt.Fprintln(os.Stderr, "  pandion code --id ID [--node NAME] [--print]   (pinned SSH config for VS Code Remote-SSH)")
-	fmt.Fprintln(os.Stderr, "  pandion debug --id ID [--node NAME] [--public] [--pid N] [--print]   (attach your local debugger to a remote process over the overlay)")
-	fmt.Fprintln(os.Stderr, "  pandion debug share --id ID [--node NAME] [--expires 2h]   (grant a teammate a scoped, expiring remote-debug token)")
-	fmt.Fprintln(os.Stderr, "  pandion debug join <token>   (accept a shared debug grant: scoped overlay peer + launch.json)")
-	fmt.Fprintln(os.Stderr, "  pandion debug unshare --id ID [--share SID | --all]   (revoke a shared debug grant)")
-	fmt.Fprintln(os.Stderr, "  pandion relay up --id ID [--node NAME] [--port 8443]   (deploy the browser-SSH relay on a node)")
-	fmt.Fprintln(os.Stderr, "  pandion ls | status [--provider …] [--json]   (list live clusters + cost)")
-	fmt.Fprintln(os.Stderr, "  pandion login | logout [--provider hetzner|digitalocean]   (store/remove the API token in the OS keychain)")
-	fmt.Fprintln(os.Stderr, "  pandion list-gpus [--provider …] [--json]   (list the GPU SKUs a provider can serve, priced)")
-	fmt.Fprintln(os.Stderr, "  pandion profiles   (list configured profiles; * = active)")
-	fmt.Fprintln(os.Stderr, "  pandion completion bash|zsh|fish   (shell completion script)")
-	fmt.Fprintln(os.Stderr, "  pandion demo | version")
+// startHeartbeat prints an elapsed-time line to stderr every ~30s while a slow
+// stage runs, so a user can tell "hung" from "slow" during the multi-minute waits
+// in `up` (P4.1). It is silent when stderr isn't a TTY or --quiet is set, and never
+// touches stdout (machine output stays clean). The returned func stops it (safe to
+// call once; defer it).
+func startHeartbeat(stage string) func() {
+	if logQuiet || !stderrIsTTY() {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	start := time.Now()
+	go func() {
+		t := time.NewTicker(30 * time.Second)
+		defer t.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-t.C:
+				fmt.Fprintf(os.Stderr, "  … still working on %s (%s elapsed)\n", stage, shortDur(time.Since(start)))
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
+}
+
+// deadlineHintText returns a per-stage explanation when err is a context deadline
+// (which stage blew the budget, that the cluster is left up, how to retry or tear
+// down), or "" for any other error. Split out so it's unit-testable (P4.1).
+func deadlineHintText(stage string, err error, prov, id string) string {
+	if !errors.Is(err, context.DeadlineExceeded) {
+		return ""
+	}
+	return fmt.Sprintf("provisioning exceeded its time budget during %q — the cluster is left up.\n"+
+		"  retry the workload:  pandion start --id %s\n"+
+		"  or tear it down:     pandion down --provider=%s --id %s", stage, id, prov, id)
+}
+
+// stageDeadlineHint prints deadlineHintText to stderr (nothing for a non-deadline
+// error), so a blown budget names the stage instead of a bare "context deadline
+// exceeded" (P4.1).
+func stageDeadlineHint(stage string, err error, prov, id string) {
+	if s := deadlineHintText(stage, err, prov, id); s != "" {
+		fmt.Fprintln(os.Stderr, s)
+	}
+}
+
+// statusln/statusf print human progress ("chatter") to stdout unless --quiet is
+// set (P1.6). Final results and error messages do NOT go through these — they must
+// always show — so --quiet leaves exactly results + stderr errors.
+func statusln(a ...any) {
+	if !logQuiet {
+		fmt.Println(a...)
+	}
+}
+
+func statusf(format string, a ...any) {
+	if !logQuiet {
+		fmt.Printf(format, a...)
+	}
 }
 
 func must(err error) {
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		fmt.Fprintln(os.Stderr, "error:", friendlyErr(err))
 		os.Exit(1)
 	}
+}
+
+// friendlyErr classifies common provider SDK/HTTP errors into an actionable hint,
+// then appends the original text (P4.2) — it never HIDES the underlying error. An
+// unrecognized error is returned verbatim.
+func friendlyErr(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := err.Error()
+	low := strings.ToLower(s)
+	var hint string
+	switch {
+	case containsAny(low, "401", "unauthorized", "403", "forbidden", "invalid token", "authentication failed"):
+		hint = "provider rejected the credentials — the token is invalid or lacks write scope. Re-run `pandion login` (or check the provider's env var)."
+	case containsAny(low, "429", "rate limit", "too many requests"):
+		hint = "provider rate limit hit — retry shortly."
+	case containsAny(low, "quota", "capacity", "no available", "resource_exhausted", "out of stock", "insufficient"):
+		hint = "provider quota/capacity limit — try another --size or --region, or request a quota increase."
+	default:
+		return s // unrecognized: surface verbatim
+	}
+	return hint + "\n  underlying error: " + s
+}
+
+func containsAny(s string, subs ...string) bool {
+	for _, sub := range subs {
+		if strings.Contains(s, sub) {
+			return true
+		}
+	}
+	return false
 }

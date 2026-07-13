@@ -1,0 +1,7 @@
+# Smallest possible Pandion topology: one node, one command.
+#   pandion up -f cluster.yaml --id single
+apiVersion: pandion/v1
+name: single-node
+nodes:
+  - name: app
+    run: 'echo "hello from $(hostname)"; uname -a'

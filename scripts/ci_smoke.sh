@@ -59,4 +59,52 @@ if ! HOME="$H" USERPROFILE="$H" "$BIN" up --id cfg-smoke -- 'echo hi' | grep -q 
   echo "[smoke] FAIL: bare 'up' did not resolve to the configured default provider"; exit 1
 fi
 
+echo "[smoke] down/start/relay require --id on a real provider (P0.3 — no destructive default)"
+# a clean home with NO local clusters, so 'down' can't auto-pick a sole cluster.
+# NOTE: these commands exit non-zero, so capture the output (|| true) rather than
+# piping into grep — under `set -o pipefail` the pipeline would inherit exit 2.
+HE="$tmp/empty-home"; mkdir -p "$HE"
+for cmd in "down --provider=hetzner" "start" "relay status"; do
+  out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" $cmd 2>&1 || true)"
+  case "$out" in
+    *"--id is required"*) : ;;
+    *) echo "[smoke] FAIL: 'pandion $cmd' did not refuse a missing --id (got: $out)"; exit 1 ;;
+  esac
+done
+
+echo "[smoke] down --provider=mock still targets the demo id (P0.3 escape hatch)"
+out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" down --provider=mock 2>&1 || true)"
+case "$out" in *'"demo"'*) : ;; *) echo "[smoke] FAIL: bare mock 'down' no longer resolves the demo id"; exit 1 ;; esac
+
+echo "[smoke] mock 'up' note no longer references shipped milestones (P0.6)"
+out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" up --provider=mock --id ci-note -- 'echo hi' 2>&1 || true)"
+case "$out" in *M3.2b*) echo "[smoke] FAIL: stale milestone note still printed"; exit 1 ;; esac
+
+echo "[smoke] PANDION_HOME relocates all state (P2.5)"
+PH="$tmp/pandion-home"; mkdir -p "$PH"
+PANDION_HOME="$PH" HOME="$HE" USERPROFILE="$HE" "$BIN" up --provider=mock --id ph -- 'echo hi' > /dev/null
+[ -f "$PH/state/ph.json" ] || { echo "[smoke] FAIL: PANDION_HOME did not hold the state journal"; exit 1; }
+
+echo "[smoke] init --cluster scaffolds a cluster.yaml that validates (P2.3)"
+SC="$tmp/scaffold"; mkdir -p "$SC"
+HOME="$HE" USERPROFILE="$HE" "$BIN" init --cluster "$SC/cluster.yaml" > /dev/null
+HOME="$HE" USERPROFILE="$HE" "$BIN" validate -f "$SC/cluster.yaml" | grep -q "valid" || { echo "[smoke] FAIL: scaffolded cluster.yaml did not validate"; exit 1; }
+# refuses to clobber without --force
+if HOME="$HE" USERPROFILE="$HE" "$BIN" init --cluster "$SC/cluster.yaml" >/dev/null 2>&1; then
+  echo "[smoke] FAIL: init --cluster overwrote an existing file without --force"; exit 1
+fi
+
+echo "[smoke] help/version discovery gestures exit 0 on stdout (P1.1)"
+for g in "--help" "-h" "help" "--version" "-V"; do
+  if ! HOME="$HE" USERPROFILE="$HE" "$BIN" $g >/dev/null 2>&1; then
+    echo "[smoke] FAIL: 'pandion $g' did not exit 0"; exit 1
+  fi
+done
+# `pandion up -h` shows the registry synopsis + example on stdout (P1.1/P1.2).
+out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" up -h 2>/dev/null || true)"
+case "$out" in *"example: pandion up"*) : ;; *) echo "[smoke] FAIL: 'up -h' missing synopsis/example"; exit 1 ;; esac
+# command-aware completion: ls offers --json but not the up-only --ttl (P1.2).
+out="$(HOME="$HE" USERPROFILE="$HE" "$BIN" completion bash 2>/dev/null)"
+case "$out" in *"ls) flags="*"--json"*) : ;; *) echo "[smoke] FAIL: completion not command-aware for ls"; exit 1 ;; esac
+
 echo "[smoke] OK on ${RUNNER_OS:-$(uname -s)}"

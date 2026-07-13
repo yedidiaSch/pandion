@@ -4,7 +4,6 @@ package main
 
 import (
 	"encoding/json"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -116,26 +115,24 @@ func runDebugDispatch(args []string) {
 //
 //	pandion debug --id ID [--node NAME] [--public] [--pid N] [--program PATH] [--print]
 func runDebug(args []string) {
-	fs := flag.NewFlagSet("debug", flag.ExitOnError)
+	fs := newCmdFlagSet("debug")
 	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "node name (default: the first node)")
-	public := fs.Bool("public", false, "attach over the node's PUBLIC IP (default: the WireGuard overlay)")
+	// debug defaults to the overlay (encrypted mesh); --public forces the public IP.
+	// Both flags are accepted on every connect command now (P1.3).
+	overlayF, publicF := addConnFlags(fs, true)
 	pid := fs.Int("pid", 0, "attach to this remote PID (default: VS Code's remote process picker)")
 	program := fs.String("program", "", "remote path to the executable, for symbols (default: the workspace dir)")
 	printOnly := fs.Bool("print", false, "print the launch config and exit (don't touch ./.vscode/launch.json)")
-	fs.Usage = func() {
-		fmt.Fprintln(os.Stderr, "usage: pandion debug --id ID [--node NAME] [--public] [--pid N] [--program PATH] [--print]")
-		fmt.Fprintln(os.Stderr, "  Attach your LOCAL VS Code debugger to a RUNNING process on a node, over the overlay.")
-		fmt.Fprintln(os.Stderr, "  Requires the VS Code C/C++ extension locally; gdb is already on the node.")
-		fs.PrintDefaults()
-	}
 	_ = fs.Parse(args)
+	useOverlay := resolveOverlay(fs, overlayF, publicF, true)
 	if *id == "" {
 		fmt.Fprintln(os.Stderr, "debug: --id is required")
 		os.Exit(2)
 	}
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "debug: no manifest for %q: %v\n", *id, err)
 		os.Exit(3)
 	}
@@ -148,7 +145,7 @@ func runDebug(args []string) {
 	// Overlay by default (debug rides the encrypted mesh); --public forces the
 	// public IP. This intentionally differs from `pandion code` (public-first).
 	addr := target.OverlayIP
-	if *public || addr == "" {
+	if !useOverlay || addr == "" {
 		addr = target.IP
 	}
 	if addr == "" {
@@ -156,7 +153,7 @@ func runDebug(args []string) {
 		os.Exit(3)
 	}
 
-	keyDir := filepath.Join(envHome(), ".pandion", "keys", *id)
+	keyDir := filepath.Join(pandionDir(), "keys", *id)
 	keyPath := filepath.Join(keyDir, "login_ed25519")
 	if _, err := os.Stat(keyPath); err != nil {
 		fmt.Fprintf(os.Stderr, "debug: login key not found (%s): %v\n", keyPath, err)
@@ -184,7 +181,7 @@ func runDebug(args []string) {
 		printDebugUsage(cfg.Name, addr, *pid)
 		return
 	}
-	sideDir := filepath.Join(envHome(), ".pandion", "vscode")
+	sideDir := filepath.Join(pandionDir(), "vscode")
 	must(os.MkdirAll(sideDir, 0o700))
 	sidePath := filepath.Join(sideDir, *id+"-"+target.Name+".launch.json")
 	must(os.WriteFile(sidePath, blockJSON, 0o600))

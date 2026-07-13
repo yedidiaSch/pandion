@@ -50,17 +50,26 @@ func selectCandidates(types []typeInfo, minCores, minRAMGB int, arch string) []s
 	return names
 }
 
-// orderLocations puts preferred regions first (in the given order), then the rest.
-func orderLocations(all, preferred []string) []string {
+// orderLocations puts preferred regions first (in the given order). When strict
+// is false it then appends every other location as availability fallback; when
+// strict is true it returns ONLY the preferred regions that actually exist —
+// so an explicit `--region nbg1` never silently lands in another continent
+// because nbg1 was momentarily out of capacity (widen with `--region nbg1,fsn1`).
+func orderLocations(all, preferred []string, strict bool) []string {
 	seen := map[string]bool{}
+	exists := make(map[string]bool, len(all))
+	for _, a := range all {
+		exists[a] = true
+	}
 	var out []string
 	for _, p := range preferred {
-		for _, a := range all {
-			if a == p && !seen[a] {
-				out = append(out, a)
-				seen[a] = true
-			}
+		if exists[p] && !seen[p] {
+			out = append(out, p)
+			seen[p] = true
 		}
+	}
+	if strict {
+		return out
 	}
 	for _, a := range all {
 		if !seen[a] {

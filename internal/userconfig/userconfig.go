@@ -37,14 +37,24 @@ type Defaults struct {
 // envHome — usually $HOME).
 func Path(home string) string { return PathFor(home, "") }
 
+// base is the Pandion state directory: $PANDION_HOME when set (it REPLACES
+// ~/.pandion, P2.5), else <home>/.pandion. Keeps config/profiles co-located with
+// the rest of Pandion's state under the same override.
+func base(home string) string {
+	if h := strings.TrimSpace(os.Getenv("PANDION_HOME")); h != "" {
+		return h
+	}
+	return filepath.Join(home, ".pandion")
+}
+
 // PathFor is Path for a named profile: the default profile ("") is
 // ~/.pandion/config.yaml; a named profile is ~/.pandion/profiles/<name>.yaml,
 // so `--profile work` and `--profile personal` keep separate defaults.
 func PathFor(home, profile string) string {
 	if profile == "" {
-		return filepath.Join(home, ".pandion", "config.yaml")
+		return filepath.Join(base(home), "config.yaml")
 	}
-	return filepath.Join(home, ".pandion", "profiles", profile+".yaml")
+	return filepath.Join(base(home), "profiles", profile+".yaml")
 }
 
 // Load reads the default profile's config (empty, non-nil, if absent).
@@ -90,7 +100,7 @@ func SaveProfile(home, profile string, c *Config) error {
 // List returns the names of the named profiles under ~/.pandion/profiles (the
 // default profile is not included). A missing dir yields an empty list.
 func List(home string) ([]string, error) {
-	dir := filepath.Join(home, ".pandion", "profiles")
+	dir := filepath.Join(base(home), "profiles")
 	ents, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {

@@ -146,10 +146,11 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 	}
 
 	pref := d.regionPref
-	if len(spec.RegionPref) > 0 {
+	strictRegion := len(spec.RegionPref) > 0
+	if strictRegion {
 		pref = spec.RegionPref
 	}
-	regions := orderRegions(regionsOf(cands), pref)
+	regions := orderRegions(regionsOf(cands), pref, strictRegion)
 
 	// register the login key so it lands in root's authorized_keys.
 	var sshKeys []godo.DropletCreateSSHKey
@@ -201,6 +202,11 @@ func (d *DO) CreateServer(ctx context.Context, spec provider.ServerSpec) (provid
 			}
 			return srv, werr
 		}
+	}
+	if strictRegion {
+		return provider.Server{}, fmt.Errorf(
+			"no capacity for the requested size in region(s) %s — retry, widen with a comma-separated --region, or omit --region to search all; last error: %v",
+			strings.Join(spec.RegionPref, ","), lastErr)
 	}
 	return provider.Server{}, fmt.Errorf("no available size/region for spec; last error: %v", lastErr)
 }

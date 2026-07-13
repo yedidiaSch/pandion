@@ -23,11 +23,26 @@ var profileNameRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,64}$`)
 // from a command's args (falling back to $PANDION_PROFILE), validates it, sets
 // activeProfile, and returns the args with the selector removed so the per-command
 // flag sets never see it.
+// logVerbose/logQuiet are the global verbosity knobs (P1.6), set by the pre-parse
+// below from --verbose/--quiet. --verbose tees the audit stream to stderr (like
+// PANDION_LOG=debug); --quiet silences progress chatter on stdout (status* helpers)
+// while leaving results and stderr errors intact. Flags win over the env var.
+var (
+	logVerbose bool
+	logQuiet   bool
+)
+
 func initProfile(args []string) []string {
 	out := make([]string, 0, len(args))
 	prof := strings.TrimSpace(os.Getenv("PANDION_PROFILE"))
 	for i := 0; i < len(args); i++ {
 		a := args[i]
+		// stop stripping at the run-command separator so `up … -- cmd --quiet` keeps
+		// its own args intact.
+		if a == "--" {
+			out = append(out, args[i:]...)
+			break
+		}
 		switch {
 		case a == "--profile" || a == "-profile":
 			if i+1 < len(args) {
@@ -36,6 +51,10 @@ func initProfile(args []string) []string {
 			}
 		case strings.HasPrefix(a, "--profile=") || strings.HasPrefix(a, "-profile="):
 			prof = a[strings.IndexByte(a, '=')+1:]
+		case a == "--verbose" || a == "-verbose" || a == "-v":
+			logVerbose = true
+		case a == "--quiet" || a == "-quiet" || a == "-q":
+			logQuiet = true
 		default:
 			out = append(out, a)
 		}

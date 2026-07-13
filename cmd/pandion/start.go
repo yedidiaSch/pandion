@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"os/signal"
@@ -24,13 +23,21 @@ import (
 // workloads run in the same durable tmux sessions as `up`, then stream live;
 // Ctrl+C detaches (the workloads keep running — reattach with `pandion attach`).
 func runStart(args []string) {
-	fs := flag.NewFlagSet("start", flag.ExitOnError)
-	id := fs.String("id", "demo", "cluster id")
+	fs := newCmdFlagSet("start")
+	id := fs.String("id", "", "cluster id (required)")
 	node := fs.String("node", "", "only start this node (default: all runnable nodes)")
 	detach := fs.Bool("detach", false, "launch the workloads but do not stream (return immediately)")
 	_ = fs.Parse(args)
 
+	if *id == "" {
+		fmt.Fprintln(os.Stderr, "start: --id is required")
+		os.Exit(2)
+	}
+
 	initAudit()
+	// serialize against a concurrent up/down/reap on this id (P0.5).
+	lk := lockClusterOrExit(*id)
+	defer lk.Unlock()
 	if err := startCluster(*id, *node, *detach); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
@@ -42,6 +49,7 @@ func runStart(args []string) {
 func startCluster(id, only string, detach bool) error {
 	man, err := loadManifest(id)
 	if err != nil {
+		bailIfTornDown(err)
 		return fmt.Errorf("no manifest for %q (is the id correct? manifest lives in ~/.pandion/keys/%s/): %w", id, id, err)
 	}
 	signer, err := loadLoginSigner(id)
@@ -90,10 +98,10 @@ func startCluster(id, only string, detach bool) error {
 	go func() { <-sig; fmt.Println("\n^C — detaching; workloads left running."); cancel() }()
 	defer signal.Stop(sig)
 
-	printer := stream.NewPrinter(os.Stdout, filepath.Join(envHome(), ".pandion", "logs", id), colorEnabled())
+	printer := stream.NewPrinter(os.Stdout, filepath.Join(pandionDir(), "logs", id), colorEnabled())
 	defer printer.Close()
-	fmt.Printf("streaming %d node(s) (Ctrl+C detaches; reattach: pandion attach --id %s)\n", len(sel), id)
-	fmt.Println("----------------------------------------------------------------")
+	statusf("streaming %d node(s) (Ctrl+C detaches; reattach: pandion attach --id %s)\n", len(sel), id)
+	statusln("----------------------------------------------------------------")
 	var wg sync.WaitGroup
 	for _, n := range sel {
 		pinned, _ := parsePinned(n.HostPub) // already validated above

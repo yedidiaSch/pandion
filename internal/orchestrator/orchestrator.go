@@ -154,7 +154,18 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 	}
 
 	var mu sync.Mutex
-	save := func() { mu.Lock(); defer mu.Unlock(); _ = o.S.Save(c) }
+	var saveWarned bool
+	save := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		if err := o.S.Save(c); err != nil && !saveWarned {
+			// A broken state dir would otherwise silently produce no journal for
+			// the whole provision. Warn once so an operator can fix it; the
+			// provision itself still proceeds (the provider is the source of truth).
+			fmt.Fprintf(provisionRetryLog, "warning: could not journal cluster state: %v (crash-resume will be unavailable)\n", err)
+			saveWarned = true
+		}
+	}
 	setPhase := func(i int, p state.Phase) { mu.Lock(); c.Nodes[i].Phase = p; mu.Unlock() }
 	save() // journal: all PLANNED
 

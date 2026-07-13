@@ -83,9 +83,31 @@ func TestServerName_NamespacedAndDNSSafe(t *testing.T) {
 
 func TestOrderLocations_PrefersThenRest(t *testing.T) {
 	all := []string{"sin", "ash", "fsn1", "nbg1", "hil", "hel1"}
-	got := orderLocations(all, []string{"fsn1", "nbg1", "hel1"})
+	got := orderLocations(all, []string{"fsn1", "nbg1", "hel1"}, false)
 	want := []string{"fsn1", "nbg1", "hel1", "sin", "ash", "hil"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("orderLocations = %v, want %v", got, want)
+	}
+}
+
+// strict mode (an explicit --region) must NOT append other continents as
+// fallback — `--region nbg1` may only ever provision in nbg1, never ash.
+func TestOrderLocations_StrictOnlyPreferred(t *testing.T) {
+	all := []string{"sin", "ash", "fsn1", "nbg1", "hil", "hel1"}
+
+	got := orderLocations(all, []string{"nbg1"}, true)
+	if want := []string{"nbg1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("strict orderLocations(nbg1) = %v, want %v", got, want)
+	}
+
+	// a CSV widens the strict set, in order, but still no fallback beyond it.
+	got = orderLocations(all, []string{"nbg1", "fsn1"}, true)
+	if want := []string{"nbg1", "fsn1"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("strict orderLocations(nbg1,fsn1) = %v, want %v", got, want)
+	}
+
+	// an unknown region filters to empty (honest failure, not a silent fallback).
+	if got = orderLocations(all, []string{"nope"}, true); len(got) != 0 {
+		t.Fatalf("strict orderLocations(unknown) = %v, want empty", got)
 	}
 }
