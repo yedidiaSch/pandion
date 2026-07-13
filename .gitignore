@@ -25,3 +25,6 @@ relayprobe-*/
 relayleprobe-*/
 /pandion-relay
 relayrecprobe-*/
+
+# local-only documentation (kept out of the repo)
+docs/
