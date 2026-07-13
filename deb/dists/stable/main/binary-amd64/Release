@@ -1,0 +1,5 @@
+Component: main
+Origin: Pandion
+Label: Pandion
+Architecture: amd64
+Description: Pandion apt repository

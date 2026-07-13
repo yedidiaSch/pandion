@@ -1,0 +1,11 @@
+<!doctype html><meta charset=utf-8><title>Pandion packages</title>
+<body style="font-family:system-ui;max-width:52rem;margin:3rem auto;padding:0 1rem;line-height:1.5">
+<h1>Pandion package repository</h1>
+<h2>Debian / Ubuntu</h2>
+<pre>curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/pandion.gpg
+echo "deb [signed-by=/usr/share/keyrings/pandion.gpg] https://yedidiaSch.github.io/pandion/deb stable main" | sudo tee /etc/apt/sources.list.d/pandion.list
+sudo apt update &amp;&amp; sudo apt install pandion</pre>
+<h2>RHEL / Fedora</h2>
+<pre>sudo curl -fsSL https://yedidiaSch.github.io/pandion/pandion.repo -o /etc/yum.repos.d/pandion.repo
+sudo dnf install pandion</pre>
+</body>

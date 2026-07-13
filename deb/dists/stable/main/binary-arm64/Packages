@@ -1,0 +1,15 @@
+Package: pandion
+Version: 0.7.2
+Architecture: arm64
+Maintainer: Pandion authors <noreply@github.com>
+Installed-Size: 13888
+Homepage: https://github.com/yedidiaSch/pandion
+Priority: optional
+Section: 
+Filename: pool/main/p/pandion/pandion_0.7.2_arm64.deb
+Size: 5384072
+SHA256: 5bd87a39d8fc0387a9a86e51d9a2bc3322c6ae8274e61cfa9b5e4af1e703699a
+SHA1: 0c6462adc1d5349ea70c06742ebae827a789768e
+MD5sum: 977b4a1c18982de35cebf4c64cb429b6
+Description: Provision, harden & orchestrate C++/IPC dev & test environments
+

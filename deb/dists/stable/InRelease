@@ -1,0 +1,47 @@
+-----BEGIN PGP SIGNED MESSAGE-----
+Hash: SHA512
+
+Origin: Pandion
+Label: Pandion
+Codename: stable
+Date: Mon, 13 Jul 2026 20:13:28 UTC
+Architectures: amd64 arm64
+Components: main
+Description: Pandion apt repository
+MD5Sum:
+ 7b35cbbe69a6fe83e24e3db951030b41 537 main/binary-amd64/Packages
+ ae358e6fe74d610468f814b52c23e5ee 392 main/binary-amd64/Packages.gz
+ a4ee5e2cede52c279b8a65252e6d9453 103 main/binary-amd64/Release
+ a47ed14e15635ba1d15919dc608933d7 507 main/binary-arm64/Packages
+ fe88f1bf98ea7778588475b18719413f 378 main/binary-arm64/Packages.gz
+ e1676f6cac4cc2002af7e8a207465920 103 main/binary-arm64/Release
+SHA1:
+ 7c687089955849a0671d2e6f7e4c9e5eb2e6aff0 537 main/binary-amd64/Packages
+ 1961c57ec94f5d57e35b5c9a70eb3d34fbe2b29a 392 main/binary-amd64/Packages.gz
+ f53c611f3bbc03292f0f75cd416ec69d47265e52 103 main/binary-amd64/Release
+ 5ccabab0ef9f11f3fdecaacb45317ffddd6f4fe7 507 main/binary-arm64/Packages
+ 36a296749e327709f818e9947e2ac0a20c9946af 378 main/binary-arm64/Packages.gz
+ f894b09e87bdcd1b2801a98dac8da145c204f507 103 main/binary-arm64/Release
+SHA256:
+ 113b83d7fa6db9bba4dcbe4469d1778a01713e48b8f2d583d532facc22e53e8e 537 main/binary-amd64/Packages
+ 327ac16120322513d628b5a6fcffd1581a29eac92417664b72cd93329b1b4b9b 392 main/binary-amd64/Packages.gz
+ e96d4a799823db9f654834a5049e16a041706fd2699d7a0a685dbe86cbbb0e7b 103 main/binary-amd64/Release
+ a9815327095186f9c5ce0ad8b5c4868db66fe174946a0459c430b4f468dbb9fa 507 main/binary-arm64/Packages
+ 0fc396f589665e808ee642d65da16108756a39e7800f30bd286429b6df6634f8 378 main/binary-arm64/Packages.gz
+ 751b51734094c6d12698c4589dbbd8bc4805f4c7b1e2d79de19a34fd51ef0368 103 main/binary-arm64/Release
+-----BEGIN PGP SIGNATURE-----
+
+iQIzBAEBCgAdFiEEihkEWiRm7TaKojhomI6foDNiDi8FAmpVRugACgkQmI6foDNi
+Di9aEQ//X+fISSED9dQneocQuKbHHP3Bok9GJGBLLttIVxZEBQPu3/7d2f+nLCdD
+brdIctQLgU6uiRs9UbyFBxp3dThhxNMUQZLt1RuyXaEwiSqMJuPoktTKdC3juwPW
+uUOGVKBhgPnzAS8clKOpx61osjg0qqneliY72CCVONCFijgxtoZKYBAmHnjVgACy
+3DRUELUarIzgfBS/l4DO8JL7j7sAyMviZRUl4bEr3N807hx0aKd8pyxobXkxasg8
+FOoflNZLyCCrum+zhczUfor1H+HkS5sH5bEcTUCKoXopCRYx8N8ZGZs/mVePKruq
+TMFdperFi9NE5DbSLVIDbqedqlRtT2wzPeWZqeicGWwNR5nMzUItVBaY575z4KVn
+HBSa6bqCCYzZaG2qvfWv3BjAe858rjqqmhCy7cTb2nGKXn3gxZbE/fpYHadevj0y
+akJYq3T1+Z6o0U7Pw1kNiLINRcIlUxnlCB2/fR6C4mU7QqrKxlasq3HIqHIekYWW
+pPrdQQ0Tc1MEuGRSe8f9zMfmXGBq+F2Hiau8s+8bBh+4wRJeNiOgxn0/ggurN7LY
+bLHif2U3VmN+NbBJf+cWaq7bgz3+oNarUO64wxb7Y9EjO0l9AsD9Rj0CLHkdzs8j
+NWduUCjtzg94lgivkGhfOsWutYgR6/RZ7jQsbGyDLcEIZF0eYWc=
+=oJ0q
+-----END PGP SIGNATURE-----

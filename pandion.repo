@@ -1,0 +1,7 @@
+[pandion]
+name=Pandion
+baseurl=https://yedidiaSch.github.io/pandion/rpm
+enabled=1
+repo_gpgcheck=1
+gpgcheck=0
+gpgkey=https://yedidiaSch.github.io/pandion/gpg.key
