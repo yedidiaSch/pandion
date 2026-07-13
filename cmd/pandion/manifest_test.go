@@ -34,6 +34,10 @@ func TestManifestProvider_RoundTrip(t *testing.T) {
 	if m.Provider != "digitalocean" || len(m.Nodes) != 1 || m.Nodes[0].Name != "n1" {
 		t.Errorf("round-trip mismatch: %+v", m)
 	}
+	// the manifest carries the schema version (F10/R11)
+	if m.Version != manifestSchemaVersion {
+		t.Errorf("manifest Version = %d, want %d", m.Version, manifestSchemaVersion)
+	}
 }
 
 // TestManifestProvider_Missing returns "" (not an error) so callers cleanly fall

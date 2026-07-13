@@ -32,8 +32,16 @@ type Node struct {
 	Phase    Phase  `json:"phase"`
 }
 
+// SchemaVersion is the current on-disk journal schema. Stamped into every write
+// (F10/R11) so a future field rename/migration has a seam; a record written
+// before versioning has no "v" key and reads back as 0 (v0), the pre-versioning
+// shape. Bump this and branch on Cluster.Version when the shape changes
+// incompatibly.
+const SchemaVersion = 1
+
 // Cluster is the journaled record for one Pandion cluster.
 type Cluster struct {
+	Version  int       `json:"v"` // on-disk schema version (0 = pre-versioning)
 	ID       string    `json:"id"`
 	Provider string    `json:"provider"`
 	Nodes    []Node    `json:"nodes"`
@@ -56,6 +64,7 @@ func (s *Store) path(id string) string { return filepath.Join(s.dir, id+".json")
 // Save journals the cluster state via a write-temp-then-rename (atomic).
 func (s *Store) Save(c *Cluster) error {
 	c.Updated = time.Now().UTC()
+	c.Version = SchemaVersion
 	b, err := json.MarshalIndent(c, "", "  ")
 	if err != nil {
 		return err
