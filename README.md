@@ -99,7 +99,7 @@ sudo curl -fsSL https://yedidiaSch.github.io/pandion/pandion.repo -o /etc/yum.re
 sudo dnf install pandion
 ```
 
-From source (Go 1.22+):
+From source (Go 1.25+):
 
 ```bash
 go install github.com/yedidiaSch/pandion/cmd/pandion@latest

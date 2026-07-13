@@ -56,30 +56,32 @@ the release contains any non-`pandion_*` package. To go live:
 
 ---
 
-## 4. Add the DigitalOcean referral code  →  turns the signup pointer into a referral
-The signup-suggestion flow is wired and disclosed (shown on a missing token / empty
-`pandion login`). Until a code is set it points at DigitalOcean's plain signup page
-with **no** referral claim.
+## 4. DigitalOcean referral code — ✅ RESOLVED (intentionally not set)
+Decision: ship **no** referral code for now. `doRefcode` stays empty, so the
+signup-suggestion flow points at DigitalOcean's plain signup page with **no**
+referral claim (the honest default). Nothing to do.
 
-1. Get your DigitalOcean referral code (Account ▸ Refer & Earn / affiliate program).
-2. Set it: edit `doRefcode` in `cmd/pandion/referral.go` (or ship `PANDION_DO_REFCODE`).
-3. Verify: `env -u DIGITALOCEAN_TOKEN PANDION_DO_REFCODE=<code> pandion up --provider=do --id x -- true`
-   should print the `?refcode=<code>` URL **with** the "referral link" disclosure.
+If you ever want to enable it later: set `doRefcode` in `cmd/pandion/referral.go`
+(or ship `PANDION_DO_REFCODE=<code>`), then verify the `?refcode=` URL and the
+"referral link" disclosure appear on an empty `pandion login`.
 
-- [ ] Referral code obtained
-- [ ] `doRefcode` set (or `PANDION_DO_REFCODE` shipped) and disclosure verified
+- [x] Referral decision made — left unset (no referral)
 
 ---
 
 ## Notes / caveats
-- **Signing key:** fingerprint `8A19045A2466ED368AA23868988E9FA033620E2F`
-  (`Pandion Packages`). Private half is the `GPG_PRIVATE_KEY` secret; rotate per
-  `packaging/README.md`.
+- **Signing key:** fingerprint `8A19045A2466ED368AA23868988E9FA033620E2F`. Its UID
+  still reads **`EnvCore Packages`** (pre-rename label) — cosmetic only; it signs and
+  verifies fine. Rename means a new key + secret + republish; not worth it. Private half
+  is the `GPG_PRIVATE_KEY` secret; rotate per `packaging/README.md`.
 - **macOS/Windows CLI** is built, unit-tested and **offline-smoke-tested in CI** on both
   OSes every push; the real-hardware bits are covered by `scripts/mac_smoke.sh` (run once on
   a Mac). Windows operators: **use WSL2**. Full details in the README "Platform support".
-- After all three are green, every channel is live: `brew` · `apt` · `dnf` ·
-  direct download · `go install`. Then delete this section.
+- **All channels live** (verified 2026-07-13, v0.7.2): `brew` · `apt` · `dnf` ·
+  direct download · `go install`. The apt/yum trust chain (signed `Release` → `Packages`
+  → `.deb`) was verified end-to-end. Reminder: the apt/yum repo does **not** auto-update on
+  release, so after each new tag re-run
+  `gh workflow run packages-repo.yml -R yedidiaSch/pandion -f tag=latest`.
 
 ---
 
