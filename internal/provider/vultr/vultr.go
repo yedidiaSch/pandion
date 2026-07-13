@@ -148,10 +148,11 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 	}
 
 	pref := v.regionPref
-	if len(spec.RegionPref) > 0 {
+	strictRegion := len(spec.RegionPref) > 0
+	if strictRegion {
 		pref = spec.RegionPref
 	}
-	regions := orderRegions(regionsOf(cands), pref)
+	regions := orderRegions(regionsOf(cands), pref, strictRegion)
 
 	// register the login key so it lands in root's authorized_keys.
 	var sshKeys []string
@@ -197,6 +198,11 @@ func (v *Vultr) CreateServer(ctx context.Context, spec provider.ServerSpec) (pro
 			}
 			return v.waitActive(ctx, inst.ID, spec.ClusterID)
 		}
+	}
+	if strictRegion {
+		return provider.Server{}, fmt.Errorf(
+			"no capacity for the requested plan in region(s) %s — retry, widen with a comma-separated --region, or omit --region to search all; last error: %v",
+			strings.Join(spec.RegionPref, ","), lastErr)
 	}
 	return provider.Server{}, fmt.Errorf("no available plan/region for spec; last error: %v", lastErr)
 }

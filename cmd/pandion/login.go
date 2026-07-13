@@ -4,7 +4,6 @@ package main
 
 import (
 	"bufio"
-	"flag"
 	"fmt"
 	"os"
 	"strings"
@@ -79,8 +78,8 @@ func readToken(env string) string {
 // runLogin stores a provider's API token in the OS keychain, so it need not sit
 // in an environment variable (H6). The token is never taken from argv.
 func runLogin(args []string) {
-	fs := flag.NewFlagSet("login", flag.ExitOnError)
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean|vultr|linode|scaleway")
+	fs := newCmdFlagSet("login")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)")
 	_ = fs.Parse(args)
 	name, env, ok := providerEnv(*provider)
 	if !ok {
@@ -103,8 +102,8 @@ func runLogin(args []string) {
 
 // runLogout removes a provider's token from the OS keychain.
 func runLogout(args []string) {
-	fs := flag.NewFlagSet("logout", flag.ExitOnError)
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean|vultr|linode|scaleway")
+	fs := newCmdFlagSet("logout")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)")
 	_ = fs.Parse(args)
 	name, _, ok := providerEnv(*provider)
 	if !ok {

@@ -1,0 +1,10 @@
+# A single GPU node. Requires a GPU-capable provider (see `pandion list-gpus`).
+# Preview the cost first:  pandion up -f cluster.yaml --dry-run
+#   pandion up -f cluster.yaml --id gpu --provider lambda
+apiVersion: pandion/v1
+name: gpu
+defaults:
+  gpu: a100
+nodes:
+  - name: trainer
+    run: 'nvidia-smi'

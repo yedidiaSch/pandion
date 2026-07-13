@@ -5,21 +5,20 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 )
 
-// completionCommands is the subcommand list offered by shell completion. Kept
-// here (not derived from the main switch) so completion is explicit and stable.
-var completionCommands = []string{
-	"init", "up", "build", "down", "ls", "status", "start", "attach",
-	"ssh", "cp", "code", "debug", "relay", "validate", "lockdown", "reap",
-	"login", "logout", "profiles", "list-gpus", "demo", "version", "completion",
+// completionProviders are the values suggested after --provider — the canonical
+// names plus the short aliases advertised by P1.3. Kept explicit (not in the
+// command table).
+var completionProviders = []string{
+	"mock", "hetzner", "digitalocean", "do", "vultr", "linode", "akamai", "scaleway", "scw", "lambda",
 }
 
-// completionProviders are the values suggested after --provider.
-var completionProviders = []string{"mock", "hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda"}
-
-// runCompletion prints a shell completion script for pandion. Install with e.g.
+// runCompletion prints a shell completion script for pandion, derived from the
+// command registry (P1.2) so the command list and per-command flags can't drift.
+// Install with e.g.
 //
 //	pandion completion bash > /etc/bash_completion.d/pandion
 //	pandion completion zsh  > "${fpath[1]}/_pandion"
@@ -29,37 +28,77 @@ func runCompletion(args []string) {
 	if len(args) > 0 {
 		shell = args[0]
 	}
+	var script, hint string
 	switch shell {
 	case "bash":
-		fmt.Print(bashCompletion())
+		script, hint = bashCompletion(), "install: pandion completion bash | sudo tee /etc/bash_completion.d/pandion"
 	case "zsh":
-		fmt.Print(zshCompletion())
+		script, hint = zshCompletion(), `install: pandion completion zsh > "${fpath[1]}/_pandion"  (then restart zsh)`
 	case "fish":
-		fmt.Print(fishCompletion())
+		script, hint = fishCompletion(), "install: pandion completion fish > ~/.config/fish/completions/pandion.fish"
 	default:
 		fmt.Fprintln(os.Stderr, "usage: pandion completion bash|zsh|fish")
 		os.Exit(2)
 	}
+	fmt.Print(script)
+	// Print the install one-liner on stderr — only on a TTY — so redirecting stdout
+	// to a file keeps the script clean while an interactive run gets the hint (P3.3).
+	if stderrIsTTY() {
+		fmt.Fprintln(os.Stderr, "# "+hint)
+	}
+}
+
+// topLevelNames returns the top-level verbs + aliases, sorted.
+func topLevelNames() []string { return registeredCommandNames() }
+
+// perCommandFlags returns, sorted by command, each top-level command that has
+// flags paired with its "--flag …" string — the raw material for command-aware
+// completion in every shell.
+func perCommandFlags() [][2]string {
+	var names []string
+	for _, c := range commands {
+		if c.Parent == "" && len(c.Flags) > 0 {
+			names = append(names, c.Name)
+		}
+	}
+	sort.Strings(names)
+	out := make([][2]string, 0, len(names))
+	for _, n := range names {
+		dashed := make([]string, 0, len(commandFlagNames(n)))
+		for _, f := range commandFlagNames(n) {
+			dashed = append(dashed, "--"+f)
+		}
+		out = append(out, [2]string{n, strings.Join(dashed, " ")})
+	}
+	return out
 }
 
 func bashCompletion() string {
-	cmds := strings.Join(completionCommands, " ")
+	cmds := strings.Join(topLevelNames(), " ")
 	provs := strings.Join(completionProviders, " ")
+	var cases strings.Builder
+	for _, cf := range perCommandFlags() {
+		cases.WriteString(fmt.Sprintf("      %s) flags=\"$flags %s\" ;;\n", cf[0], cf[1]))
+	}
 	return `# bash completion for pandion
 _pandion() {
-  local cur prev
+  local cur prev cmd flags
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
+  cmd="${COMP_WORDS[1]}"
   case "$prev" in
     --provider) COMPREPLY=( $(compgen -W "` + provs + `" -- "$cur") ); return ;;
     --profile) COMPREPLY=( $(compgen -W "$(pandion profiles 2>/dev/null | tail -n +2 | awk '{print $1}')" -- "$cur") ); return ;;
-    -f|--f|--lock|--workspace) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
+    -f|--f|--file|--lock|--workspace|--cluster|--fetch) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
   esac
   if [ "$COMP_CWORD" -eq 1 ]; then
     COMPREPLY=( $(compgen -W "` + cmds + `" -- "$cur") ); return
   fi
   if [[ "$cur" == -* ]]; then
-    COMPREPLY=( $(compgen -W "--profile --provider --gpu --gpu-idle-util --gpu-util --refresh --id --node --dry-run --lock --max-cost --ttl --no-ttl -f --json --yes --older-than" -- "$cur") )
+    flags="--profile --verbose --quiet"
+    case "$cmd" in
+` + cases.String() + `    esac
+    COMPREPLY=( $(compgen -W "$flags" -- "$cur") )
   fi
 }
 complete -F _pandion pandion
@@ -67,8 +106,12 @@ complete -F _pandion pandion
 }
 
 func zshCompletion() string {
-	cmds := strings.Join(completionCommands, " ")
+	cmds := strings.Join(topLevelNames(), " ")
 	provs := strings.Join(completionProviders, " ")
+	var cases strings.Builder
+	for _, cf := range perCommandFlags() {
+		cases.WriteString(fmt.Sprintf("    %s) compadd %s ;;\n", cf[0], cf[1]))
+	}
 	return `#compdef pandion
 # zsh completion for pandion
 _pandion() {
@@ -81,10 +124,10 @@ _pandion() {
   case "${words[CURRENT-1]}" in
     --provider) compadd ` + provs + ` ;;
     --profile) compadd $(pandion profiles 2>/dev/null | tail -n +2 | awk '{print $1}') ;;
-    -f|--lock|--workspace) _files ;;
-    *) _arguments '--profile[operator profile]' '--provider[cloud backend]' '--gpu[GPU model[:count]]' '--id[cluster id]' '--node[node name]' \
-         '--dry-run[preview only]' '--lock[reproducibility lockfile]' '--max-cost[budget cap]' \
-         '--ttl[idle poweroff]' '--no-ttl[disable ttl]' '-f[cluster.yaml]' '--json[machine-readable]' ;;
+    -f|--file|--lock|--workspace|--cluster|--fetch) _files ;;
+    *)
+      case "${words[2]}" in
+` + cases.String() + `      esac ;;
   esac
 }
 _pandion "$@"
@@ -94,20 +137,18 @@ _pandion "$@"
 func fishCompletion() string {
 	var b strings.Builder
 	b.WriteString("# fish completion for pandion\n")
-	// subcommands (only when no subcommand yet)
 	b.WriteString("complete -c pandion -f -n '__fish_use_subcommand' -a '" +
-		strings.Join(completionCommands, " ") + "'\n")
-	// --provider values
+		strings.Join(topLevelNames(), " ") + "'\n")
 	b.WriteString("complete -c pandion -l provider -x -a '" +
 		strings.Join(completionProviders, " ") + "'\n")
-	// --profile values (dynamic: ask pandion itself)
 	b.WriteString("complete -c pandion -l profile -x -a '(pandion profiles 2>/dev/null | tail -n +2 | string split -f1 \" \")'\n")
-	for _, f := range []struct{ name, desc string }{
-		{"id", "cluster id"}, {"node", "node name"}, {"dry-run", "preview only"},
-		{"lock", "reproducibility lockfile"}, {"max-cost", "budget cap"},
-		{"ttl", "idle poweroff"}, {"no-ttl", "disable ttl"}, {"json", "machine-readable"},
-	} {
-		b.WriteString(fmt.Sprintf("complete -c pandion -l %s -d '%s'\n", f.name, f.desc))
+	for _, c := range commands {
+		if c.Parent != "" {
+			continue
+		}
+		for _, f := range c.Flags {
+			b.WriteString(fmt.Sprintf("complete -c pandion -n '__fish_seen_subcommand_from %s' -l %s\n", c.Name, f))
+		}
 	}
 	return b.String()
 }

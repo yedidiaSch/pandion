@@ -4,16 +4,20 @@ package main
 
 import (
 	"bufio"
-	"flag"
+	_ "embed"
 	"fmt"
 	"os"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/yedidiaSch/pandion/internal/config"
 	"github.com/yedidiaSch/pandion/internal/secret"
 	"github.com/yedidiaSch/pandion/internal/userconfig"
 )
+
+//go:embed templates/cluster.starter.yaml
+var clusterStarterTemplate []byte
 
 // runInit is the first-run wizard: pick a default provider, log in if needed, and
 // write ~/.pandion/config.yaml so bare one-liners (e.g. `pandion up -- ./app`) work
@@ -22,14 +26,24 @@ import (
 //
 //	pandion init [--provider NAME] [--token TOK] [--region R] [--size S] [--ttl D] [--force]
 func runInit(args []string) {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	fs := newCmdFlagSet("init")
 	provider := fs.String("provider", "", "default cloud provider (hetzner|digitalocean|vultr|linode|scaleway|mock)")
 	token := fs.String("token", "", "API token to store (else prompted on a terminal)")
 	region := fs.String("region", "", "default region (optional)")
 	size := fs.String("size", "", "default server size/type, e.g. cpx21 (optional)")
 	ttl := fs.String("ttl", "", "default idle-poweroff TTL, e.g. 2h (optional)")
 	force := fs.Bool("force", false, "overwrite an existing config without asking")
+	cluster := fs.Bool("cluster", false, "instead of the operator config, scaffold a starter cluster.yaml (path: optional arg, default ./cluster.yaml)")
 	_ = fs.Parse(args)
+
+	if *cluster {
+		path := "cluster.yaml"
+		if fs.NArg() > 0 {
+			path = fs.Arg(0)
+		}
+		scaffoldCluster(path, *force)
+		return
+	}
 
 	home := envHome()
 	cfg, _ := userconfig.LoadProfile(home, activeProfile)
@@ -142,6 +156,30 @@ func runInit(args []string) {
 		fmt.Println("  pandion up -- 'echo hello from the cloud && uname -a'")
 		fmt.Println("  pandion down --id demo            # tear it down")
 	}
+}
+
+// scaffoldCluster writes the embedded starter cluster.yaml to path (P2.3). It
+// refuses to clobber an existing file without --force, then validates what it wrote
+// (a broken template is a bug) and prints the next steps.
+func scaffoldCluster(path string, force bool) {
+	if _, err := os.Stat(path); err == nil && !force {
+		fmt.Fprintf(os.Stderr, "init --cluster: %s already exists (use --force to overwrite)\n", path)
+		os.Exit(2)
+	}
+	if err := os.WriteFile(path, clusterStarterTemplate, 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "init --cluster: could not write %s: %v\n", path, err)
+		os.Exit(1)
+	}
+	// self-check: the template we ship must pass validation.
+	if _, err := config.Load(path); err != nil {
+		fmt.Fprintf(os.Stderr, "init --cluster: wrote %s but it failed validation: %v\n", path, err)
+		os.Exit(1)
+	}
+	fmt.Printf("✔ wrote a starter topology: %s\n", path)
+	fmt.Println("\nNext:")
+	fmt.Printf("  1) edit %s (nodes, run commands, sync/build)\n", path)
+	fmt.Printf("  2) pandion validate -f %s\n", path)
+	fmt.Printf("  3) pandion up -f %s\n", path)
 }
 
 // chooseProvider prompts for a provider on a terminal.

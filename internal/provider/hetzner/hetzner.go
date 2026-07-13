@@ -137,11 +137,16 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 		locNames = append(locNames, l.Name)
 		locByName[l.Name] = l
 	}
+	// An explicit per-node region request (spec.RegionPref, from `--region`) is
+	// strict: search only those regions, never fall back to another continent on
+	// a capacity blip. The built-in default (h.regionPref) keeps the resilient
+	// search-everywhere fallback.
 	pref := h.regionPref
-	if len(spec.RegionPref) > 0 {
+	strictRegion := len(spec.RegionPref) > 0
+	if strictRegion {
 		pref = spec.RegionPref
 	}
-	ordered := orderLocations(locNames, pref)
+	ordered := orderLocations(locNames, pref, strictRegion)
 
 	// 3) architecture-matched image
 	img, _, err := h.c.Image.GetByNameAndArchitecture(ctx, image, hcloud.Architecture(h.arch))
@@ -194,6 +199,11 @@ func (h *Hetzner) CreateServer(ctx context.Context, spec provider.ServerSpec) (p
 			return provider.Server{}, werr
 		}
 		return toServer(srv, spec.ClusterID), nil
+	}
+	if strictRegion {
+		return provider.Server{}, fmt.Errorf(
+			"no capacity for the requested type in region(s) %s — retry, widen with --region %s,fsn1, or omit --region to search all locations; last error: %v",
+			strings.Join(spec.RegionPref, ","), spec.RegionPref[0], lastErr)
 	}
 	return provider.Server{}, fmt.Errorf("no available type/location for spec; last error: %v", lastErr)
 }

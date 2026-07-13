@@ -4,7 +4,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +26,7 @@ import (
 //
 //	sudo wg-quick up ~/.pandion/keys/<id>/wg-<id>.conf
 func runLockdown(args []string) {
-	fs := flag.NewFlagSet("lockdown", flag.ExitOnError)
+	fs := newCmdFlagSet("lockdown")
 	id := fs.String("id", "", "cluster id (required)")
 	auditMode := fs.Bool("audit", false, "DRY RUN: apply the deny-all in audit mode — log what would be dropped but enforce nothing (inspect with `journalctl -k | grep pandion-audit`)")
 	_ = fs.Parse(args)
@@ -36,16 +35,20 @@ func runLockdown(args []string) {
 		os.Exit(2)
 	}
 	initAudit()
+	// serialize against a concurrent up/down/reap on this id (P0.5).
+	lk := lockClusterOrExit(*id)
+	defer lk.Unlock()
 
 	man, err := loadManifest(*id)
 	if err != nil {
+		bailIfTornDown(err)
 		fmt.Fprintf(os.Stderr, "lockdown: cannot load cluster manifest for %q: %v\n", *id, err)
 		fmt.Fprintln(os.Stderr, "  (was the cluster created with `up -f`? manifest lives in ~/.pandion/keys/<id>/)")
 		os.Exit(3)
 	}
 
 	// login signer for SSH
-	loginPath := filepath.Join(envHome(), ".pandion", "keys", *id, "login_ed25519")
+	loginPath := filepath.Join(pandionDir(), "keys", *id, "login_ed25519")
 	pem, err := os.ReadFile(loginPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "lockdown: cannot read login key %s: %v\n", loginPath, err)
@@ -72,7 +75,7 @@ func runLockdown(args []string) {
 			fmt.Fprintf(os.Stderr, "REFUSING to lock down: cannot SSH %s over the overlay (%s): %v\n",
 				n.Name, n.OverlayIP, err)
 			fmt.Fprintf(os.Stderr, "  join the overlay first:  sudo wg-quick up %s\n",
-				filepath.Join(envHome(), ".pandion", "keys", *id, "wg-"+*id+".conf"))
+				filepath.Join(pandionDir(), "keys", *id, "wg-"+*id+".conf"))
 			fmt.Fprintln(os.Stderr, "  (locking down without overlay access would cut you off — aborted, nothing changed)")
 			os.Exit(6)
 		}
