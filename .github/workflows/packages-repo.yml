@@ -12,9 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag to (re)publish, e.g. v0.1.0"
+        # "latest" resolves to the newest published release at run time. Avoid a
+        # hardcoded default: this repo's early tags (v0.1.0) are pre-rename
+        # `envcore` releases, and dispatching with that stale default would
+        # publish envcore's packages to the pandion repo (see the guard below).
+        description: "Release tag to (re)publish, or 'latest'"
         required: true
-        default: v0.1.0
+        default: latest
 
 permissions:
   contents: write # push the gh-pages branch
@@ -27,12 +31,18 @@ jobs:
 
       - name: Resolve tag
         id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+            tag="${{ github.event.release.tag_name }}"
+          elif [ "${{ github.event.inputs.tag }}" = "latest" ]; then
+            tag="$(gh release view -R "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
           else
-            echo "tag=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+            tag="${{ github.event.inputs.tag }}"
           fi
+          echo "resolved tag: $tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
       - name: Install repo tooling
         run: sudo apt-get update && sudo apt-get install -y reprepro createrepo-c
@@ -53,6 +63,15 @@ jobs:
           gh release download "${{ steps.tag.outputs.tag }}" -R "$GITHUB_REPOSITORY" \
             -p '*.deb' -p '*.rpm' -D pkgs
           ls -1 pkgs
+          # Guard: only pandion packages may be published to the pandion repo.
+          # The pre-rename tags (v0.1.0) carry `envcore` artifacts — refuse them
+          # loudly rather than silently serving the wrong project.
+          if ! ls pkgs/pandion_*.deb >/dev/null 2>&1; then
+            echo "::error::no pandion_*.deb in release ${{ steps.tag.outputs.tag }} — wrong tag?"; exit 1
+          fi
+          if ls pkgs/* | grep -vE '/pandion_' >/dev/null; then
+            echo "::error::release ${{ steps.tag.outputs.tag }} contains non-pandion packages:"; ls pkgs/* | grep -vE '/pandion_'; exit 1
+          fi
 
       - name: Build signed APT repo (reprepro)
         env:

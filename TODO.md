@@ -1,73 +1,58 @@
 # TODO — Activation checklist
 
-Everything is built and merged. These are the **manual steps only you can do** to
-switch the remaining install channels live. Nothing here needs code changes.
+Status verified 2026-07-13. Most channels are **already live**; the one real gap is
+that the hosted apt/yum repo is serving the wrong project's packages (see §3).
 
 ---
 
-## 1. Make the repo public
-Settings ▸ General ▸ Danger Zone ▸ **Change visibility → Public**.
-
-Why it's required: release `.deb`/`.rpm` assets and GitHub Pages must be publicly
-reachable for `apt`/`dnf`/badges to work.
-
-- [ ] Repo is public
-- [ ] Confirm the badges in the README now render (CI, release, license)
+## 1. Make the repo public — ✅ DONE
+Repo is **public**, and releases up to **v0.7.1** are published with signed assets
+(`.deb`/`.rpm`/`.apk` × amd64/arm64, tar.gz/zip, SBOMs, cosign `.sig`+`.pem`). README
+badges render.
 
 ---
 
-## 2. Turn on Homebrew  →  `brew install yedidiaSch/tap/pandion`
-The `homebrew-tap` repo already exists and is wired; it just needs a push token.
-
-1. Create a **fine-grained PAT**: https://github.com/settings/tokens?type=beta
-   - Repository access: **only** `yedidiaSch/homebrew-tap`
-   - Permissions: **Contents → Read and write**
-2. Add it as a secret on the `pandion` repo:
-   ```bash
-   gh secret set HOMEBREW_TAP_GITHUB_TOKEN --repo yedidiaSch/pandion   # paste the PAT
-   ```
-3. Publish the cask for the current release (or wait for the next tag):
-   ```bash
-   git tag v0.1.1 && git push origin v0.1.1     # release workflow pushes the cask
-   ```
-
-- [ ] PAT created (scoped to `homebrew-tap`, contents:write)
-- [ ] `HOMEBREW_TAP_GITHUB_TOKEN` secret set
-- [ ] Tagged a release; cask appears in `yedidiaSch/homebrew-tap`
-- [ ] `brew install yedidiaSch/tap/pandion` works
+## 2. Homebrew  →  `brew install yedidiaSch/tap/pandion` — ✅ DONE
+`HOMEBREW_TAP_GITHUB_TOKEN` is set; the `pandion.rb` cask is published in
+`yedidiaSch/homebrew-tap` and the release workflow pushes it on each new tag.
 
 ---
 
-## 3. Turn on APT/YUM  →  `apt install pandion` / `dnf install pandion`
-The signing key + publish workflow are already in place (`GPG_PRIVATE_KEY` secret
-is set; public key in `packaging/`).
+## 3. APT/YUM  →  `apt install pandion` / `dnf install pandion` — ⚠️ NEEDS ONE RUN
+Infrastructure is live: repo public, `GPG_PRIVATE_KEY` set, Pages built from
+`gh-pages`, `gpg.key` served over HTTPS. **But the apt/yum index currently serves
+`envcore`, not `pandion`** — the last publish dispatch (2026-07-09) ran with the old
+default input `v0.1.0`, and this repo's `v0.1.0` is a pre-rename **envcore** release,
+so it published envcore's packages.
 
-1. Enable GitHub Pages: Settings ▸ Pages ▸ Source **Deploy from a branch** →
-   branch **`gh-pages`**, folder `/ (root)`.
-   (The `gh-pages` branch is created by the workflow's first run — do step 2 first,
-   then set the source, then it serves.)
-2. Run the publisher for the existing release:
-   Actions ▸ **Publish package repo** ▸ *Run workflow* ▸ tag `v0.1.0`.
-3. Verify the repo is live:
+Fixed in the workflow (this branch): the dispatch input now defaults to **`latest`**
+(resolved at run time) instead of the stale `v0.1.0`, and a guard **fails the run** if
+the release contains any non-`pandion_*` package. To go live:
+
+1. Cut/confirm a real pandion release exists (v0.7.1 already does; or tag the next one
+   — see §5).
+2. Re-run the publisher against it:
    ```bash
-   curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | head -1   # PGP PUBLIC KEY
+   gh workflow run packages-repo.yml -R yedidiaSch/pandion -f tag=latest
    ```
-4. Smoke-test on a Debian/Ubuntu box (or container):
+   (The `release: published` event does **not** auto-trigger this — GitHub suppresses
+   workflow triggers from goreleaser's default `GITHUB_TOKEN` — so this dispatch is
+   required after each release, or wire a `workflow_run` chain / PAT later.)
+3. Verify pandion (not envcore) is now indexed:
+   ```bash
+   curl -fsSL https://yedidiaSch.github.io/pandion/deb/dists/stable/main/binary-amd64/Packages | grep '^Package:'
+   ```
+4. Smoke-test on a clean Debian/Ubuntu box:
    ```bash
    curl -fsSL https://yedidiaSch.github.io/pandion/gpg.key | sudo gpg --dearmor -o /usr/share/keyrings/pandion.gpg
    echo "deb [signed-by=/usr/share/keyrings/pandion.gpg] https://yedidiaSch.github.io/pandion/deb stable main" | sudo tee /etc/apt/sources.list.d/pandion.list
    sudo apt update && sudo apt install pandion && pandion version
    ```
 
-- [ ] Publish workflow ran green for `v0.1.0`
-- [ ] Pages source set to `gh-pages`
-- [ ] `gpg.key` reachable over HTTPS
+- [ ] Publish workflow re-run against a real pandion release (`tag=latest`)
+- [ ] apt/yum index lists `pandion` (not `envcore`)
 - [ ] `apt install pandion` works on a clean box
 - [ ] `dnf install pandion` works on a clean box
-
-> First real run of the repo-assembly step is this workflow dispatch (reprepro /
-> createrepo_c only run on the GitHub runner). If it errors, paste the log — it's
-> a quick iterate, same as the e2e scripts.
 
 ---
 

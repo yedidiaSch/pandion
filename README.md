@@ -136,11 +136,12 @@ install one-liner (on stderr, so redirecting stdout to a file stays clean).
 
 ## Documentation
 
-- [Getting started](docs/getting-started.md) — install → configure → up → down.
-- [cluster.yaml reference](docs/cluster-yaml.md) — every field (generated from the schema).
-- [Reference](docs/reference.md) — env vars, exit codes, config precedence, `~/.pandion` layout.
-- [Troubleshooting](docs/troubleshooting.md) — common errors and fixes.
-- [Examples](examples/) — single-node, Docker engine, GPU, and Python `setup:` workloads.
+- **[Quickstart](#quickstart)** below — install → configure → `up` → `down`.
+- **[Command reference](#command-reference)** — every command and the selected `up` flags.
+- **[Examples](examples/)** — single-node, Docker engine, GPU, ZeroMQ cluster, and Python
+  `setup:` workloads, each a runnable `cluster.yaml`.
+- **`pandion <cmd> --help`** — per-command flags and usage; **`pandion validate -f cluster.yaml`**
+  schema-checks a topology (every field, with the location of any error).
 
 ## Quickstart
 
