@@ -176,8 +176,10 @@ Grouped by priority. IDs reference the design review findings / roadmap mileston
 
 ## P2 — lifecycle & cost (roadmap M4)
 - [x] **TTL dead-man's-switch** (C4/A5) — server-side systemd idle-timeout that
-      self-destroys a node with no heartbeat; the real leak-prevention when the
-      laptop dies. `--ttl`, `--no-ttl`. *(done: #23)*
+      powers a node OFF with no heartbeat (an abuse/liveness brake). Note: power-off
+      is not teardown — a stopped node keeps billing until `pandion down`/`reap`, so
+      `reap` is the real leak-stopper when the laptop dies. `--ttl`, `--no-ttl`.
+      *(done: #23; F2 copy corrected)*
 - [x] **`pandion ls` / `status`** (L1) — list active clusters, nodes, uptime, and
       **live cost** (provider.Pricer seam; grouped over the reconcile source of
       truth). *(done: this branch)*

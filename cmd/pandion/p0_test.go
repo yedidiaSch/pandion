@@ -169,7 +169,8 @@ func TestIdleTTLNotice(t *testing.T) {
 		t.Errorf("zero TTL should say disabled, got %q", s)
 	}
 	s := idleTTLNotice(90 * 60 * 1e9) // 90m
-	for _, want := range []string{"powers off", "--ttl", "--no-ttl"} {
+	// must not imply spend stops at the TTL — power-off is not teardown (F2/R2).
+	for _, want := range []string{"powers off", "--ttl", "--no-ttl", "bills until"} {
 		if !strings.Contains(s, want) {
 			t.Errorf("notice %q missing %q", s, want)
 		}
