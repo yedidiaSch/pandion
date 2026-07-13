@@ -917,6 +917,10 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
 			fmt.Fprintf(os.Stderr, "firewall apply failed on %s: %v\n", p.name, err)
 		}
+		if !auditFW {
+			// keep hostname egress-allow rules fresh as CDN IPs rotate (P2.1 follow-up)
+			installEgressRefresh(ctx, p.ip+":22", login.Signer, p.host.Public, egressAllowHostnames(p.egressAllow))
+		}
 	}
 
 	// Layer-2 overlay (safe profile): apply host-side Dynamic ARP Inspection — an

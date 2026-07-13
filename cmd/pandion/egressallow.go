@@ -10,6 +10,27 @@ import (
 	"strings"
 )
 
+// egressAllowHostnames returns just the HOSTNAME entries from an egress allowlist
+// (dropping IPv4 addresses and CIDRs) — the ones whose IPs can rotate and so need
+// periodic on-node re-resolution.
+func egressAllowHostnames(entries []string) []string {
+	var out []string
+	for _, e := range entries {
+		e = strings.TrimSpace(e)
+		if e == "" {
+			continue
+		}
+		if _, _, err := net.ParseCIDR(e); err == nil {
+			continue
+		}
+		if net.ParseIP(e) != nil {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // resolveEgressAllow expands an egress allowlist that may contain hostnames into
 // concrete IPv4 addresses/CIDRs for the nftables egress set (which is ipv4_addr).
 // IPv4 addresses and IPv4 CIDRs pass through unchanged; a hostname is resolved to
