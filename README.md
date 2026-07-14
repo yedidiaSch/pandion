@@ -2,7 +2,7 @@
 
 # Pandion
 
-**Hardened, mesh-networked C++/IPC test clusters — one command up, zero trace down.**
+**Secure, throwaway multi-node cloud test clusters — CPU or GPU — for distributed C++/IPC. One command up, nothing left behind.**
 
 [![CI](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml/badge.svg)](https://github.com/yedidiaSch/pandion/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/yedidiaSch/pandion?sort=semver)](https://github.com/yedidiaSch/pandion/releases)
@@ -11,10 +11,10 @@
 
 </div>
 
-Pandion is a single-binary CLI that provisions, security-hardens, and orchestrates ephemeral
-remote dev/test environments for C++ and distributed-IPC workloads (ZeroMQ, MQTT, and the like)
-on your own cloud account — Hetzner, DigitalOcean, Vultr, Linode/Akamai, or Scaleway. No backend,
-no agents, no secrets leaving your machine.
+Pandion gives you realistic, secure multi-node test beds for C++ and distributed-IPC software
+(ZeroMQ, MQTT, and the like) on your own cloud account — Hetzner, DigitalOcean, Vultr,
+Linode/Akamai, or Scaleway. One command provisions, hardens, and meshes them; another makes them
+vanish. No backend, no agents, no secrets leaving your machine.
 
 ```console
 $ pandion up --provider=hetzner -f cluster.yaml
