@@ -814,7 +814,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 
 	// provision concurrently; BARRIER: returns only when all are RUNNING
 	fmt.Printf("UP cluster %q: provisioning %d hardened nodes (concurrent, deadline %s)...\n", id, len(plans), shortDur(provTimeout))
-	o.Progress = progressPrinter("  ")
+	o.Progress = slowBootPrinter("  ", provTimeout, time.Now)
 	provCtx, provCancel := context.WithTimeout(ctx, provTimeout)
 	stopProvHB := startHeartbeat("provisioning " + itoa(len(plans)) + " node(s) at " + prov)
 	c, err := o.UpCluster(provCtx, id, specs, orchestrator.DefaultMaxConcurrency)

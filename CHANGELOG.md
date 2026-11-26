@@ -59,6 +59,9 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
   terminate, waits (`--wait`, default 3m) until the provider no longer lists the server, and
   otherwise exits 8 without tombstoning the cluster. `ls` shows such servers as `[terminating]`.
   `up` doesn't count them against a re-used id.
+- **Slow-boot hint.** Once a server has been booting for 10 minutes, `up` prints one hint with the
+  deadline, the automatic rollback on timeout, and the fallbacks (`--region a,b`,
+  `--provision-timeout`). A10 boots on Lambda ranged from 4 to 24 minutes in one day.
 - **Receipts and uptime count from launch, for this cluster only.** Lambda reports no launch time,
   so the receipt fell back to the lockfile. A failed `up` never rewrites the lockfile, so one
   receipt billed a 15-minute instance as `ran 1d0h · ~16.94 USD`, using the timestamp of a previous

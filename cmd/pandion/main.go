@@ -651,7 +651,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// 3) provision (tagged; journaled state machine). The login key is registered
 	//    with the provider so it lands on root (validated path, S1).
 	statusf("provisioning %q on %s (deadline %s)...\n", node, prov, shortDur(provTimeout))
-	o.Progress = progressPrinter("  ")
+	o.Progress = slowBootPrinter("  ", provTimeout, time.Now)
 	provCtx, provCancel := context.WithTimeout(context.Background(), provTimeout)
 	stopProvHB := startHeartbeat("provisioning " + node + " at " + prov)
 	c, err := o.UpSpec(provCtx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
