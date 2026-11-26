@@ -6,6 +6,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -202,4 +203,49 @@ func TestEgressLockdownNote(t *testing.T) {
 			t.Errorf("note missing %q: %s", want, note)
 		}
 	}
+}
+
+// A boot past slowBootAfter gets ONE hint naming the deadline, the automatic
+// rollback, and what to try next (from a real Lambda run: A10 boots took 4–24 min).
+func TestSlowBootHint(t *testing.T) {
+	clock := time.Unix(0, 0)
+	now := func() time.Time { return clock }
+	p := slowBootPrinter("  ", 25*time.Minute, now)
+	out := captureStdout(t, func() {
+		p("lambda instance x: booting (0s elapsed)")
+		clock = clock.Add(5 * time.Minute)
+		p("lambda instance x: booting (5m elapsed)")
+		clock = clock.Add(6 * time.Minute)
+		p("lambda instance x: booting (11m elapsed)")
+		clock = clock.Add(time.Minute)
+		p("lambda instance x: booting (12m elapsed)")
+	})
+	if n := strings.Count(out, "slow boot:"); n != 1 {
+		t.Fatalf("want exactly one hint, got %d:\n%s", n, out)
+	}
+	for _, want := range []string{"deadline 25m", "destroyed automatically", "--region a,b", "--provision-timeout"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("hint missing %q:\n%s", want, out)
+		}
+	}
+	if strings.Index(out, "slow boot:") < strings.Index(out, "11m elapsed") {
+		t.Errorf("hint must not appear before the threshold:\n%s", out)
+	}
+}
+
+// captureStdout runs f with os.Stdout redirected and returns what it printed.
+func captureStdout(t *testing.T, f func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stdout
+	os.Stdout = w
+	done := make(chan string)
+	go func() { b, _ := io.ReadAll(r); done <- string(b) }()
+	f()
+	w.Close()
+	os.Stdout = old
+	return <-done
 }

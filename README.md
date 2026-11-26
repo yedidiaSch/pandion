@@ -159,18 +159,47 @@ needs no `--provider`, and no size/region either. Prefer to do it by hand (or au
 Authenticate with a project-scoped API token — an environment variable, or the OS keychain:
 
 ```bash
-export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY / LINODE_TOKEN / LAMBDA_API_KEY
+export HCLOUD_TOKEN=your-token          # or DIGITALOCEAN_TOKEN / VULTR_API_KEY / LINODE_TOKEN / LAMBDA_API_KEY / RUNPOD_API_KEY
 pandion login --provider hetzner        # alternatively, store it in the OS keychain
 ```
 
 For GPU work, `pandion up --gpu MODEL[:N]` provisions an on-demand GPU node — hardened,
 overlay-meshed, and torn down like any other. Browse the live, priced catalog with
-`pandion list-gpus --provider <name>`, then e.g. `pandion up --gpu a100 -- ./train.sh`. Two
-providers today, both with CUDA-native images (no driver setup):
+`pandion list-gpus --provider <name>`, then e.g. `pandion up --gpu a100 -- ./train.sh`. Three
+providers today, all with CUDA-native images (no driver setup):
 
 - **Lambda Cloud** (`--provider lambda`) — A10 → B200, GPU-only.
 - **DigitalOcean GPU Droplets** (`--provider digitalocean`) — H100/H200/L40S/RTX/MI300X, using
   your existing DO token (the successor to Paperspace; needs GPU-Droplet quota on your DO account).
+- **RunPod** (`--provider runpod`) — per-second-billed GPU pods from RTX A4000/3090/4090 to H100,
+  usually up in a few minutes. `--cloud secure` (default, RunPod data centers) or
+  `--cloud community` (cheaper). See [RunPod nodes are containers](#runpod-nodes-are-containers).
+
+#### RunPod nodes are containers
+
+A RunPod pod is a container, not a VM, so a RunPod node gets a different security posture, and
+`up` prints it:
+
+- **Still applied:** key-only SSH with a host key Pandion generates and pins (sshd is reached on
+  the pod's mapped port, e.g. `203.0.113.7:40123`; `pandion ssh/cp/code/attach/start` handle
+  it); the workload runs as the unprivileged `pandion-run` user; secrets are never synced.
+- **Not available** (no systemd / `CAP_NET_ADMIN` in a container): the egress lockdown, the
+  WireGuard overlay and multi-node `-f` clusters, the idle poweroff, fail2ban/auditd, and LUKS.
+  Outbound traffic is unrestricted, and **nothing powers the pod off: it bills until
+  `pandion down`**. `down` deletes the pod (never "stop", which keeps a billed disk) and waits
+  until RunPod no longer lists it.
+- **Image:** `--image` picks the container image (default `nvidia/cuda:12.8.1-devel-ubuntu24.04`:
+  nvcc, cmake via the toolchain, compute-sanitizer; hosts are limited to CUDA 12.8+ drivers).
+  A bootstrap script replaces cloud-init: it installs sshd, the toolchain and `--packages`, then
+  `up` continues with sync → `--setup` → build as usual.
+
+```bash
+export RUNPOD_API_KEY=...               # or: pandion login --provider runpod
+pandion list-gpus --provider runpod     # live availability + USD/hr
+pandion up --provider runpod --gpu a4000 --id lab --packages libopencv-core-dev --no-run -- true
+pandion ssh --id lab -- nvidia-smi
+pandion down --id lab
+```
 
 On a GPU node the idle dead-man's-switch also treats **GPU utilization** as liveness: a
 headless training job (no SSH session) keeps the node alive, while a truly idle box still

@@ -13,7 +13,7 @@ import (
 // names plus the short aliases advertised by P1.3. Kept explicit (not in the
 // command table).
 var completionProviders = []string{
-	"mock", "hetzner", "digitalocean", "do", "vultr", "linode", "akamai", "scaleway", "scw", "lambda",
+	"mock", "hetzner", "digitalocean", "do", "vultr", "linode", "akamai", "scaleway", "scw", "lambda", "runpod",
 }
 
 // runCompletion prints a shell completion script for pandion, derived from the

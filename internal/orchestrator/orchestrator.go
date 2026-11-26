@@ -138,7 +138,7 @@ func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSp
 	}
 
 	c.Nodes[0].ServerID = srv.ID
-	c.Nodes[0].IP = srv.IP
+	c.Nodes[0].IP, c.Nodes[0].SSHPort = srv.IP, srv.SSHPort
 	c.Nodes[0].Phase = state.Running
 	if err := o.S.Save(c); err != nil { // journal: RUNNING
 		return nil, err
@@ -214,7 +214,7 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 			}
 			mu.Lock()
 			c.Nodes[i].ServerID = srv.ID
-			c.Nodes[i].IP = srv.IP
+			c.Nodes[i].IP, c.Nodes[i].SSHPort = srv.IP, srv.SSHPort
 			c.Nodes[i].Phase = state.Running
 			mu.Unlock()
 			save()

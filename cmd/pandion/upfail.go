@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yedidiaSch/pandion/internal/harden"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	gossh "golang.org/x/crypto/ssh"
@@ -180,6 +181,32 @@ func progressPrinter(prefix string) func(string) {
 	return func(msg string) { statusln(prefix + msg) }
 }
 
+// slowBootAfter is when a still-booting server earns the one-time slow-boot hint.
+// A var so tests can shorten it.
+var slowBootAfter = 10 * time.Minute
+
+// slowBootPrinter is progressPrinter plus a ONE-TIME hint once the boot passes
+// slowBootAfter: the same GPU type has booted in 4 minutes and in 24 on Lambda,
+// so a slow boot isn't necessarily stuck — but the operator should know the
+// deadline, that a timeout rolls back automatically, and what to try next.
+func slowBootPrinter(prefix string, deadline time.Duration, now func() time.Time) func(string) {
+	start := now()
+	hinted := false
+	return func(msg string) {
+		statusln(prefix + msg)
+		if !hinted && now().Sub(start) >= slowBootAfter {
+			hinted = true
+			statusln(prefix + slowBootHint(now().Sub(start), deadline))
+		}
+	}
+}
+
+func slowBootHint(elapsed, deadline time.Duration) string {
+	return fmt.Sprintf("slow boot: %s so far (deadline %s). GPU boots vary a lot (4–24+ min seen on Lambda); "+
+		"if it times out, the server is destroyed automatically — then retry with fallback regions "+
+		"(--region a,b) or a longer --provision-timeout (e.g. 40m).", shortDur(elapsed.Round(time.Minute)), shortDur(deadline))
+}
+
 // egressLockdownNote explains what the egress default-deny means for later work
 // on the node (#8): anything that reaches out (apt, pip, curl, git clone) over
 // `pandion ssh` is now refused, and names the flags that install software before
@@ -188,4 +215,31 @@ func egressLockdownNote() string {
 	return "  note: outbound connections from the node are now refused (apt/pip/curl/git fail with \"connection refused\").\n" +
 		"        install apt packages with --packages and other software with --setup (both run BEFORE the lockdown),\n" +
 		"        or allow specific destinations with --egress-allow host1,host2 (cluster.yaml: egress_allow).\n"
+}
+
+// containerPostureNote states what Pandion does and does NOT protect on a
+// container node, so nobody assumes the VM hardening is in place.
+func containerPostureNote(prov string) string {
+	return fmt.Sprintf("security on %s (container node): SSH is key-only with a host key Pandion generated and pins;\n"+
+		"  the workload runs as an unprivileged user and secrets are not synced.\n"+
+		"  NOT available in a container: egress lockdown (nftables), WireGuard overlay, idle poweroff,\n"+
+		"  fail2ban/auditd, LUKS. The node is reachable only over SSH, but outbound traffic is unrestricted,\n"+
+		"  and nothing powers it off — it bills until `pandion down`.\n", prov)
+}
+
+// waitPodReady connects to a container node (pinned) and waits for its bootstrap
+// (sshd → toolchain → packages → run user). It fails fast, with the bootstrap
+// log's tail, if the bootstrap reported a failure.
+func waitPodReady(ctx context.Context, node, addr string, signer gossh.Signer, pinned gossh.PublicKey, onAttempt func(int, string)) error {
+	statusln("connecting (host-key pinned; waiting for the container bootstrap: sshd, toolchain, packages)...")
+	stopHB := startHeartbeat("bootstrap on " + node)
+	defer stopHB()
+	if _, err := envssh.RunWithRetry(ctx, addr, "root", signer, pinned, "true", 5*time.Second, onAttempt); err != nil {
+		return fmt.Errorf("sshd never answered: %w", err)
+	}
+	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, harden.PodReadyCmd()); err != nil {
+		return fmt.Errorf("bootstrap failed: %v\n%s", err, out)
+	}
+	statusln("node ready (bootstrap complete).")
+	return nil
 }

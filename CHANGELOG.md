@@ -7,6 +7,14 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **RunPod provider (`--provider runpod`).** Per-second-billed GPU pods through RunPod's REST
+  API v2, with `list-gpus` (live availability), `--dry-run`/`--max-cost` pricing, `--cloud
+  secure|community`, `--image`, `ls`, `down` and `reap`. Pods are containers, so the node is
+  bootstrapped by a shell script instead of cloud-init (sshd with a Pandion-generated pinned
+  host key, toolchain, `--packages`, run user) and reached on its mapped SSH port; Pandion now
+  carries a per-node SSH port through the journal, the manifest, and `ssh`/`cp`/`code`/`start`/
+  `attach`. The VM-only protections (egress lockdown, WireGuard, idle poweroff, LUKS, multi-node
+  clusters) are unavailable there; `up` says so, and refuses the flags that would imply them.
 - **`pandion doctor` — reconcile local state against the provider.** The crash-consistent
   journal was written but never read back, so stale or leaked state was invisible. `doctor`
   walks `~/.pandion/{state,keys}`, reconciles each cluster against its provider (when the
@@ -59,6 +67,9 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
   terminate, waits (`--wait`, default 3m) until the provider no longer lists the server, and
   otherwise exits 8 without tombstoning the cluster. `ls` shows such servers as `[terminating]`.
   `up` doesn't count them against a re-used id.
+- **Slow-boot hint.** Once a server has been booting for 10 minutes, `up` prints one hint with the
+  deadline, the automatic rollback on timeout, and the fallbacks (`--region a,b`,
+  `--provision-timeout`). A10 boots on Lambda ranged from 4 to 24 minutes in one day.
 - **Receipts and uptime count from launch, for this cluster only.** Lambda reports no launch time,
   so the receipt fell back to the lockfile. A failed `up` never rewrites the lockfile, so one
   receipt billed a 15-minute instance as `ran 1d0h · ~16.94 USD`, using the timestamp of a previous

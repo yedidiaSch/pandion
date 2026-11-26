@@ -30,6 +30,8 @@ func providerEnv(provider string) (name, env string, ok bool) {
 		return "scaleway", "SCW_SECRET_KEY", true
 	case "lambda", "lambdalabs":
 		return "lambda", "LAMBDA_API_KEY", true
+	case "runpod":
+		return "runpod", "RUNPOD_API_KEY", true
 	}
 	return "", "", false
 }
@@ -79,11 +81,11 @@ func readToken(env string) string {
 // in an environment variable (H6). The token is never taken from argv.
 func runLogin(args []string) {
 	fs := newCmdFlagSet("login")
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda(lambdalabs)")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda(lambdalabs)|runpod")
 	_ = fs.Parse(args)
 	name, env, ok := providerEnv(*provider)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "login: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway|lambda)\n", *provider)
+		fmt.Fprintf(os.Stderr, "login: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway|lambda|runpod)\n", *provider)
 		os.Exit(2)
 	}
 	token := readToken(env)
@@ -103,11 +105,11 @@ func runLogin(args []string) {
 // runLogout removes a provider's token from the OS keychain.
 func runLogout(args []string) {
 	fs := newCmdFlagSet("logout")
-	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda(lambdalabs)")
+	provider := fs.String("provider", "hetzner", "provider: hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda(lambdalabs)|runpod")
 	_ = fs.Parse(args)
 	name, _, ok := providerEnv(*provider)
 	if !ok {
-		fmt.Fprintf(os.Stderr, "logout: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway|lambda)\n", *provider)
+		fmt.Fprintf(os.Stderr, "logout: unknown provider %q (use hetzner|digitalocean|vultr|linode|scaleway|lambda|runpod)\n", *provider)
 		os.Exit(2)
 	}
 	if err := secret.Delete(credName(name)); err != nil {

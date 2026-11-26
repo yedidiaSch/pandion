@@ -15,6 +15,8 @@ package provider
 import (
 	"context"
 	"errors"
+	"net"
+	"strconv"
 	"time"
 )
 
@@ -127,6 +129,36 @@ type Server struct {
 	// but still exists at the provider — it may still bill, so it is never
 	// reported as gone.
 	Status string
+	// SSHPort is the TCP port the node's sshd is reachable on at IP. 0 means the
+	// default, 22. Container providers (RunPod) publish sshd on a mapped port.
+	SSHPort int
+}
+
+// SSHAddr returns the host:port to dial for the server's sshd.
+func (s Server) SSHAddr() string { return SSHAddr(s.IP, s.SSHPort) }
+
+// SSHAddr joins a host and an SSH port (0 = 22) into a dialable address.
+func SSHAddr(ip string, port int) string {
+	if port == 0 {
+		port = 22
+	}
+	return net.JoinHostPort(ip, strconv.Itoa(port))
+}
+
+// ContainerHost is an optional Provider capability: the provider runs each node
+// as a CONTAINER (RunPod pods), not a VM. There is no cloud-init, no systemd and
+// no CAP_NET_ADMIN, so the VM hardening (host nftables, WireGuard overlay, idle
+// poweroff, fail2ban/auditd, LUKS) cannot be applied. `up` bootstraps such nodes
+// with a shell script (UserData is that script, not cloud-config) and says
+// plainly which protections are absent.
+type ContainerHost interface {
+	ContainerNodes() bool
+}
+
+// IsContainerHost reports whether p provisions containers rather than VMs.
+func IsContainerHost(p Provider) bool {
+	c, ok := p.(ContainerHost)
+	return ok && c.ContainerNodes()
 }
 
 // StatusTerminating marks a server whose teardown the provider has accepted but
