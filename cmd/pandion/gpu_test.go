@@ -176,7 +176,7 @@ func TestBuildReceipt_Mock(t *testing.T) {
 		t.Fatal(err)
 	}
 	servers, _ := m.ListByTag(ctx, "c")
-	r := buildReceipt(ctx, m, servers, time.Time{})
+	r := buildReceipt(ctx, m, servers, nil)
 	if r.nodes != 1 || !r.priced || !r.ranKnown {
 		t.Fatalf("receipt = %+v", r)
 	}
@@ -188,8 +188,9 @@ func TestBuildReceipt_Mock(t *testing.T) {
 	}
 }
 
-// M6-R1: a provider that reports NO creation time (Lambda) still gets a priced
-// receipt via the lockfile fallback, instead of "cost unknown".
+// M6-R1 / #9: a provider that reports NO creation time (Lambda) still gets a
+// priced receipt from the launch time Pandion journaled, instead of "cost
+// unknown" — and the receipt is measured from that launch, not from "ready".
 func TestBuildReceipt_FallbackCreated(t *testing.T) {
 	m := mock.New()
 	ctx := context.Background()
@@ -198,16 +199,43 @@ func TestBuildReceipt_FallbackCreated(t *testing.T) {
 		ID: "i-1", Name: "n", ClusterID: "c", Type: "mock-gpu-a100", Region: "mock-dc",
 		GPU: provider.GPUInfo{Model: "a100", Count: 1, VRAM: 40}, // Created is zero
 	}}
-	// without a fallback: unpriced (no age to multiply)
-	if r := buildReceipt(ctx, m, servers, time.Time{}); r.priced || r.ranKnown {
+	// no launch time anywhere: unpriced (no age to multiply), never a guess
+	if r := buildReceipt(ctx, m, servers, nil); r.priced || r.ranKnown {
 		t.Fatalf("no timestamp should yield cost unknown: %+v", r)
 	}
-	// with the lockfile fallback (created 2h ago): real cost from age × hourly
-	r := buildReceipt(ctx, m, servers, time.Now().Add(-2*time.Hour))
+	// with a journaled launch 2h ago: real cost from age × hourly
+	launched := time.Now().Add(-2 * time.Hour)
+	r := buildReceipt(ctx, m, servers, func(provider.Server) time.Time { return launched })
 	if !r.ranKnown || !r.priced {
 		t.Fatalf("fallback should produce a priced receipt: %+v", r)
 	}
 	if r.total < 2.0 || r.total > 2.4 { // a100 = 1.10/hr × ~2h
 		t.Fatalf("expected ~2.20, got %.4f %s", r.total, r.currency)
+	}
+}
+
+// The teardown receipt is priced at the moment the provider confirmed the
+// servers GONE, not when `down` started: a Lambda terminate can sit in
+// "terminating" for 20+ minutes and keeps billing the whole time. (Found on real
+// Lambda: a node launched 09:12, gone 09:20, receipt said "ran 6m".)
+func TestReceiptBasis_PricedAtTeardownEnd(t *testing.T) {
+	m := mock.New()
+	ctx := context.Background()
+	servers := []provider.Server{{
+		ID: "i-1", Name: "n", ClusterID: "c", Type: "mock-gpu-a100", Region: "mock-dc",
+		GPU: provider.GPUInfo{Model: "a100", Count: 1, VRAM: 40},
+	}}
+	launched := time.Now().Add(-time.Hour)
+	basis := snapshotReceipt(ctx, m, servers, func(provider.Server) time.Time { return launched })
+	atStart := basis.at(launched.Add(time.Hour))
+	atGone := basis.at(launched.Add(time.Hour + 20*time.Minute)) // waited out "terminating"
+	if atGone.ran != 80*time.Minute {
+		t.Fatalf("ran = %s, want 1h20m (until the provider stopped listing it)", atGone.ran)
+	}
+	if !(atGone.total > atStart.total) {
+		t.Fatalf("terminating time must be billed: start %.4f, gone %.4f", atStart.total, atGone.total)
+	}
+	if len(atGone.gpus) != 1 || atGone.nodes != 1 {
+		t.Fatalf("basis lost nodes/gpus: %+v", atGone)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -47,6 +48,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/stream"
 	"github.com/yedidiaSch/pandion/internal/userconfig"
 	gossh "golang.org/x/crypto/ssh"
+	"golang.org/x/term"
 )
 
 // version is set at release time via -ldflags "-X main.version=...". Defaults to
@@ -231,6 +233,8 @@ func runUp(args []string) {
 	engine := fs.String("engine", "native", "execution engine: native|docker")
 	containerImage := fs.String("container-image", "ubuntu:24.04", "image for --engine=docker")
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
+	provisionTimeout := fs.Duration("provision-timeout", 0, "how long the provider may take to boot the server before up gives up and rolls back (default 10m; 25m with --gpu — Lambda GPU boots take 2–15+ min)")
+	setupTimeout := fs.Duration("setup-timeout", 0, "budget for everything after the server boots: cloud-init, sync, --setup, build, firewall (default 30m)")
 	fShort, fLong := addFileFlag(fs, "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 	file := func() *string { s := resolveFileFlag(fs, fShort, fLong); return &s }()
@@ -306,6 +310,7 @@ func runUp(args []string) {
 		} else if set["ttl"] {
 			ov.TTL = shortDur(*ttl)
 		}
+		ov.ProvisionTimeout, ov.SetupTimeout = *provisionTimeout, *setupTimeout
 		upCluster(o, p.Name(), *file, *id, *maxCost, *dryRun, *lock, *noRun, *gpu, *firewallAudit, *jsonOut, ov)
 		return
 	}
@@ -348,6 +353,7 @@ func runUp(args []string) {
 			size: *size, regionPref: splitCSV(*region), gpu: gpuReq, gpuIdleUtil: *gpuIdleUtil,
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
+			provisionTimeout: *provisionTimeout, setupTimeout: *setupTimeout,
 		})
 	default:
 		// never silently no-op: a provider that resolves + prices but is missing
@@ -376,10 +382,12 @@ type hetznerUpOpts struct {
 	engine           string          // native | docker
 	containerImage   string
 	caps             []string
-	maxCost          float64 // budget cap (projected spend); 0 = off
-	lockPath         string  // reproducibility: pin toolchain from this lockfile (H2)
-	encryptWorkspace bool    // LUKS-encrypt the workspace at rest (S-E)
-	noRun            bool    // deploy only: don't launch the run command (start later)
+	maxCost          float64       // budget cap (projected spend); 0 = off
+	lockPath         string        // reproducibility: pin toolchain from this lockfile (H2)
+	encryptWorkspace bool          // LUKS-encrypt the workspace at rest (S-E)
+	noRun            bool          // deploy only: don't launch the run command (start later)
+	provisionTimeout time.Duration // provider boot deadline; 0 = default (CPU/GPU)
+	setupTimeout     time.Duration // post-provision budget; 0 = default
 }
 
 // clusterFlagOverrides carries the `up` flags that must win over cluster.yaml's
@@ -394,6 +402,10 @@ type clusterFlagOverrides struct {
 	// first preference is applied to cluster.yaml's single provider.region)
 	Engine string // --engine
 	TTL    string // --ttl (formatted via shortDur) or "false" for --no-ttl
+	// ProvisionTimeout / SetupTimeout are the --provision-timeout/--setup-timeout
+	// deadlines (0 = default). They are runtime budgets, not cluster.yaml knobs.
+	ProvisionTimeout time.Duration
+	SetupTimeout     time.Duration
 }
 
 // applyClusterFlagOverrides layers explicit `up` CLI flags on top of a loaded
@@ -452,7 +464,7 @@ func upCluster(o *orchestrator.Orchestrator, providerName, file, id string, maxC
 
 	if providerName != "mock" && providerName != "" {
 		// the hardened multi-node mesh flow is provider-agnostic (driven through `o`).
-		upClusterHetzner(o, cl, id, maxCost, lockPath, noRun, auditFW)
+		upClusterHetzner(o, cl, id, maxCost, lockPath, noRun, auditFW, ov.ProvisionTimeout, ov.SetupTimeout)
 		return
 	}
 
@@ -539,21 +551,19 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if runCmd == "" {
 		runCmd = "echo PANDION_READY && uname -a"
 	}
-	// Overall budget for provision + SSH readiness + hardening + workload launch.
-	// GPU images (Lambda Stack, DO AI/ML Ready) are large and can take 5-6 min just
-	// to boot, so a CPU-sized 6-minute budget starves the rest — give GPU nodes more.
-	upTimeout := 6 * time.Minute
-	if opt.gpu.Wanted() {
-		upTimeout = 15 * time.Minute
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), upTimeout)
-	defer cancel()
+	// Two separate budgets (#11): the provisioning deadline (the provider booting
+	// the server — Lambda GPU boots take 2–15+ min) and the post-provision budget
+	// (cloud-init, sync, setup, build, lockdown). A shared budget let a slow boot
+	// starve setup, and a boot past the deadline orphaned a billing instance.
+	provTimeout := provisionTimeoutFor(opt.provisionTimeout, opt.gpu.Wanted())
+	setupTimeout := setupTimeoutFor(opt.setupTimeout)
 
 	// 1) generate the host key (to inject + pin) and the login key (S1)
 	host, err := sshkeys.Generate("pandion-host")
 	must(err)
 	login, err := sshkeys.Generate("pandion-login")
 	must(err)
+	keyDir := filepath.Join(pandionDir(), "keys", id)
 
 	// 2) build hardened cloud-init: inject host key (race-free, S1/F1) + install
 	//    the C++ toolchain per the Execution Contract (§5)
@@ -609,16 +619,50 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 
 	// --max-cost preflight (before spending a cent): the single node auto-discovers
 	// its type; project its hourly × TTL and refuse if it exceeds the cap.
-	if err := o.CheckBudget(ctx, []orchestrator.NodeSpec{{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
+	budgetCtx, budgetCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	if err := o.CheckBudget(budgetCtx, []orchestrator.NodeSpec{{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}}, []time.Duration{opt.idleTTL}, opt.maxCost); err != nil {
+		budgetCancel()
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(6)
 	}
+	budgetCancel()
+
+	// persist the keys (0600) BEFORE provisioning: if anything fails from here on,
+	// the operator can still reach and remove the node (#3).
+	must(host.Save(keyDir, "host_ed25519"))
+	must(login.Save(keyDir, "login_ed25519"))
+	ensureLogsDir(id)
+
+	// the manifest's reconnect view of this node; written NOW (no IP yet) so the
+	// cluster's provider is on record even if provisioning dies, then rewritten as
+	// soon as the server exists (#3, #4).
+	man := nodeManifest{
+		Name: node, HostPub: host.PublicAuthorized,
+		Run: runCmd, Engine: opt.engine, ContainerImg: opt.containerImage,
+		RunUser: opt.runUser, Caps: opt.caps,
+	}
+	saveMan := func() {
+		if err := writeManifest(id, prov, []nodeManifest{man}, nil); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save manifest (ssh/attach won't work): %v\n", err)
+		}
+	}
+	saveMan()
 
 	// 3) provision (tagged; journaled state machine). The login key is registered
 	//    with the provider so it lands on root (validated path, S1).
-	c, err := o.UpSpec(ctx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
-	must(err)
+	statusf("provisioning %q on %s (deadline %s)...\n", node, prov, shortDur(provTimeout))
+	o.Progress = progressPrinter("  ")
+	provCtx, provCancel := context.WithTimeout(context.Background(), provTimeout)
+	stopProvHB := startHeartbeat("provisioning " + node + " at " + prov)
+	c, err := o.UpSpec(provCtx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
+	stopProvHB()
+	provCancel()
+	if err != nil {
+		rollbackFailedProvision(o, prov, id, err) // never returns
+	}
 	ip := c.Nodes[0].IP
+	man.IP = ip
+	saveMan() // reachable from here on: `pandion ssh/down/ls` work even if setup fails
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
 	fmt.Printf("UP (%s): cluster %q node %q running at %s (host fp %s)\n",
 		prov, c.ID, node, ip, host.Fingerprint())
@@ -626,15 +670,13 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// after the idle TTL (P2.6) — otherwise a forgotten node just vanishes.
 	statusln(idleTTLNotice(opt.idleTTL))
 
+	ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
+	defer cancel()
+
 	// cloud-edge firewall (defense-in-depth, M8) — tied to the firewall posture.
 	if opt.firewall {
 		ensureCloudFirewall(ctx, o, id)
 	}
-
-	// 4) persist keys for later attach/down (0600)
-	keyDir := filepath.Join(pandionDir(), "keys", id)
-	must(host.Save(keyDir, "host_ed25519"))
-	must(login.Save(keyDir, "login_ed25519"))
 
 	// 5) connect with the PINNED host key. RunWithRetry tolerates the cloud-init
 	//    window (until our key is installed, pinning rejects and we wait), and
@@ -648,9 +690,9 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		"cloud-init status --wait || true", 5*time.Second, onAttempt)
 	stopHB()
 	if rerr != nil {
-		fmt.Printf("readiness gate failed: %v (node left running for debugging)\n", rerr)
+		fmt.Fprintf(os.Stderr, "readiness gate failed: %v (node left running for debugging)\n", rerr)
 		stageDeadlineHint("cloud-init readiness", rerr, prov, id)
-		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+		liveNodeHints(prov, id)
 		os.Exit(codeInfraDegraded)
 	}
 	statusln("node ready (cloud-init complete).")
@@ -666,53 +708,31 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		}
 	}
 
-	// 5b) sync workspace + build, in the egress build-window (before the firewall
-	//     lockdown) so the build can fetch dependencies (P0-1). native builds on the
-	//     host as the run user; docker builds inside the hardened container.
-	workdir := ""
+	// 5b) the build window, while egress is still open (before the firewall
+	//     lockdown) so every step can fetch dependencies (P0-1): sync the workspace
+	//     FIRST, then setup (its script may live in the workspace — #1), then the
+	//     docker pull / build (which may need what setup installed).
+	//
 	// failNode reports a build-window failure, leaves the node up for debugging, and
 	// exits NON-ZERO (codeInfraDegraded) so scripts/CI don't read a left-up cluster
-	// as success. It never returns — callers need no follow-up `return`.
+	// as success (#2). It never returns — callers need no follow-up `return`.
 	failNode := func(err error) {
 		fmt.Fprintf(os.Stderr, "%v (node left running for debugging)\n", err)
-		fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+		stageDeadlineHint("build window", err, prov, id)
+		liveNodeHints(prov, id)
 		os.Exit(codeInfraDegraded)
 	}
-	// setup commands (non-apt software) run first — after apt packages, before the
-	// build — while egress is open.
-	if err := runSetup(ctx, addr, login.Signer, host.Public, node, opt.setup); err != nil {
-		failNode(err)
+	workdir, err := runBuildWindow(ctx, buildWindow{
+		node: node, addr: addr, signer: login.Signer, pinned: host.Public,
+		setup: opt.setup, sync: opt.sync, runUser: opt.runUser,
+		engine: opt.engine, containerImg: opt.containerImage,
+	})
+	if workdir != "" {
+		man.Workdir = workdir
+		saveMan()
 	}
-	if opt.engine == "docker" {
-		// pull the image NOW (egress is still open); the post-lockdown `docker run`
-		// then uses the cached image offline.
-		fmt.Printf("pulling image %s...\n", opt.containerImage)
-		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
-			"docker pull "+shellQuote(opt.containerImage)); err != nil {
-			failNode(fmt.Errorf("docker pull failed: %v\n%s", err, out))
-		}
-		if opt.sync != nil {
-			fmt.Println("workspace sync...")
-			wd, err := syncFiles(ctx, addr, login.Signer, host.Public, *opt.sync, "root")
-			if err != nil {
-				failNode(err)
-			}
-			workdir = wd
-			if b := strings.TrimSpace(opt.sync.Build); b != "" {
-				fmt.Printf("  building in container (%s): %s\n", opt.containerImage, b)
-				if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public,
-					dockerRun(opt.containerImage, workdir, b, nil)); err != nil {
-					failNode(fmt.Errorf("container build failed: %v\n%s", err, out))
-				}
-			}
-		}
-	} else if opt.sync != nil {
-		fmt.Println("workspace sync...")
-		wd, err := syncWorkspace(ctx, addr, login.Signer, host.Public, *opt.sync, opt.runUser)
-		if err != nil {
-			failNode(err)
-		}
-		workdir = wd
+	if err != nil {
+		failNode(err)
 	}
 
 	// 5c) verify requested packages actually installed (native): a typo'd/unavailable
@@ -763,8 +783,8 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 		b64 := base64.StdEncoding.EncodeToString([]byte(rules))
 		applyCmd := "echo " + b64 + " | base64 -d | nft -f -"
 		if out, err := envssh.Run(ctx, addr, "root", login.Signer, host.Public, applyCmd); err != nil {
-			fmt.Printf("firewall apply failed: %v\n%s(node left running)\n", err, out)
-			fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+			fmt.Fprintf(os.Stderr, "firewall apply failed: %v\n%s(node left running)\n", err, out)
+			liveNodeHints(prov, id)
 			os.Exit(codeInfraDegraded)
 		}
 		sshScope := "any source"
@@ -776,6 +796,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 			fmt.Printf("  inspect:  pandion ssh --id %s -- 'journalctl -k | grep pandion-audit'\n", id)
 		} else {
 			fmt.Printf("firewall applied: egress default-deny; ingress SSH from %s + WG overlay.\n", sshScope)
+			fmt.Print(egressLockdownNote())
 			// keep hostname egress-allow rules fresh as CDN IPs rotate (P2.1 follow-up)
 			installEgressRefresh(ctx, addr, login.Signer, host.Public, egressAllowHostnames(opt.egressAllow))
 		}
@@ -788,13 +809,9 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	if opt.overlay {
 		overlayIP = nodeOverlayIP
 	}
-	if err := writeManifest(id, prov, []nodeManifest{{
-		Name: node, IP: ip, OverlayIP: overlayIP, HostPub: host.PublicAuthorized,
-		Run: runCmd, Engine: opt.engine, ContainerImg: opt.containerImage,
-		Workdir: workdir, RunUser: opt.runUser, Caps: opt.caps,
-	}}, nil); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not save manifest (attach won't work): %v\n", err)
-	}
+	man.OverlayIP = overlayIP
+	man.Workdir = workdir
+	saveMan()
 
 	// --no-run: DEPLOY only (provision + sync + build), leave the workload unstarted.
 	if opt.noRun {
@@ -817,7 +834,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	// then stream that log. Ctrl+C detaches; the workload keeps running in tmux and
 	// is reachable again with `pandion attach --id ID`.
 	if err := launchRun(ctx, addr, login.Signer, host.Public, runShell); err != nil {
-		failNode(fmt.Errorf("launch failed: %v", err))
+		failNode(fmt.Errorf("launch failed: %w", err))
 	}
 	streamCtx, streamCancel := context.WithCancel(context.Background())
 	defer streamCancel()
@@ -833,7 +850,7 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	code := tailLog(streamCtx, addr, login.Signer, host.Public, node, printer)
 
 	audit.Event("up.complete", "id", id, "node", node, "provider", prov, "ip", ip)
-	fmt.Printf("node is live. teardown with:  pandion down --provider=%s --id %s\n", prov, id)
+	liveNodeHints(prov, id)
 	// Propagate a crashed workload's own exit code (mirrors `pandion ssh -- cmd`);
 	// a clean exit or a Ctrl+C detach returns 0.
 	if code != 0 {
@@ -921,8 +938,16 @@ func runReap(args []string) {
 	o := orchestrator.New(p, mustStore())
 	initAudit()
 
-	plan, err := o.ReapPlan(context.Background(), *olderThan)
+	plan, skipped, err := o.ReapPlan(context.Background(), *olderThan)
 	must(err)
+	if len(skipped) > 0 && !*jsonOut {
+		// never treat an unknown age as "old": that would reap a node launched a
+		// minute ago from another machine. Say what was left alone, and how to
+		// remove it deliberately.
+		fmt.Fprintf(os.Stderr, "reap: skipped %d cluster(s) with an UNKNOWN age (%s reports no creation time and there is no local record): %s\n",
+			len(skipped), p.Name(), strings.Join(skipped, ", "))
+		fmt.Fprintf(os.Stderr, "  remove deliberately with `pandion down --provider=%s --id ID`, or `pandion reap` without --older-than.\n", p.Name())
+	}
 	if len(plan) == 0 {
 		// nothing to destroy, but stale local journals for this provider (clusters
 		// already gone) can still be GC'd (R7c).
@@ -942,7 +967,11 @@ func runReap(args []string) {
 	}
 	for _, c := range plan {
 		if !*jsonOut {
-			fmt.Printf("  %-24s %d node(s)  oldest %s\n", c.ClusterID, c.Servers, c.OldestAge.Round(time.Second))
+			age := "age unknown"
+			if c.AgeKnown {
+				age = "oldest " + c.OldestAge.Round(time.Second).String()
+			}
+			fmt.Printf("  %-24s %d node(s)  %s\n", c.ClusterID, c.Servers, age)
 		}
 		total += c.Servers
 	}
@@ -1002,11 +1031,12 @@ func renderReapJSON(w io.Writer, providerName string, plan []orchestrator.ReapCa
 	type jsonCluster struct {
 		ID              string `json:"id"`
 		Servers         int    `json:"servers"`
-		OldestAgeSecond int64  `json:"oldest_age_seconds"`
+		OldestAgeSecond int64  `json:"oldest_age_seconds"` // 0 when age_known is false
+		AgeKnown        bool   `json:"age_known"`
 	}
 	jc := make([]jsonCluster, 0, len(plan))
 	for _, c := range plan {
-		jc = append(jc, jsonCluster{ID: c.ClusterID, Servers: c.Servers, OldestAgeSecond: int64(c.OldestAge.Seconds())})
+		jc = append(jc, jsonCluster{ID: c.ClusterID, Servers: c.Servers, OldestAgeSecond: int64(c.OldestAge.Seconds()), AgeKnown: c.AgeKnown})
 	}
 	out := struct {
 		Provider string        `json:"provider"`
@@ -1021,32 +1051,96 @@ func renderReapJSON(w io.Writer, providerName string, plan []orchestrator.ReapCa
 
 // runLs (aka `status`) lists every Pandion cluster alive at the provider with
 // uptime and live cost — the fleet-wide view over the reconcile source of truth
-// (works with no local state). Cost is shown when the provider prices its types.
+// (works with no local state, so orphans from failed runs show up too). Cost is
+// shown when the provider prices its types.
+//
+// With no --provider it queries EVERY provider that has credentials: a GPU node
+// on Lambda must not be invisible just because the default provider is Hetzner
+// (#4). Servers whose teardown is still in progress are listed with their state
+// rather than hidden (#12).
 func runLs(args []string) {
 	fs := newCmdFlagSet("ls")
-	prov := fs.String("provider", "", "provider (default: from `pandion init` or your credentials)")
+	prov := fs.String("provider", "", "provider to query (default: every provider you have credentials for)")
 	jsonOut := fs.Bool("json", false, "machine-readable JSON output (for scripting/automation)")
 	gpuUtil := fs.Bool("gpu-util", false, "also show live GPU utilization %% per node (SSHes nvidia-smi; needs public SSH reachability)")
 	_ = fs.Parse(args)
 
-	p, err := newProvider(resolveProviderOrExit(*prov))
-	must(err)
-	o := orchestrator.New(p, mustStore())
+	var names []string
+	if *prov != "" {
+		names = []string{resolveProviderOrExit(*prov)}
+	} else if names = credProviders(); len(names) == 0 {
+		names = []string{resolveProviderOrExit("")}
+	}
 
-	clusters, currency, err := o.Status(context.Background())
-	must(err)
-	if *gpuUtil {
-		fetchGPUUtils(clusters) // best-effort: SSH each GPU node for live utilization
+	results := make([]providerStatus, 0, len(names))
+	failed := false
+	for _, name := range names {
+		ps := providerStatus{Provider: name}
+		p, err := newProvider(name)
+		if err == nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+			ps.Clusters, ps.Currency, err = orchestrator.New(p, mustStore()).Status(ctx)
+			cancel()
+		}
+		if err != nil {
+			if len(names) == 1 {
+				must(err)
+			}
+			// one provider's outage must not hide the others — but the listing is
+			// incomplete, so say so and exit non-zero at the end.
+			fmt.Fprintf(os.Stderr, "ls: could not query %s: %s\n", name, friendlyErr(err))
+			failed = true
+			continue
+		}
+		if *gpuUtil {
+			fetchGPUUtils(ps.Clusters) // best-effort: SSH each GPU node for live utilization
+		}
+		results = append(results, ps)
 	}
+
 	if *jsonOut {
-		must(renderStatusJSON(os.Stdout, clusters, currency))
-		return
+		must(renderStatusJSONMulti(os.Stdout, results, len(names) > 1))
+	} else {
+		renderLs(os.Stdout, results, *gpuUtil)
 	}
-	if len(clusters) == 0 {
-		fmt.Printf("no active Pandion clusters at %s.\n", p.Name())
-		return
+	if failed {
+		os.Exit(codeError)
 	}
-	renderStatus(os.Stdout, clusters, currency, *gpuUtil)
+}
+
+// providerStatus is one provider's slice of the fleet view.
+type providerStatus struct {
+	Provider string
+	Clusters []orchestrator.ClusterStatus
+	Currency string
+}
+
+// renderLs writes the human fleet view: one table per provider that has
+// clusters (each provider bills in its own currency), and a single line naming
+// the providers that have none.
+func renderLs(w io.Writer, results []providerStatus, showGPUUtil bool) {
+	var empty []string
+	shown := 0
+	for _, r := range results {
+		if len(r.Clusters) == 0 {
+			empty = append(empty, r.Provider)
+			continue
+		}
+		if len(results) > 1 {
+			if shown > 0 {
+				fmt.Fprintln(w)
+			}
+			fmt.Fprintf(w, "== %s ==\n", r.Provider)
+		}
+		renderStatus(w, r.Clusters, r.Currency, showGPUUtil)
+		shown++
+	}
+	if len(empty) > 0 {
+		if shown > 0 {
+			fmt.Fprintln(w)
+		}
+		fmt.Fprintf(w, "no active Pandion clusters at %s.\n", strings.Join(empty, ", "))
+	}
 }
 
 // fetchGPUUtils fills NodeStatus.GPUUtil for GPU nodes by SSHing nvidia-smi
@@ -1127,6 +1221,15 @@ func queryGPUUtil(ip, hostPub string, signer gossh.Signer) int {
 // prices as numbers) — for scripting, CI, and automation. Always renders, even
 // when empty (`{"clusters":[],...}`), so consumers can rely on the shape.
 func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, currency string) error {
+	return renderStatusJSONMulti(w, []providerStatus{{Clusters: clusters, Currency: currency}}, false)
+}
+
+// renderStatusJSONMulti is renderStatusJSON over one or more providers. The
+// envelope is the same either way; every cluster carries its provider and
+// currency, and every node its state. When providers bill in different
+// currencies the top-level currency is "" and the totals are omitted (0) with
+// "mixed_currency": true — summing EUR and USD would be a lie.
+func renderStatusJSONMulti(w io.Writer, results []providerStatus, multi bool) error {
 	type jsonNode struct {
 		Name          string  `json:"name"`
 		Type          string  `json:"type"`
@@ -1134,51 +1237,81 @@ func renderStatusJSON(w io.Writer, clusters []orchestrator.ClusterStatus, curren
 		GPUUtil       *int    `json:"gpu_util,omitempty"`
 		Region        string  `json:"region"`
 		IP            string  `json:"ip"`
+		State         string  `json:"state"` // "running", or the provider's state, e.g. "terminating"
 		UptimeSeconds int64   `json:"uptime_seconds"`
+		UptimeKnown   bool    `json:"uptime_known"`
 		Hourly        float64 `json:"hourly"`
 		Accrued       float64 `json:"accrued"`
 	}
 	type jsonCluster struct {
-		ID      string     `json:"id"`
-		Nodes   []jsonNode `json:"nodes"`
-		Hourly  float64    `json:"hourly_total"`
-		Accrued float64    `json:"accrued_total"`
+		ID       string     `json:"id"`
+		Provider string     `json:"provider,omitempty"`
+		Currency string     `json:"currency,omitempty"`
+		Nodes    []jsonNode `json:"nodes"`
+		Hourly   float64    `json:"hourly_total"`
+		Accrued  float64    `json:"accrued_total"`
 	}
 	out := struct {
-		Currency     string        `json:"currency"`
-		NodeCount    int           `json:"node_count"`
-		TotalHourly  float64       `json:"total_hourly"`
-		TotalAccrued float64       `json:"total_accrued"`
-		Clusters     []jsonCluster `json:"clusters"`
-	}{Currency: currency, Clusters: []jsonCluster{}}
-	for _, c := range clusters {
-		jc := jsonCluster{ID: c.ClusterID, Nodes: []jsonNode{}, Hourly: c.Hourly, Accrued: c.Accrued}
-		for _, n := range c.Nodes {
-			gpu := ""
-			if n.GPU.Present() {
-				gpu = gpuInfoLabel(n.GPU)
-			}
-			jn := jsonNode{
-				Name: n.Name, Type: n.Type, GPU: gpu, Region: n.Region, IP: n.IP,
-				UptimeSeconds: int64(n.Age.Seconds()),
-				Hourly:        n.Hourly.Amount,
-				Accrued:       n.Hourly.Amount * n.Age.Hours(),
-			}
-			if n.GPUUtil >= 0 { // measured via --gpu-util
-				u := n.GPUUtil
-				jn.GPUUtil = &u
-			}
-			jc.Nodes = append(jc.Nodes, jn)
+		Currency      string        `json:"currency"`
+		MixedCurrency bool          `json:"mixed_currency,omitempty"`
+		Providers     []string      `json:"providers,omitempty"`
+		NodeCount     int           `json:"node_count"`
+		TotalHourly   float64       `json:"total_hourly"`
+		TotalAccrued  float64       `json:"total_accrued"`
+		Clusters      []jsonCluster `json:"clusters"`
+	}{Clusters: []jsonCluster{}}
+	for _, r := range results {
+		if multi {
+			out.Providers = append(out.Providers, r.Provider)
 		}
-		out.NodeCount += len(c.Nodes)
-		out.TotalHourly += c.Hourly
-		out.TotalAccrued += c.Accrued
-		out.Clusters = append(out.Clusters, jc)
+		if r.Currency != "" {
+			if out.Currency == "" && !out.MixedCurrency {
+				out.Currency = r.Currency
+			} else if out.Currency != r.Currency {
+				out.MixedCurrency, out.Currency = true, ""
+			}
+		}
+		for _, c := range r.Clusters {
+			jc := jsonCluster{ID: c.ClusterID, Provider: r.Provider, Currency: r.Currency, Nodes: []jsonNode{}, Hourly: c.Hourly, Accrued: c.Accrued}
+			for _, n := range c.Nodes {
+				gpu := ""
+				if n.GPU.Present() {
+					gpu = gpuInfoLabel(n.GPU)
+				}
+				state := n.Status
+				if state == "" {
+					state = "running"
+				}
+				jn := jsonNode{
+					Name: n.Name, Type: n.Type, GPU: gpu, Region: n.Region, IP: n.IP, State: state,
+					UptimeSeconds: int64(n.Age.Seconds()),
+					UptimeKnown:   ageKnown(n),
+					Hourly:        n.Hourly.Amount,
+					Accrued:       n.Hourly.Amount * n.Age.Hours(),
+				}
+				if n.GPUUtil >= 0 { // measured via --gpu-util
+					u := n.GPUUtil
+					jn.GPUUtil = &u
+				}
+				jc.Nodes = append(jc.Nodes, jn)
+			}
+			out.NodeCount += len(c.Nodes)
+			out.TotalHourly += c.Hourly
+			out.TotalAccrued += c.Accrued
+			out.Clusters = append(out.Clusters, jc)
+		}
+	}
+	if out.MixedCurrency {
+		out.TotalHourly, out.TotalAccrued = 0, 0
 	}
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	return enc.Encode(out)
 }
+
+// ageKnown reports whether a node's uptime is known. A positive Age implies it
+// (callers that build NodeStatus by hand set only Age).
+func ageKnown(n orchestrator.NodeStatus) bool { return n.AgeKnown || n.Age > 0 }
 
 // renderStatus writes the `ls`/`status` table + totals. Separated from runLs so
 // the output format is unit-testable without a live provider.
@@ -1208,15 +1341,36 @@ func renderStatus(w io.Writer, clusters []orchestrator.ClusterStatus, currency s
 			if showGPUUtil {
 				util = "\t" + gpuUtilLabel(n.GPUUtil)
 			}
+			name := n.Name
+			if n.Status != "" {
+				name += " [" + n.Status + "]" // e.g. terminating: teardown accepted, still exists (and may bill)
+			}
+			uptime, spent := "?", "?"
+			if ageKnown(n) {
+				uptime, spent = shortDur(n.Age), estMoney(n.Hourly, n.Age)
+			} else if !n.Hourly.Known() {
+				spent = "—"
+			}
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s%s\t%s\t%s\t%s\t%s\n",
-				cid, n.Name, dashIfEmpty(n.Type), gpuInfoLabel(n.GPU), util, dashIfEmpty(n.Region),
-				shortDur(n.Age), money(n.Hourly), estMoney(n.Hourly, n.Age))
+				cid, name, dashIfEmpty(n.Type), gpuInfoLabel(n.GPU), util, dashIfEmpty(n.Region),
+				uptime, money(n.Hourly), spent)
 		}
 		totHourly += c.Hourly
 		totAccrued += c.Accrued
 		totNodes += len(c.Nodes)
 	}
 	tw.Flush()
+	unknownAge := false
+	for _, c := range clusters {
+		for _, n := range c.Nodes {
+			if !ageKnown(n) {
+				unknownAge = true
+			}
+		}
+	}
+	if unknownAge {
+		fmt.Fprintln(w, "(? = launch time unknown: the provider reports none and this machine has no record of the launch; spend excludes these.)")
+	}
 	if priced {
 		fmt.Fprintf(w, "\n%d cluster(s), %d node(s) — ~%s %s/hr, est. %s %s spent so far.\n",
 			len(clusters), totNodes, fmtAmount(totHourly), currency, fmtAmount(totAccrued), currency)
@@ -1493,48 +1647,85 @@ func gpuInfoLabel(g provider.GPUInfo) string {
 type receipt struct {
 	nodes    int
 	ran      time.Duration // oldest node's wall-clock lifetime
-	ranKnown bool          // false when the provider gives no creation time (e.g. lambda)
+	ranKnown bool          // false when neither the provider nor the journal knows a launch time
 	total    float64       // Σ hourly × age (estimate)
 	currency string
 	priced   bool
 	gpus     []string // distinct GPU labels present, e.g. ["a100", "h100×8"]
 }
 
-// buildReceipt summarizes a cluster's spend from the servers about to be destroyed
-// (call BEFORE teardown, while their creation times are live). Pricing is
+// buildReceipt summarizes a cluster's spend up to now from the servers about to be
+// destroyed (see snapshotReceipt/at for teardown, which must price the END). Pricing is
 // best-effort: an unpriced provider yields priced=false ("cost unknown").
-// fallbackCreated (Pandion's own create time, from the lockfile) covers providers
-// that report no creation timestamp on the server (e.g. Lambda), so the receipt
-// shows real cost instead of "cost unknown" (M6-R1).
-func buildReceipt(ctx context.Context, p provider.Provider, servers []provider.Server, fallbackCreated time.Time) receipt {
-	r := receipt{nodes: len(servers)}
+// launchedAt (normally Orchestrator.LaunchedAt) gives each server's best-known
+// launch time — the provider's creation time or the launch Pandion journaled for
+// this cluster — so providers that report no creation timestamp (Lambda) still
+// get a real cost instead of "cost unknown" (M6-R1), measured from launch (where
+// billing starts) rather than from "ready" (#9). nil = provider time only.
+func buildReceipt(ctx context.Context, p provider.Provider, servers []provider.Server, launchedAt func(provider.Server) time.Time) receipt {
+	return snapshotReceipt(ctx, p, servers, launchedAt).at(time.Now())
+}
+
+// receiptBasis is what a receipt needs that teardown destroys: each server's
+// launch time and hourly price. Snapshot it BEFORE `down`, then price it with
+// .at(when the provider confirmed the servers gone) — billing runs until the
+// instance disappears, not until `down` starts, and a Lambda terminate can sit in
+// "terminating" for 20+ minutes (#9/#12).
+type receiptBasis struct {
+	nodes int
+	items []receiptItem
+	gpus  []string
+}
+
+type receiptItem struct {
+	launched time.Time // zero = unknown
+	hourly   provider.Money
+}
+
+func snapshotReceipt(ctx context.Context, p provider.Provider, servers []provider.Server, launchedAt func(provider.Server) time.Time) receiptBasis {
+	b := receiptBasis{nodes: len(servers)}
 	pricer, _ := p.(provider.Pricer)
-	now := time.Now()
 	seen := map[string]bool{}
 	for _, s := range servers {
-		created := s.Created
-		if created.IsZero() {
-			created = fallbackCreated // provider gave no timestamp — use ours
+		it := receiptItem{launched: s.Created}
+		if launchedAt != nil {
+			it.launched = launchedAt(s)
 		}
-		if !created.IsZero() {
-			age := now.Sub(created)
-			if age > r.ran {
-				r.ran = age
-			}
-			r.ranKnown = true
-			if pricer != nil {
-				if m, err := pricer.HourlyPrice(ctx, s.Type, s.Region); err == nil && m.Known() {
-					r.total += m.Amount * age.Hours()
-					r.currency = m.Currency
-					r.priced = true
-				}
+		if !it.launched.IsZero() && pricer != nil {
+			if m, err := pricer.HourlyPrice(ctx, s.Type, s.Region); err == nil && m.Known() {
+				it.hourly = m
 			}
 		}
+		b.items = append(b.items, it)
 		if s.GPU.Present() {
 			if lbl := gpuInfoLabel(s.GPU); !seen[lbl] {
 				seen[lbl] = true
-				r.gpus = append(r.gpus, lbl)
+				b.gpus = append(b.gpus, lbl)
 			}
+		}
+	}
+	return b
+}
+
+// at prices the basis with every server billing until end.
+func (b receiptBasis) at(end time.Time) receipt {
+	r := receipt{nodes: b.nodes, gpus: b.gpus}
+	for _, it := range b.items {
+		if it.launched.IsZero() {
+			continue
+		}
+		age := end.Sub(it.launched)
+		if age < 0 {
+			age = 0
+		}
+		if age > r.ran {
+			r.ran = age
+		}
+		r.ranKnown = true
+		if it.hourly.Known() {
+			r.total += it.hourly.Amount * age.Hours()
+			r.currency = it.hourly.Currency
+			r.priced = true
 		}
 	}
 	return r
@@ -1628,12 +1819,15 @@ func estMoney(m provider.Money, age time.Duration) string {
 
 func runDown(args []string) {
 	fs := newCmdFlagSet("down")
-	prov := fs.String("provider", "", "provider (default: read from the cluster's manifest)")
+	prov := fs.String("provider", "", "provider (default: the one recorded for this cluster in ~/.pandion — manifest, state journal, or lockfile)")
 	id := fs.String("id", "", "cluster id (required, except the mock demo)")
 	dryRun := fs.Bool("dry-run", false, "list what would be destroyed; destroy nothing")
-	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt (for scripts; a non-terminal stdin never prompts)")
+	fs.BoolVar(yes, "y", false, "alias for --yes")
+	wait := fs.Duration("wait", orchestrator.DownWait, "how long to wait for the provider to finish terminating before reporting servers as still terminating")
 	jsonOut := fs.Bool("json", false, "emit a machine-readable teardown receipt (implies non-interactive; pass --yes)")
 	_ = fs.Parse(args)
+	orchestrator.DownWait = *wait
 
 	// Resolve a missing --id safely — a bare `pandion down` must never guess at a
 	// real cluster. Under the mock provider it still targets the "demo" id (keeps
@@ -1664,34 +1858,73 @@ func runDown(args []string) {
 		}
 	}
 
-	// prefer the provider recorded in the cluster's manifest, so `down --id X` needs
-	// no --provider; fall back to the flag/config resolution.
-	provName := *prov
+	// The cluster's OWN provider, from local records, wins over the defaults: a
+	// GPU cluster on Lambda must never be "torn down" at the default provider
+	// (Hetzner) while it keeps billing (#4).
+	provName, provSource := *prov, "flag"
 	if provName == "" {
-		provName = manifestProvider(*id)
+		provName, provSource = localClusterProvider(*id)
 	}
 	if provName == "" {
-		provName = resolveProvider("")
+		provName, provSource = resolveProvider(""), "default"
 	}
 	if provName == "" {
-		fmt.Fprintln(os.Stderr, "no provider for this cluster (no manifest). Pass --provider=<name>.")
+		fmt.Fprintln(os.Stderr, "no provider for this cluster (no local record). Pass --provider=<name>.")
 		os.Exit(2)
 	}
 	p, err := newProvider(provName)
 	must(err)
-	o := orchestrator.New(p, mustStore())
-	initAudit()
 	ctx := context.Background()
 
-	// preview against the provider (the reconcile source of truth). --json is a
-	// machine consumer, so it stays silent here and emits one object at the end.
+	// preview against the provider (the reconcile source of truth).
 	servers, err := p.ListByTag(ctx, *id)
 	must(err)
+
+	// Nothing there, and the provider was only a GUESS (no flag, no local record):
+	// the cluster may live at another provider. Look before claiming anything —
+	// "reconciled to empty" + clearing local state here is how a billing GPU node
+	// became invisible (#4).
+	if len(servers) == 0 && provSource == "default" {
+		found := findClusterElsewhere(ctx, *id, provName)
+		switch len(found) {
+		case 0:
+			fmt.Fprintf(os.Stderr, "down: no servers for %q at %s", *id, provName)
+			if others := otherCredProviders(provName); len(others) > 0 {
+				fmt.Fprintf(os.Stderr, " (also checked: %s)", strings.Join(others, ", "))
+			}
+			fmt.Fprintf(os.Stderr, ", and no local record of this cluster — nothing torn down, nothing cleared.\n")
+			fmt.Fprintf(os.Stderr, "  if it lives at a provider without stored credentials, pass --provider=<name>.\n")
+			os.Exit(codeNotFound)
+		case 1:
+			for name, ss := range found {
+				fmt.Fprintf(os.Stderr, "down: %q is not at the default provider %s — found it at %s; using %s.\n", *id, provName, name, name)
+				provName, servers = name, ss
+			}
+			p, err = newProvider(provName)
+			must(err)
+		default:
+			names := make([]string, 0, len(found))
+			for name := range found {
+				names = append(names, name)
+			}
+			sort.Strings(names)
+			fmt.Fprintf(os.Stderr, "down: %q exists at several providers (%s) — pass --provider=<name>.\n", *id, strings.Join(names, ", "))
+			os.Exit(codeUsage)
+		}
+	}
+
+	o := orchestrator.New(p, mustStore())
+	initAudit()
+	// --json is a machine consumer, so it stays silent here and emits one object at the end.
 	if !*jsonOut {
 		if len(servers) > 0 {
 			fmt.Printf("cluster %q at %s — %d server(s) to destroy:\n", *id, p.Name(), len(servers))
 			for _, s := range servers {
-				fmt.Printf("  %-26s %-10s %-8s %s\n", s.Name, dashIfEmpty(s.Type), dashIfEmpty(s.Region), s.IP)
+				st := ""
+				if s.Status != "" {
+					st = "  [" + s.Status + "]"
+				}
+				fmt.Printf("  %-26s %-10s %-8s %s%s\n", s.Name, dashIfEmpty(s.Type), dashIfEmpty(s.Region), s.IP, st)
 			}
 		} else {
 			fmt.Printf("cluster %q at %s: no live servers.\n", *id, p.Name())
@@ -1721,25 +1954,35 @@ func runDown(args []string) {
 			fmt.Fprintf(os.Stderr, "down: no --id given and stdin is not a TTY; pass --id %s and/or --yes.\n", *id)
 			os.Exit(2)
 		}
+		prompt := fmt.Sprintf("destroy %d server(s)? this is irreversible. [y/N]: ", len(servers))
 		if autoPicked {
-			if !confirmYes(fmt.Sprintf("no --id given; destroy the only cluster %q (%d server(s))? [y/N]: ", *id, len(servers))) {
-				return
-			}
-		} else if isTTY() {
-			if !confirmYes(fmt.Sprintf("destroy %d server(s)? this is irreversible. [y/N]: ", len(servers))) {
-				return
-			}
+			prompt = fmt.Sprintf("no --id given; destroy the only cluster %q (%d server(s))? [y/N]: ", *id, len(servers))
+		}
+		if (autoPicked || isTTY()) && !confirmYes(prompt) {
+			// declining is not success: nothing was destroyed and the servers still bill.
+			os.Exit(codeRefused)
 		}
 	}
 	audit.Event("down", "id", *id, "provider", p.Name(), "servers", len(servers))
-	// snapshot the cost receipt BEFORE teardown. Fall back to Pandion's own recorded
-	// create time (the lockfile) for providers that report none (Lambda) — M6-R1.
-	var created time.Time
-	if lk, lerr := lockfile.Load(lockfile.Path(envHome(), *id)); lerr == nil {
-		created = lk.Created
+	// snapshot the cost receipt BEFORE teardown, from the best-known launch time of
+	// each server: the provider's creation time or the launch time journaled for
+	// THIS incarnation of the cluster — never the lockfile, which a failed `up`
+	// leaves pointing at a previous cluster with the same id (#9).
+	basis := snapshotReceipt(ctx, p, servers, o.LaunchedAt)
+	if err := o.Down(ctx, *id); err != nil {
+		if orchestrator.IsStillTerminating(err) {
+			// accepted but not finished: do NOT claim it's gone or tombstone it (#12).
+			fmt.Fprintf(os.Stderr, "down: %v\n", err)
+			fmt.Fprintf(os.Stderr, "  the provider may still bill for these until they disappear; check with: pandion ls --provider %s\n", p.Name())
+			audit.Event("down.pending", "id", *id, "provider", p.Name())
+			os.Exit(codeReapFailure)
+		}
+		fmt.Fprintf(os.Stderr, "down: %s\n", friendlyErr(err))
+		os.Exit(codeReapFailure)
 	}
-	rcpt := buildReceipt(ctx, p, servers, created)
-	must(o.Down(ctx, *id))
+	// priced up to NOW — Down returns only once the provider no longer lists the
+	// servers, so this includes the time spent waiting out "terminating".
+	rcpt := basis.at(time.Now())
 	reapShares(*id)        // revoke + delete any outstanding debug shares (no leak)
 	tombstoneManifest(*id) // mark the manifest destroyed so attach/ssh/start/lockdown fast-fail
 	audit.Event("down.complete", "id", *id, "provider", p.Name())
@@ -1747,15 +1990,97 @@ func runDown(args []string) {
 		must(renderReceiptJSON(os.Stdout, rcpt, *id, p.Name(), servers, false))
 		return
 	}
-	fmt.Printf("DOWN (%s): cluster %q reconciled to empty.\n", p.Name(), *id)
-	fmt.Printf("  local state cleared; keys + logs kept in ~/.pandion/{keys,logs}/%s (reconnect commands now report it torn down).\n", *id)
+	if len(servers) == 0 {
+		fmt.Printf("DOWN (%s): nothing was running for %q; local state cleared.\n", p.Name(), *id)
+	} else {
+		fmt.Printf("DOWN (%s): cluster %q destroyed — the provider no longer lists any of its servers.\n", p.Name(), *id)
+	}
+	if kept := keptPaths(*id); len(kept) > 0 {
+		fmt.Printf("  kept for post-mortem: %s (reconnect commands now report it torn down).\n", strings.Join(kept, ", "))
+	}
 	renderReceipt(os.Stdout, rcpt)
 }
 
+// localClusterProvider returns the provider that local records say owns cluster
+// id, and which record said so. Checked in order of authority: the live
+// manifest, the state journal (written before the first server is created, so it
+// exists even when provisioning failed), a tombstoned manifest, then the
+// lockfile. ("", "") when nothing local knows the cluster.
+func localClusterProvider(id string) (prov, source string) {
+	if m, err := loadManifest(id); err == nil && m.Provider != "" {
+		return m.Provider, "manifest"
+	}
+	if st, err := state.NewStore(filepath.Join(pandionDir(), "state")); err == nil {
+		if c, err := st.Load(id); err == nil && c.Provider != "" {
+			return c.Provider, "journal"
+		}
+	}
+	if b, err := os.ReadFile(manifestPath(id)); err == nil {
+		var m clusterManifest
+		if json.Unmarshal(b, &m) == nil && m.Provider != "" {
+			return m.Provider, "manifest"
+		}
+	}
+	if lk, err := lockfile.Load(lockfile.Path(envHome(), id)); err == nil && lk.Provider != "" {
+		return lk.Provider, "lockfile"
+	}
+	return "", ""
+}
+
+// otherCredProviders lists the credentialed cloud providers other than skip.
+func otherCredProviders(skip string) []string {
+	var out []string
+	for _, c := range credProviders() {
+		if c != skip {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// findClusterElsewhere asks every OTHER credentialed provider for servers of
+// cluster id. Errors are reported and skipped (a dead token must not hide a
+// cluster that is found elsewhere). Returns provider → servers, for hits only.
+func findClusterElsewhere(ctx context.Context, id, skip string) map[string][]provider.Server {
+	found := map[string][]provider.Server{}
+	for _, name := range otherCredProviders(skip) {
+		p, err := newProvider(name)
+		if err != nil {
+			continue
+		}
+		cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		ss, err := p.ListByTag(cctx, id)
+		cancel()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "down: could not check %s: %v\n", name, err)
+			continue
+		}
+		if len(ss) > 0 {
+			found[name] = ss
+		}
+	}
+	return found
+}
+
+// keptPaths lists the local post-mortem directories that actually exist for id,
+// so `down` never points at a directory that isn't there (#7).
+func keptPaths(id string) []string {
+	var out []string
+	for _, sub := range []string{"keys", "logs"} {
+		if fi, err := os.Stat(filepath.Join(pandionDir(), sub, id)); err == nil && fi.IsDir() {
+			out = append(out, filepath.Join("~/.pandion", sub, id))
+		}
+	}
+	return out
+}
+
 // isTTY reports whether stdin is an interactive terminal.
+// It asks the terminal driver rather than checking for a character device:
+// /dev/null IS a character device, so the old check treated `cmd </dev/null`
+// (how agents, cron and many CI runners start processes) as interactive and then
+// "aborted" on the empty read (#5).
 func isTTY() bool {
-	fi, err := os.Stdin.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stdin.Fd()))
 }
 
 // idleTTLNotice renders the idle-poweroff notice for the start of `up` (P2.6). An
@@ -1772,8 +2097,7 @@ func idleTTLNotice(ttl time.Duration) string {
 // human-only hints (e.g. the completion install one-liner) so redirected/piped
 // output stays clean.
 func stderrIsTTY() bool {
-	fi, err := os.Stderr.Stat()
-	return err == nil && fi.Mode()&os.ModeCharDevice != 0
+	return term.IsTerminal(int(os.Stderr.Fd()))
 }
 
 // lockClusterOrExit takes the per-cluster cross-process advisory lock so two
@@ -1821,8 +2145,16 @@ func upPreflight(ctx context.Context, p provider.Provider, id, provName, localPr
 	if err != nil {
 		return ""
 	}
-	if len(servers) > 0 {
-		return fmt.Sprintf("cluster %q already exists at %s (%d server(s) running) — `up` would duplicate or orphan it.\n  tear it down first:  pandion down --provider=%s --id %s\n  or choose another --id.", id, provName, len(servers), provName, id)
+	// a server whose teardown is already in progress doesn't block a re-up: it is
+	// on its way out (and a later `down` still targets it if it lingers).
+	live := 0
+	for _, s := range servers {
+		if !s.Terminating() {
+			live++
+		}
+	}
+	if live > 0 {
+		return fmt.Sprintf("cluster %q already exists at %s (%d server(s) running) — `up` would duplicate or orphan it.\n  tear it down first:  pandion down --provider=%s --id %s\n  or choose another --id.", id, provName, live, provName, id)
 	}
 	return ""
 }
@@ -1909,7 +2241,7 @@ func confirmYes(prompt string) bool {
 	var ans string
 	if _, err := fmt.Scanln(&ans); err != nil {
 		if errors.Is(err, io.EOF) {
-			fmt.Println("no confirmation received — aborted.")
+			fmt.Println("no confirmation received — aborted; nothing changed (pass --yes to skip the prompt).")
 		} else {
 			fmt.Println("aborted; nothing changed.")
 		}

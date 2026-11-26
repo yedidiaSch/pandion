@@ -141,6 +141,10 @@ func syncFiles(ctx context.Context, addr string, signer gossh.Signer, pinned gos
 	if err != nil {
 		return "", fmt.Errorf("archive %s: %w", s.LocalPath, err)
 	}
+	if len(ig.SkippedSecrets) > 0 {
+		fmt.Fprintf(os.Stderr, "  not uploading %d file(s) that look like secrets: %s\n", len(ig.SkippedSecrets), strings.Join(ig.SkippedSecrets, ", "))
+		fmt.Fprintf(os.Stderr, "    (to upload one deliberately, add a \"!NAME\" line to .pandionignore)\n")
+	}
 	fmt.Printf("  syncing %d files -> %s ...\n", files, remote)
 	extract := "mkdir -p " + shellQuote(remote) + " && tar -xzf - -C " + shellQuote(remote)
 	if runUser != "" && runUser != "root" {
@@ -283,20 +287,20 @@ func archNodeHint(scan map[string]string, nodeA string) string {
 	return nodeA
 }
 
-// syncWorkspace syncs files and runs the optional build on the host as runUser
-// (native engine).
-func syncWorkspace(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser string) (string, error) {
-	remote, err := syncFiles(ctx, addr, signer, pinned, s, runUser)
-	if err != nil {
-		return "", err
+// runWorkspaceBuild runs the workspace's optional build command on the host as runUser
+// (native engine), from the synced remote dir. It is a separate step from the
+// sync so that `setup` can run BETWEEN them: setup scripts commonly live in the
+// workspace (so the files must already be on the node), and the build commonly
+// needs what setup installed.
+func runWorkspaceBuild(ctx context.Context, addr string, signer gossh.Signer, pinned gossh.PublicKey, s syncSpec, runUser, remote string) error {
+	if strings.TrimSpace(s.Build) == "" {
+		return nil
 	}
-	if strings.TrimSpace(s.Build) != "" {
-		fmt.Printf("  building (as %s): %s\n", orRoot(runUser), s.Build)
-		if out, err := envssh.Run(ctx, addr, "root", signer, pinned, runAs(runUser, remote, s.Build, nil)); err != nil {
-			return "", fmt.Errorf("remote build failed: %v\n%s", err, out)
-		}
+	fmt.Printf("  building (as %s): %s\n", orRoot(runUser), s.Build)
+	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, runAs(runUser, remote, s.Build, nil)); err != nil {
+		return fmt.Errorf("remote build failed: %v\n%s", err, out)
 	}
-	return remote, nil
+	return nil
 }
 
 // dockerRun wraps cmd to run in a HARDENED container from image, with the
@@ -632,7 +636,7 @@ func dryRunCluster(o *orchestrator.Orchestrator, cl *config.Cluster, id string, 
 	renderDryRun(os.Stdout, o.P.Name(), id, nodes, est)
 }
 
-func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string, noRun bool, auditFW bool) {
+func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id string, maxCost float64, lockPath string, noRun bool, auditFW bool, provTimeoutFlag, setupTimeoutFlag time.Duration) {
 	prov := o.P.Name()         // hetzner | digitalocean — used in teardown hints
 	var pinLock *lockfile.Lock // reproducibility (H2): pin toolchain from this lock
 	if lockPath != "" {
@@ -641,12 +645,19 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		pinLock = lk
 		fmt.Printf("pinning packages from lockfile %s\n", lockPath)
 	}
-	// Generous ceiling: it only bounds failures — every step succeeds as soon as
-	// its node is ready, so fast providers finish early. Slow-boot providers
-	// (e.g. Scaleway's two-phase boot) need the extra room to install the login
-	// key via cloud-init under concurrent multi-node provisioning.
-	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Minute)
+	// Two budgets (#11): the provisioning deadline (provider boot; Lambda GPU boots
+	// take 2–15+ min) and a separate post-provision budget (cloud-init, sync,
+	// setup, build, mesh, lockdown), so a slow boot can't starve setup. Both are
+	// generous ceilings that only bound failures — every step proceeds as soon as
+	// its node is ready. Slow-boot providers (e.g. Scaleway's two-phase boot) need
+	// the room to install the login key via cloud-init under concurrency.
+	provTimeout := provisionTimeoutFor(provTimeoutFlag, clusterWantsGPU(cl))
+	ctx, cancel := context.WithTimeout(context.Background(), setupTimeoutFor(setupTimeoutFlag))
 	defer cancel()
+	// degraded is set when a post-provision step fails but the run continues
+	// (firewall / mesh / discovery on some node). `up` then still exits NON-ZERO,
+	// so a half-hardened cluster is never reported as success (#2).
+	degraded := false
 
 	// Phase-aware Ctrl+C handling (F15): during SETUP an interrupt rolls the
 	// cluster back (so an aborted creation never orphans a billing node); once we
@@ -664,9 +675,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 				streamCancel()
 			} else {
 				fmt.Fprintln(os.Stderr, "\n^C — aborting provisioning; rolling back...")
-				_ = o.Down(context.Background(), id)
-				fmt.Fprintln(os.Stderr, "rolled back (no resources left).")
-				os.Exit(5)
+				rollbackFailedProvision(o, prov, id, errors.New("interrupted (^C)")) // never returns
 			}
 		}
 	}()
@@ -786,13 +795,33 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		os.Exit(6)
 	}
 
+	// persist the login key and a first manifest (provider + pinned host keys, no
+	// IPs yet) BEFORE provisioning, so a cluster that fails partway is still
+	// reachable and removable — `down` finds its provider, `ssh` its keys (#3/#4).
+	keyDir := filepath.Join(pandionDir(), "keys", id)
+	must(login.Save(keyDir, "login_ed25519"))
+	ensureLogsDir(id)
+	var seg *l2Segment
+	if clusterL2 != nil {
+		seg = &l2Segment{VNI: clusterL2.VNI, Subnet: clusterL2.Subnet, Profile: clusterL2.Profile}
+	}
+	persistManifest := func() {
+		if err := saveManifest(id, prov, plans, seg); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not save cluster manifest: %v\n", err)
+		}
+	}
+	persistManifest()
+
 	// provision concurrently; BARRIER: returns only when all are RUNNING
-	fmt.Printf("UP cluster %q: provisioning %d hardened nodes (concurrent)...\n", id, len(plans))
-	c, err := o.UpCluster(ctx, id, specs, orchestrator.DefaultMaxConcurrency)
+	fmt.Printf("UP cluster %q: provisioning %d hardened nodes (concurrent, deadline %s)...\n", id, len(plans), shortDur(provTimeout))
+	o.Progress = progressPrinter("  ")
+	provCtx, provCancel := context.WithTimeout(ctx, provTimeout)
+	stopProvHB := startHeartbeat("provisioning " + itoa(len(plans)) + " node(s) at " + prov)
+	c, err := o.UpCluster(provCtx, id, specs, orchestrator.DefaultMaxConcurrency)
+	stopProvHB()
+	provCancel()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "cluster provisioning failed: %v — rolling back...\n", err)
-		_ = o.Down(context.Background(), id)
-		os.Exit(5)
+		rollbackFailedProvision(o, prov, id, err) // never returns
 	}
 	ipByName := map[string]string{}
 	for _, nd := range c.Nodes {
@@ -803,13 +832,10 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fmt.Printf("  %-12s ip=%-15s overlay=%s\n", p.name, p.ip, p.overlayIP)
 		audit.Event("provision", "id", id, "node", p.name, "provider", prov, "ip", p.ip, "engine", p.engine)
 	}
+	persistManifest() // every node is reachable from here on, whatever fails next
 
 	// cloud-edge firewall (defense-in-depth in front of host nftables, M8).
 	ensureCloudFirewall(ctx, o, id)
-
-	// persist keys for later attach/debug
-	keyDir := filepath.Join(pandionDir(), "keys", id)
-	must(login.Save(keyDir, "login_ed25519"))
 
 	// wait for each node's cloud-init to finish (toolchain + wg iface up), pinned
 	statusln("waiting for cloud-init on all nodes...")
@@ -822,7 +848,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		if cierr != nil {
 			fmt.Fprintf(os.Stderr, "node %s never became ready: %v (cluster left up)\n", p.name, cierr)
 			stageDeadlineHint("cloud-init readiness", cierr, prov, id)
-			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+			liveNodeHints(prov, id)
 			os.Exit(codeInfraDegraded)
 		}
 	}
@@ -839,63 +865,27 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fmt.Printf("wrote reproducibility lockfile: %s\n", lockfile.Path(envHome(), id))
 	}
 
-	// setup commands (non-apt software) run FIRST in the build window — after the
-	// apt packages (installed at boot) and before the workspace build, so a build
-	// can use what setup installed. Egress is still open here. Fail-fast: a failure
-	// leaves the cluster up for debugging and exits NON-ZERO so scripts/CI notice.
+	// the build window per node, in the egress-open window before the firewall
+	// lockdown (C5/H1/H3, P0-1): sync the workspace FIRST (setup scripts commonly
+	// live in it — #1), then setup (non-apt software), then the docker pull and
+	// build (which may use what setup installed). Fail-fast: a failure leaves the
+	// cluster up for debugging and exits NON-ZERO so scripts/CI notice.
 	for _, p := range plans {
-		if err := runSetup(ctx, p.ip+":22", login.Signer, p.host.Public, p.name, p.setup); err != nil {
+		wd, err := runBuildWindow(ctx, buildWindow{
+			node: p.name, addr: p.ip + ":22", signer: login.Signer, pinned: p.host.Public,
+			setup: p.setup, sync: p.sync, runUser: p.runUser,
+			engine: p.engine, containerImg: p.containerImg,
+		})
+		if wd != "" {
+			p.workdir = wd
+			persistManifest()
+		}
+		if err != nil {
 			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
-			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
+			stageDeadlineHint("build window on "+p.name, err, prov, id)
+			liveNodeHints(prov, id)
 			os.Exit(codeInfraDegraded)
 		}
-	}
-
-	// sync workspaces + remote build, in the egress build-window (before the
-	// firewall lockdown so builds can fetch dependencies). (C5/H1/H3, P0-1)
-	// docker nodes ALSO pull their image here, while egress is still open.
-	for _, p := range plans {
-		fail := func(err error) {
-			fmt.Fprintf(os.Stderr, "node %s: %v (cluster left up for debugging)\n", p.name, err)
-			fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
-			os.Exit(codeInfraDegraded) // build-window failure left the cluster up — don't lie with exit 0
-		}
-		if p.engine == "docker" {
-			fmt.Printf("[%s] pulling image %s...\n", p.name, p.containerImg)
-			if out, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-				"docker pull "+shellQuote(p.containerImg)); err != nil {
-				fail(fmt.Errorf("docker pull failed: %v\n%s", err, out))
-				return
-			}
-			if p.sync != nil {
-				fmt.Printf("[%s] workspace sync...\n", p.name)
-				wd, err := syncFiles(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, "root")
-				if err != nil {
-					fail(err)
-					return
-				}
-				p.workdir = wd
-				if b := strings.TrimSpace(p.sync.Build); b != "" {
-					fmt.Printf("[%s] building in container (%s)...\n", p.name, p.containerImg)
-					if out, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public,
-						dockerRun(p.containerImg, wd, b, nil)); err != nil {
-						fail(fmt.Errorf("container build failed: %v\n%s", err, out))
-						return
-					}
-				}
-			}
-			continue
-		}
-		if p.sync == nil {
-			continue
-		}
-		fmt.Printf("[%s] workspace sync...\n", p.name)
-		wd, err := syncWorkspace(ctx, p.ip+":22", login.Signer, p.host.Public, *p.sync, p.runUser)
-		if err != nil {
-			fail(err)
-			return
-		}
-		p.workdir = wd
 	}
 
 	// verify requested packages installed on each node (native), while egress is
@@ -930,6 +920,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		cmds = append(cmds, fmt.Sprintf("wg set wg0 peer %s allowed-ips %s/32", opWG.Public, operatorOverlayIP))
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, joinAmp(cmds)); err != nil {
 			fmt.Fprintf(os.Stderr, "mesh setup failed on %s: %v (cluster left up)\n", p.name, err)
+			liveNodeHints(prov, id)
 			os.Exit(codeInfraDegraded)
 		}
 	}
@@ -950,6 +941,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 			}
 			if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, joinAmp(cmds)); err != nil {
 				fmt.Fprintf(os.Stderr, "L2 FDB setup failed on %s: %v (cluster left up)\n", p.name, err)
+				liveNodeHints(prov, id)
 				os.Exit(codeInfraDegraded)
 			}
 		}
@@ -990,7 +982,8 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		})
 		cmd := "echo " + b64(rules) + " | base64 -d | nft -f -"
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
-			fmt.Fprintf(os.Stderr, "firewall apply failed on %s: %v\n", p.name, err)
+			fmt.Fprintf(os.Stderr, "firewall apply FAILED on %s: %v — this node is NOT locked down\n", p.name, err)
+			degraded = true
 		}
 		if !auditFW {
 			// keep hostname egress-allow rules fresh as CDN IPs rotate (P2.1 follow-up)
@@ -1013,6 +1006,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		for _, p := range plans {
 			if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
 				fmt.Fprintf(os.Stderr, "L2 ARP-inspection apply failed on %s: %v\n", p.name, err)
+				degraded = true
 			}
 		}
 	}
@@ -1029,6 +1023,7 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		cmd := "echo " + b64(script) + " | base64 -d > " + discovery.Path + " && chmod 0644 " + discovery.Path
 		if _, err := envssh.Run(ctx, p.ip+":22", "root", login.Signer, p.host.Public, cmd); err != nil {
 			fmt.Fprintf(os.Stderr, "discovery injection failed on %s: %v\n", p.name, err)
+			degraded = true
 		}
 	}
 
@@ -1044,20 +1039,21 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	confPath := filepath.Join(keyDir, "wg-"+id+".conf")
 	must(os.WriteFile(confPath, []byte(opConf), 0o600))
 
-	// persist the manifest so `lockdown`/`attach` can reconnect (pin + overlay)
-	var seg *l2Segment
-	if clusterL2 != nil {
-		seg = &l2Segment{VNI: clusterL2.VNI, Subnet: clusterL2.Subnet, Profile: clusterL2.Profile}
-	}
-	if err := saveManifest(id, prov, plans, seg); err != nil {
-		fmt.Fprintf(os.Stderr, "warning: could not save cluster manifest: %v\n", err)
-	}
+	// persist the final manifest so `lockdown`/`attach` can reconnect (pin + overlay)
+	persistManifest()
 
 	fmt.Println("----------------------------------------------------------------")
-	if meshOK {
-		fmt.Printf("cluster %q UP: %d nodes hardened + WireGuard mesh verified.\n", id, len(plans))
-	} else {
+	switch {
+	case !meshOK:
+		degraded = true
 		fmt.Printf("cluster %q UP but mesh verification had failures (see above).\n", id)
+	case degraded:
+		fmt.Printf("cluster %q UP but some hardening steps failed (see above).\n", id)
+	default:
+		fmt.Printf("cluster %q UP: %d nodes hardened + WireGuard mesh verified.\n", id, len(plans))
+	}
+	if !auditFW {
+		fmt.Print(egressLockdownNote())
 	}
 	fmt.Printf("operator overlay config: %s\n", confPath)
 	fmt.Printf("  join: sudo wg-quick up %s   (reach nodes at 10.99.0.1..%d)\n", confPath, len(plans))
@@ -1075,6 +1071,9 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 		fmt.Printf("deployed %d node(s) — nothing started (--no-run).\n", len(plans))
 		fmt.Printf("  start:    pandion start --id %s [--node NAME]\n", id)
 		fmt.Printf("  teardown: pandion down --provider=%s --id %s\n", prov, id)
+		if degraded {
+			os.Exit(codeInfraDegraded)
+		}
 		return
 	}
 	code := streamCluster(streamCtx, id, plans, login)
@@ -1083,9 +1082,13 @@ func upClusterHetzner(o *orchestrator.Orchestrator, cl *config.Cluster, id strin
 	fmt.Printf("teardown: pandion down --provider=%s --id %s\n", prov, id)
 	// A crashed workload (or a failed launch) must not exit 0 — mirror `pandion
 	// ssh -- cmd` and propagate the worst node's status so `up … && deploy` stops.
-	// A clean run or a Ctrl+C detach returns 0.
+	// A degraded deployment (hardening/mesh failures) also exits non-zero. A clean
+	// run or a Ctrl+C detach returns 0.
 	if code != 0 {
 		os.Exit(code)
+	}
+	if degraded {
+		os.Exit(codeInfraDegraded)
 	}
 }
 

@@ -30,6 +30,13 @@ type Node struct {
 	ServerID string `json:"server_id,omitempty"`
 	IP       string `json:"ip,omitempty"`
 	Phase    Phase  `json:"phase"`
+	// Launched is when Pandion asked the provider to create this node — the start
+	// of billing as far as Pandion can know. It is the fallback (or the earlier
+	// bound) for providers that report no creation time (Lambda), and it belongs
+	// to THIS incarnation of the cluster: every `up` rewrites the journal, so a
+	// previous cluster with the same id can never leak its timestamp into a later
+	// receipt (unlike the lockfile, which a failed `up` never rewrites).
+	Launched time.Time `json:"launched,omitzero"`
 }
 
 // SchemaVersion is the current on-disk journal schema. Stamped into every write

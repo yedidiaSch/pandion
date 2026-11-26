@@ -100,3 +100,42 @@ func tarNames(t *testing.T, data []byte) []string {
 	}
 	return out
 }
+
+// Secret-looking files are never synced, even when no ignore file mentions
+// them (a .env missing from .gitignore used to be copied to the node); a
+// "!name" line in .pandionignore re-includes one deliberately, and template
+// files (.env.example) are never treated as secrets.
+func TestArchive_ExcludesSecretsByDefault(t *testing.T) {
+	root := t.TempDir()
+	for _, f := range []string{".env", ".env.local", "deploy/server.pem", "id_ed25519", ".env.example", "main.cpp", "cfg/app.key"} {
+		p := filepath.Join(root, filepath.FromSlash(f))
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ig := NewIgnore([]string{"!cfg/app.key"})
+	data, n, err := Archive(root, ig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, n := range tarNames(t, data) {
+		got[n] = true
+	}
+	for _, want := range []string{"main.cpp", ".env.example", "cfg/app.key"} {
+		if !got[want] {
+			t.Errorf("%s should be uploaded; archive has %v", want, got)
+		}
+	}
+	for _, secret := range []string{".env", ".env.local", "deploy/server.pem", "id_ed25519"} {
+		if got[secret] {
+			t.Errorf("secret %s must not be uploaded", secret)
+		}
+	}
+	if n != 3 || len(ig.SkippedSecrets) != 4 {
+		t.Errorf("files=%d skipped=%v; want 3 files, 4 skipped secrets", n, ig.SkippedSecrets)
+	}
+}

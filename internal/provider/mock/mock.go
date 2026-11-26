@@ -53,6 +53,17 @@ type Mock struct {
 	// node name that many times before succeeding — exercises the provisioning
 	// retry (a cloud terminating a VM mid-boot). Decremented per call.
 	TransientBootFor map[string]int
+	// LaunchThenFailFor makes CreateServer CREATE the server (it exists and is
+	// listed) and then fail with a provider.LaunchedError — a boot that outlived
+	// the provisioning deadline (#11).
+	LaunchThenFailFor map[string]bool
+	// StuckTerminating makes DestroyServer accept the terminate but leave the
+	// server listed with Status "terminating" forever — Lambda's never-launched
+	// instance stuck in terminating (#12).
+	StuckTerminating bool
+	// NoCreatedTime makes created servers report a zero Created, like Lambda
+	// (which reports no launch timestamp).
+	NoCreatedTime bool
 	// MaxConcurrent records the peak simultaneous CreateServer calls, to assert
 	// bounded concurrency (M6).
 	MaxConcurrent int
@@ -212,6 +223,7 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		m.MaxConcurrent = m.curConcurrent
 	}
 	fail := m.FailCreateFor[spec.Name]
+	launchThenFail := m.LaunchThenFailFor[spec.Name]
 	transient := m.TransientBootFor[spec.Name] > 0
 	if transient {
 		m.TransientBootFor[spec.Name]--
@@ -254,8 +266,17 @@ func (m *Mock) CreateServer(_ context.Context, spec provider.ServerSpec) (provid
 		Created:   time.Now(),
 		GPU:       gpu,
 	}
+	if m.NoCreatedTime {
+		s.Created = time.Time{}
+	}
 	m.servers[s.ID] = s
 	m.saveLocked()
+	if launchThenFail {
+		return provider.Server{}, &provider.LaunchedError{
+			ServerID: s.ID,
+			Err:      fmt.Errorf("mock: instance %s was launched but never became ready: %w", s.ID, context.DeadlineExceeded),
+		}
+	}
 	return s, nil
 }
 
@@ -270,6 +291,14 @@ func (m *Mock) DestroyServer(_ context.Context, id string) error {
 	if m.FailDestroyN > 0 {
 		m.FailDestroyN--
 		return fmt.Errorf("mock: simulated destroy failure for %s (%d remaining)", id, m.FailDestroyN)
+	}
+	if m.StuckTerminating {
+		if s, ok := m.servers[id]; ok {
+			s.Status = provider.StatusTerminating
+			m.servers[id] = s
+			m.saveLocked()
+		}
+		return nil
 	}
 	delete(m.servers, id)
 	m.saveLocked()

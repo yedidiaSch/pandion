@@ -5,6 +5,7 @@ package lambda
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -308,7 +309,12 @@ func TestCreateAndDestroy(t *testing.T) {
 // Regression for the live-e2e finding: Lambda keeps returning terminating/
 // terminated instances for a while, and reconciliation must treat them as gone —
 // else `pandion down`'s verify-empty check fails after a successful terminate.
-func TestListExcludesTerminating(t *testing.T) {
+// TestListKeepsTerminating pins the #12 fix: a "terminating" instance still
+// exists at the provider (an instance that never finished launching was seen
+// stuck there for 20+ minutes), so listings must KEEP it — tagged
+// StatusTerminating — rather than hide it and let `down`/`ls` claim nothing is
+// running. Only terminal states (terminated, preempted) are dropped.
+func TestListKeepsTerminating(t *testing.T) {
 	var draining []instance
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/instances", func(w http.ResponseWriter, r *http.Request) {
@@ -317,19 +323,102 @@ func TestListExcludesTerminating(t *testing.T) {
 	})
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	l := New("k", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()))
+	l := New("k", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()), WithMinGap(0))
 
 	draining = []instance{
 		{ID: "a", Name: "pandion-c--n1", Status: "active", InstanceType: itype{Name: "gpu_1x_a10"}},
 		{ID: "b", Name: "pandion-c--n2", Status: "terminating", InstanceType: itype{Name: "gpu_1x_a10"}},
 		{ID: "d", Name: "pandion-c--n3", Status: "terminated", InstanceType: itype{Name: "gpu_1x_a10"}},
+		{ID: "e", Name: "pandion-c--n4", Status: "preempted", InstanceType: itype{Name: "gpu_1x_a10"}},
+		{ID: "f", Name: "pandion-c--n5", Status: "booting", InstanceType: itype{Name: "gpu_1x_a10"}},
 	}
 	got, err := l.ListByTag(context.Background(), "c")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got) != 1 || got[0].ID != "a" {
-		t.Fatalf("want only the active node, got %+v", got)
+	status := map[string]string{}
+	for _, s := range got {
+		status[s.ID] = s.Status
+	}
+	want := map[string]string{"a": "", "b": provider.StatusTerminating, "f": "booting"}
+	if len(status) != len(want) {
+		t.Fatalf("got %v, want %v", status, want)
+	}
+	for id, st := range want {
+		if got, ok := status[id]; !ok || got != st {
+			t.Errorf("instance %s: status %q (present=%v), want %q", id, got, ok, st)
+		}
+	}
+	all, err := l.ListAllTagged(context.Background())
+	if err != nil || len(all) != 3 {
+		t.Fatalf("ListAllTagged = %d servers (%v), want 3", len(all), err)
+	}
+}
+
+// TestFirstHealthyIsCreated: Lambda's only timestamp (first_healthy) becomes the
+// server's Created; a never-healthy instance (null) leaves Created zero = unknown.
+func TestFirstHealthyIsCreated(t *testing.T) {
+	ts := "2026-11-24T20:31:57Z"
+	healthy := toServer(instance{ID: "a", Status: "active", FirstHealthy: &ts}, "c")
+	if want, _ := time.Parse(time.RFC3339, ts); !healthy.Created.Equal(want) {
+		t.Errorf("Created = %v, want %v", healthy.Created, want)
+	}
+	never := toServer(instance{ID: "b", Status: "booting"}, "c")
+	if !never.Created.IsZero() {
+		t.Errorf("never-healthy instance must have zero Created, got %v", never.Created)
+	}
+}
+
+// TestCreateTimeoutReportsLaunchedInstance pins the #11 fix: when the boot
+// outlives the deadline, CreateServer must say the instance EXISTS and return its
+// id (provider.LaunchedError) so the caller can destroy it instead of orphaning a
+// billing GPU node behind a bare "context deadline exceeded".
+func TestCreateTimeoutReportsLaunchedInstance(t *testing.T) {
+	prevPoll := pollEvery
+	pollEvery = 10 * time.Millisecond
+	t.Cleanup(func() { pollEvery = prevPoll })
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/instance-types", func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, instanceTypesJSON) })
+	mux.HandleFunc("/api/v1/ssh-keys", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			io.WriteString(w, `{"data":[]}`)
+			return
+		}
+		io.WriteString(w, `{"data":{"id":"k1","name":"x","public_key":"y"}}`)
+	})
+	mux.HandleFunc("/api/v1/instance-operations/launch", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"data":{"instance_ids":["slow-1"]}}`)
+	})
+	mux.HandleFunc("/api/v1/instances/", func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"data":{"id":"slow-1","name":"pandion-c--n","status":"booting","first_healthy":null,"instance_type":{"name":"gpu_1x_a100"},"region":{"name":"us-east-1"}}}`)
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	l := New("k", WithBaseURL(srv.URL+"/api/v1"), WithHTTPClient(srv.Client()), WithMinGap(0))
+
+	var progress []string
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := l.CreateServer(ctx, provider.ServerSpec{
+		Name: "n", ClusterID: "c", LoginPubKey: "ssh-ed25519 AAAA test",
+		GPU:      provider.GPUReq{Model: "a100", Count: 1},
+		Progress: func(m string) { progress = append(progress, m) },
+	})
+	if err == nil {
+		t.Fatal("want a timeout error")
+	}
+	if got := provider.LaunchedServerID(err); got != "slow-1" {
+		t.Fatalf("LaunchedServerID = %q, want slow-1 (err: %v)", got, err)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error should still wrap the deadline: %v", err)
+	}
+	if !strings.Contains(err.Error(), "launched but never became ready") {
+		t.Errorf("error should say the instance exists: %v", err)
+	}
+	if len(progress) == 0 || !strings.Contains(progress[0], "booting") {
+		t.Errorf("want a booting progress line, got %q", progress)
 	}
 }
 

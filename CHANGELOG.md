@@ -32,6 +32,61 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
   `--help`/completion, TTY-aware color (`NO_COLOR`), wider `--json` coverage, friendly config
   validation errors, `cluster.yaml` scaffolding, `PANDION_HOME`, and a cross-process state lock.
 
+### Fixed — issues found running a GPU lab on Lambda
+- **`--setup` can use scripts from the workspace.** Setup ran before the workspace was synced, so
+  a setup script stored in `--workspace` failed with "No such file or directory". The build window
+  now always runs sync → setup → (docker pull) → build, in both the single-node and cluster flows.
+- **A failed `up` stays reachable.** The keys and manifest are now written before provisioning
+  starts (the manifest is rewritten as soon as the server has an IP), so `pandion ssh`, `down` and
+  `ls` work on a node whose setup failed. Before, the manifest was written only at the very end,
+  so "node left running for debugging" pointed at a node `pandion ssh` couldn't reach.
+- **`down` and `ls` no longer ignore the cluster's provider.** `down --id X` reads the provider
+  from the manifest, the state journal (which exists even when provisioning failed), or the
+  lockfile. When the provider is only a guess and has nothing, `down` checks your other
+  credentialed providers. If the cluster isn't found anywhere, it exits 3 without clearing any
+  local state, instead of printing "reconciled to empty" while a Lambda GPU node kept billing.
+  `ls` with no `--provider` lists every provider you have credentials for.
+- **An `up` that times out no longer orphans a billing instance.** Lambda accepts a launch and then
+  boots for minutes. If the boot outlived the deadline, `up` printed "context deadline exceeded"
+  and left the instance running. The launched instance id is now journaled, and a failed or
+  timed-out provision is rolled back. `up` reports what was left (exit 5 = nothing left; exit 8 =
+  check with the printed command). The provisioning deadline is configurable with
+  `--provision-timeout` (default 10m, 25m for GPU nodes) and no longer shares a budget with
+  setup, which has its own `--setup-timeout` (default 30m).
+- **"terminating" no longer counts as gone.** Lambda instances that never finished launching have
+  stayed in `terminating` for 20+ minutes. Listings used to filter that state out, so Pandion
+  reported "nothing running" while the provider still listed the instance. `down` now re-sends
+  terminate, waits (`--wait`, default 3m) until the provider no longer lists the server, and
+  otherwise exits 8 without tombstoning the cluster. `ls` shows such servers as `[terminating]`.
+  `up` doesn't count them against a re-used id.
+- **Receipts and uptime count from launch, for this cluster only.** Lambda reports no launch time,
+  so the receipt fell back to the lockfile. A failed `up` never rewrites the lockfile, so one
+  receipt billed a 15-minute instance as `ran 1d0h · ~16.94 USD`, using the timestamp of a previous
+  cluster with the same id. Pandion now journals each node's launch time and uses the earlier of
+  that and the provider's time (Lambda's `first_healthy`). An unknown launch time shows as `?`
+  rather than `0m`. `reap --older-than` skips clusters of unknown age, and says so, instead of
+  treating them as ancient. The `down` receipt runs until the provider stops listing the server,
+  not until `down` starts, so time spent in `terminating` (which still bills) is counted.
+- **Exit codes.** A cluster `up` whose firewall, ARP inspection, discovery, or mesh verification
+  failed on some node exits 7 instead of 0. Declining `down`'s prompt exits 6. A failed teardown
+  exits 8.
+- **`down` works from scripts.** The terminal check treated `/dev/null` as a terminal (it is a
+  character device), so `down </dev/null` prompted and then aborted. A real `isatty` check is used
+  now. `-y` was added as an alias for `--yes`, and the prompt names `--yes` when it gets no answer.
+- **Blocked egress fails fast.** Under the egress lockdown, outbound connections are rejected
+  (TCP reset / ICMP admin-prohibited) instead of silently dropped. A blocked `apt-get` used to hang
+  for about 10 minutes of paid GPU time. The policy stays `drop` as the backstop. The "firewall
+  applied" message now says that outbound traffic is refused and points to `--packages`,
+  `--setup` and `--egress-allow`.
+- **Lambda progress.** A Lambda launch reports each status change (and a heartbeat every minute)
+  while it boots, instead of staying silent for up to 15 minutes.
+- **Secrets are never synced by accident.** Files that look like secrets (`.env`, `.env.*`, `*.pem`,
+  `*.key`, SSH private keys, `.netrc`, …) are excluded from every workspace sync, with a warning
+  naming them, even when `.gitignore` misses them. Add a `!name` line to `.pandionignore` to upload
+  one on purpose.
+- `pandion login`/`logout`/`init` help now lists `lambda`, and `down` only mentions
+  `~/.pandion/{keys,logs}/<id>` directories that exist (`up` creates the logs directory).
+
 ### Fixed
 - **Teardown retries with backoff and reports every attempt.** `down`'s destroy retry ran
   three times back-to-back with no delay and surfaced only the last error, so a rate-limited

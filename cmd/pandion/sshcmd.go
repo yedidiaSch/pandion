@@ -128,6 +128,13 @@ func dialInfo(cmdName, id string, target nodeManifest, useOverlay bool) (connInf
 		addr = target.OverlayIP
 	}
 	if addr == "" {
+		if !useOverlay && target.IP == "" {
+			// the manifest is written before provisioning (so a failed `up` stays
+			// findable); no IP means the server never finished booting.
+			fmt.Fprintf(os.Stderr, "%s: node %q has no IP — provisioning of cluster %q never finished.\n", cmdName, target.Name, id)
+			fmt.Fprintf(os.Stderr, "  check the provider:  pandion ls\n  remove leftovers:    pandion down --id %s\n", id)
+			os.Exit(3)
+		}
 		fmt.Fprintf(os.Stderr, "%s: node has no reachable address (try/omit --overlay)\n", cmdName)
 		os.Exit(3)
 	}

@@ -169,7 +169,7 @@ func TestReap_DestroysAllTaggedClusters(t *testing.T) {
 	if m.Count() != 3 {
 		t.Fatalf("want 3 servers, got %d", m.Count())
 	}
-	plan, err := o.ReapPlan(ctx, 0)
+	plan, _, err := o.ReapPlan(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestReapPlan_OlderThanFiltersOutYoungClusters(t *testing.T) {
 		t.Fatal(err)
 	}
 	// just-created cluster is younger than 1h -> excluded
-	plan, err := o.ReapPlan(ctx, time.Hour)
+	plan, _, err := o.ReapPlan(ctx, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
