@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -41,6 +42,10 @@ type NodeSpec struct {
 type Orchestrator struct {
 	P provider.Provider
 	S *state.Store
+	// Progress, if set, receives provisioning progress from slow-booting
+	// providers (forwarded as ServerSpec.Progress), so a multi-minute launch
+	// visibly moves instead of looking hung.
+	Progress provider.ProgressFunc
 }
 
 // New wires a provider and a state store.
@@ -109,7 +114,8 @@ func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSp
 	}
 
 	c.Nodes[0].Phase = state.Provisioning
-	if err := o.S.Save(c); err != nil { // journal BEFORE the create (crash-resumable)
+	c.Nodes[0].Launched = time.Now().UTC() // billing starts at launch, not at "ready"
+	if err := o.S.Save(c); err != nil {    // journal BEFORE the create (crash-resumable)
 		return nil, err
 	}
 
@@ -117,13 +123,16 @@ func (o *Orchestrator) UpSpec(ctx context.Context, clusterID string, spec NodeSp
 		Name:        nodeName,
 		ClusterID:   clusterID,
 		Type:        spec.Type,
+		Image:       spec.Image,
 		RegionPref:  spec.RegionPref,
 		UserData:    userData,
 		LoginPubKey: loginPubKey,
 		GPU:         spec.GPU,
+		Progress:    o.Progress,
 	})
 	if err != nil {
 		c.Nodes[0].Phase = state.Failed
+		c.Nodes[0].ServerID = provider.LaunchedServerID(err) // the instance may exist: journal it
 		_ = o.S.Save(c)
 		return c, fmt.Errorf("provision %q: %w", nodeName, err)
 	}
@@ -167,7 +176,6 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 			saveWarned = true
 		}
 	}
-	setPhase := func(i int, p state.Phase) { mu.Lock(); c.Nodes[i].Phase = p; mu.Unlock() }
 	save() // journal: all PLANNED
 
 	sem := semaphore.NewWeighted(int64(maxConc))
@@ -180,7 +188,10 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 			}
 			defer sem.Release(1)
 
-			setPhase(i, state.Provisioning)
+			mu.Lock()
+			c.Nodes[i].Phase = state.Provisioning
+			c.Nodes[i].Launched = time.Now().UTC()
+			mu.Unlock()
 			save()
 			srv, err := o.createWithRetry(gctx, provider.ServerSpec{
 				Name:        specs[i].Name,
@@ -191,9 +202,13 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 				Image:       specs[i].Image,
 				RegionPref:  specs[i].RegionPref,
 				GPU:         specs[i].GPU,
+				Progress:    o.Progress,
 			})
 			if err != nil {
-				setPhase(i, state.Failed)
+				mu.Lock()
+				c.Nodes[i].Phase = state.Failed
+				c.Nodes[i].ServerID = provider.LaunchedServerID(err)
+				mu.Unlock()
 				save()
 				return fmt.Errorf("provision %q: %w", specs[i].Name, err)
 			}
@@ -214,55 +229,106 @@ func (o *Orchestrator) UpCluster(ctx context.Context, clusterID string, specs []
 	return c, nil
 }
 
-// Down reconciles the cluster to empty. It lists by tag from the PROVIDER (the
-// ReapCandidate is a cluster the reaper would destroy.
 type ReapCandidate struct {
 	ClusterID string
 	Servers   int
-	OldestAge time.Duration
+	OldestAge time.Duration // meaningful only when AgeKnown
+	AgeKnown  bool          // false when neither the provider nor the journal knows any node's launch time
 }
 
 // ReapPlan lists the Pandion clusters currently alive at the provider whose
 // oldest server is at least olderThan (0 = all). It queries the provider
 // directly, so it works across machines and with no local state (C4).
-func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) ([]ReapCandidate, error) {
+//
+// A cluster whose age is UNKNOWN (the provider reports no creation time and no
+// local journal has one — e.g. a Lambda instance launched from another machine
+// that never became healthy) is never assumed old: under olderThan > 0 it is
+// left out of the plan and its id is returned in skipped, so the caller can say
+// so instead of silently reaping a node that may have launched a minute ago.
+func (o *Orchestrator) ReapPlan(ctx context.Context, olderThan time.Duration) (plan []ReapCandidate, skipped []string, err error) {
 	all, err := o.P.ListAllTagged(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	type agg struct {
 		n      int
-		oldest time.Time
+		oldest time.Time // zero until a known launch time is seen
 	}
 	byCluster := map[string]*agg{}
 	now := time.Now()
 	for _, s := range all {
 		a := byCluster[s.ClusterID]
 		if a == nil {
-			a = &agg{oldest: s.Created}
+			a = &agg{}
 			byCluster[s.ClusterID] = a
 		}
 		a.n++
-		if !s.Created.IsZero() && s.Created.Before(a.oldest) {
-			a.oldest = s.Created
+		if t := o.LaunchedAt(s); !t.IsZero() && (a.oldest.IsZero() || t.Before(a.oldest)) {
+			a.oldest = t
 		}
 	}
-	var out []ReapCandidate
 	for id, a := range byCluster {
-		age := now.Sub(a.oldest)
-		if olderThan > 0 && age < olderThan {
+		c := ReapCandidate{ClusterID: id, Servers: a.n}
+		if !a.oldest.IsZero() {
+			c.OldestAge, c.AgeKnown = now.Sub(a.oldest), true
+		}
+		if olderThan > 0 {
+			if !c.AgeKnown {
+				skipped = append(skipped, id)
+				continue
+			}
+			if c.OldestAge < olderThan {
+				continue
+			}
+		}
+		plan = append(plan, c)
+	}
+	sort.Slice(plan, func(i, j int) bool { return plan[i].ClusterID < plan[j].ClusterID })
+	sort.Strings(skipped)
+	return plan, skipped, nil
+}
+
+// LaunchedAt is the best-known launch time of a provider server: the EARLIER of
+// the provider's own creation time and the launch time Pandion journaled for that
+// server (matched by server id, else by node name). Zero means unknown. The
+// journal covers providers that report no creation time (Lambda reports only
+// first_healthy — later than launch, and null if the VM never booted).
+func (o *Orchestrator) LaunchedAt(s provider.Server) time.Time {
+	best := s.Created
+	if o.S == nil {
+		return best
+	}
+	c, err := o.S.Load(s.ClusterID)
+	if err != nil {
+		return best
+	}
+	for _, n := range c.Nodes {
+		if n.Launched.IsZero() {
 			continue
 		}
-		out = append(out, ReapCandidate{ClusterID: id, Servers: a.n, OldestAge: age})
+		if (n.ServerID != "" && n.ServerID == s.ID) || (n.ServerID == "" && nodeNameMatches(s.Name, n.Name)) {
+			if best.IsZero() || n.Launched.Before(best) {
+				best = n.Launched
+			}
+			break
+		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].ClusterID < out[j].ClusterID })
-	return out, nil
+	return best
+}
+
+// nodeNameMatches reports whether a provider server name denotes journal node
+// name: providers either use the node name verbatim or embed it as a suffix
+// (Lambda: "pandion-<cluster>--<node>").
+func nodeNameMatches(serverName, node string) bool {
+	return serverName == node || strings.HasSuffix(serverName, "--"+node) || strings.HasSuffix(serverName, "-"+node)
 }
 
 // NodeStatus is the live view of one running node for `ls`/`status`.
 type NodeStatus struct {
 	Name, Type, Region, IP string
-	Age                    time.Duration
+	Age                    time.Duration    // meaningful only when AgeKnown
+	AgeKnown               bool             // false = provider + journal know no launch time
+	Status                 string           // provider lifecycle state ("" = running; e.g. "terminating", "booting")
 	Hourly                 provider.Money   // zero = price unknown
 	GPU                    provider.GPUInfo // zero = CPU node
 	GPUUtil                int              // live GPU utilization %; -1 = not measured/unknown
@@ -296,18 +362,20 @@ func (o *Orchestrator) Status(ctx context.Context) ([]ClusterStatus, string, err
 			cs = &ClusterStatus{ClusterID: s.ClusterID}
 			byCluster[s.ClusterID] = cs
 		}
-		age := now.Sub(s.Created)
-		if s.Created.IsZero() {
-			age = 0
+		var age time.Duration
+		launched := o.LaunchedAt(s)
+		if !launched.IsZero() {
+			age = now.Sub(launched)
 		}
-		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age, GPU: s.GPU, GPUUtil: -1}
+		n := NodeStatus{Name: s.Name, Type: s.Type, Region: s.Region, IP: s.IP, Age: age, AgeKnown: !launched.IsZero(),
+			Status: s.Status, GPU: s.GPU, GPUUtil: -1}
 		if pricer != nil {
 			// a per-node pricing error is non-fatal: leave that node unpriced.
 			if m, perr := pricer.HourlyPrice(ctx, s.Type, s.Region); perr == nil && m.Known() {
 				n.Hourly = m
 				currency = m.Currency
 				cs.Hourly += m.Amount
-				cs.Accrued += m.Amount * age.Hours()
+				cs.Accrued += m.Amount * age.Hours() // 0 for an unknown age — never a guess
 			}
 		}
 		if age > cs.Oldest {
@@ -449,25 +517,52 @@ func (o *Orchestrator) Reap(ctx context.Context, candidates []ReapCandidate) (in
 	return n, firstErr
 }
 
+// Down reconciles the cluster to empty. It lists by tag from the PROVIDER (the
 // source of truth, C4) so it succeeds even with no local state, destroys with
-// retry (H7), then VERIFIES nothing remains before closing the state record.
+// retry (H7), then WAITS until the provider no longer lists anything for the
+// cluster before closing the state record.
+//
+// Teardown is asynchronous at some providers (Lambda reports "terminating" for
+// ~30s normally, and an instance that never finished launching has been seen
+// stuck there for 20+ minutes). An accepted terminate is NOT "gone": if servers
+// are still terminating when DownWait runs out, Down returns a
+// *StillTerminatingError and keeps the local state, so nothing claims the
+// cluster is gone while the provider still lists it (and may bill for it).
 func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
 	servers, err := o.P.ListByTag(ctx, clusterID)
 	if err != nil {
 		return fmt.Errorf("list %q: %w", clusterID, err)
 	}
 
+	// Also target any instance the journal knows was launched but that the
+	// provider's list doesn't (yet) show — e.g. a launch that timed out before the
+	// instance appeared in listings. DestroyServer is idempotent, so a stale id
+	// costs one no-op call.
+	ids := make([]string, 0, len(servers))
+	seen := map[string]bool{}
+	for _, s := range servers {
+		ids = append(ids, s.ID)
+		seen[s.ID] = true
+	}
+
 	// best-effort journal of the teardown intent (local state may not exist)
 	if c, lerr := o.S.Load(clusterID); lerr == nil {
 		for i := range c.Nodes {
 			c.Nodes[i].Phase = state.TearingDown
+			// journaled ids are only meaningful at the provider that issued them.
+			if id := c.Nodes[i].ServerID; id != "" && !seen[id] && c.Provider == o.P.Name() {
+				ids = append(ids, id)
+				seen[id] = true
+			}
 		}
 		_ = o.S.Save(c)
 	}
 
+	// Destroy everything, including servers already terminating: re-sending a
+	// terminate is idempotent and is exactly what nudges a stuck one along.
 	var firstErr error
-	for _, s := range servers {
-		if derr := destroyWithRetry(ctx, o.P, s.ID, 3); derr != nil && firstErr == nil {
+	for _, id := range ids {
+		if derr := destroyWithRetry(ctx, o.P, id, 3); derr != nil && firstErr == nil {
 			firstErr = derr
 		}
 	}
@@ -475,12 +570,22 @@ func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
 		return fmt.Errorf("teardown %q: %w", clusterID, firstErr)
 	}
 
-	// verify the provider truly has nothing left for this cluster
-	left, err := o.P.ListByTag(ctx, clusterID)
+	// verify the provider truly has nothing left for this cluster, waiting out an
+	// asynchronous termination.
+	left, err := o.waitGone(ctx, clusterID)
 	if err != nil {
 		return err
 	}
 	if len(left) != 0 {
+		var running []provider.Server
+		for _, s := range left {
+			if !s.Terminating() {
+				running = append(running, s)
+			}
+		}
+		if len(running) == 0 {
+			return &StillTerminatingError{ClusterID: clusterID, Servers: left}
+		}
 		return fmt.Errorf("teardown incomplete: %d server(s) remain for %q — safe to re-run `pandion down --id %s`; teardown is idempotent and converges", len(left), clusterID, clusterID)
 	}
 
@@ -495,6 +600,64 @@ func (o *Orchestrator) Down(ctx context.Context, clusterID string) error {
 		}
 	}
 	return o.S.Close(clusterID)
+}
+
+// DownWait bounds how long Down waits for an asynchronous termination to finish
+// before reporting the servers as still terminating. A var so the CLI can expose
+// it and tests can shrink it.
+var DownWait = 3 * time.Minute
+
+// downPollEvery is the re-list interval while waiting. A var for tests.
+var downPollEvery = 5 * time.Second
+
+// waitGone re-lists the cluster until the provider reports nothing left or
+// DownWait elapses, returning whatever is still listed. Only servers still
+// terminating are waited for: a server in any other state means the teardown
+// didn't take, so it returns immediately for Down to report it.
+func (o *Orchestrator) waitGone(ctx context.Context, clusterID string) ([]provider.Server, error) {
+	deadline := time.Now().Add(DownWait)
+	for {
+		left, err := o.P.ListByTag(ctx, clusterID)
+		if err != nil {
+			return nil, err
+		}
+		if len(left) == 0 || time.Now().After(deadline) {
+			return left, nil
+		}
+		for _, s := range left {
+			if !s.Terminating() {
+				return left, nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return left, nil
+		case <-time.After(downPollEvery):
+		}
+	}
+}
+
+// StillTerminatingError reports that every teardown was accepted, but the
+// provider still lists the servers as terminating after DownWait. The cluster is
+// NOT reported gone and its local state is kept: re-run `down` to check again.
+type StillTerminatingError struct {
+	ClusterID string
+	Servers   []provider.Server
+}
+
+func (e *StillTerminatingError) Error() string {
+	ids := make([]string, len(e.Servers))
+	for i, s := range e.Servers {
+		ids[i] = s.ID
+	}
+	return fmt.Sprintf("terminate accepted, but %d server(s) of %q are still terminating at the provider (%s) — not reporting the cluster gone until the provider does; re-run `pandion down --id %s` later to re-send terminate and re-check",
+		len(e.Servers), e.ClusterID, strings.Join(ids, ", "), e.ClusterID)
+}
+
+// IsStillTerminating reports whether err is (or wraps) a StillTerminatingError.
+func IsStillTerminating(err error) bool {
+	var st *StillTerminatingError
+	return errors.As(err, &st)
 }
 
 // destroyRetryBaseDelay is the first pause between destroy attempts; it grows ~3x

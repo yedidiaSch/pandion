@@ -211,7 +211,10 @@ pandion down --provider=hetzner --id build
 
 Add dependencies. Pandion installs a built-in C++ toolchain; declare extra apt packages with
 `--packages` (or `toolchain.packages` in a cluster), and non-apt software with `setup:` commands
-that run in the egress-open build window:
+that run in the egress-open build window. The build window runs in a fixed order: the workspace
+is synced first, so a setup script can live in it; then `setup:`; then the build. Once the window
+closes, outbound traffic is refused, so install everything here (or allow specific hosts with
+`--egress-allow`):
 
 ```bash
 pandion up --provider=hetzner --id build --packages libzmq3-dev,libboost-dev \
@@ -405,10 +408,10 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 | `pandion debug --id ID [--node N] [--pid N] [--print]` | Attach your local debugger to a remote process over the overlay |
 | `pandion debug share --id ID [--node N] [--expires 2h]` | Grant a teammate a scoped, expiring, revocable remote-debug token |
 | `pandion debug join <token>` · `unshare --id ID --all` | Accept a shared grant · revoke it |
-| `pandion ls` / `status [--json]` | List live clusters/nodes with uptime and live cost |
+| `pandion ls` / `status [--json]` | List live clusters/nodes with uptime, state, and live cost, at every provider you have credentials for (or `--provider`) |
 | `pandion reap [--older-than DUR] [--yes]` | Destroy orphaned Pandion nodes across clusters |
 | `pandion doctor` | Report where local state diverges from the provider (stale/leaked) and how to fix it |
-| `pandion down --id ID` | Idempotent, verified teardown (provider read from the manifest; `--provider` optional) |
+| `pandion down --id ID [--yes]` | Idempotent, verified teardown that waits until the provider no longer lists the servers. The provider comes from local records (manifest, state journal, or lockfile), so `--provider` is optional |
 | `pandion validate [-f cluster.yaml]` | Schema-check a topology |
 | `pandion lockdown --id ID` | Lockout-safe public deny-all (SSH over the overlay only) |
 | `pandion login \| logout [--provider …]` | Store/remove a provider's API token in the OS keychain |
@@ -418,7 +421,9 @@ unit-tested packages (`harden` → `overlay` → `firewall` → `discovery` → 
 
 Selected `up` flags: `--packages`, `--setup`, `--no-run`, `--dry-run`, `--max-cost N`,
 `--lock FILE`, `--encrypt-workspace`, `--engine docker`, `--no-toolchain`, `--no-firewall`,
-`--no-overlay`, `--egress-allow <cidr,...>`, `--ttl DUR` / `--no-ttl`. Respects `NO_COLOR`.
+`--no-overlay`, `--egress-allow <cidr,...>`, `--ttl DUR` / `--no-ttl`,
+`--provision-timeout DUR` / `--setup-timeout DUR`. If provisioning fails or times out, `up` destroys
+whatever the provider already launched, so no node is left billing. Respects `NO_COLOR`.
 
 ## Platform support
 

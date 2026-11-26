@@ -90,7 +90,11 @@ func RunWithInput(ctx context.Context, addr, user string, signer gossh.Signer, p
 	}
 	defer sess.Close()
 
-	var out bytes.Buffer
+	// stdout and stderr are copied by two goroutines inside the session, so the
+	// shared buffer must be locked (as x/crypto's CombinedOutput does), and it may
+	// only be read after Wait — reading it earlier raced the copiers and could
+	// truncate the node's error output.
+	var out lockedBuffer
 	sess.Stdout = &out
 	sess.Stderr = &out
 	stdin, err := sess.StdinPipe()
@@ -102,12 +106,35 @@ func RunWithInput(ctx context.Context, addr, user string, signer gossh.Signer, p
 	}
 	if _, err := io.Copy(stdin, r); err != nil {
 		_ = stdin.Close()
+		_ = sess.Close() // unblock Wait so the copiers finish before we read
+		_ = sess.Wait()
 		return out.String(), fmt.Errorf("stream stdin: %w", err)
 	}
 	if err := stdin.Close(); err != nil {
+		_ = sess.Close()
+		_ = sess.Wait()
 		return out.String(), err
 	}
-	return out.String(), sess.Wait()
+	werr := sess.Wait()
+	return out.String(), werr
+}
+
+// lockedBuffer is a bytes.Buffer safe for concurrent writers (stdout + stderr).
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
 
 // Stream runs cmd and streams stdout/stderr line-by-line to onLine (streamName

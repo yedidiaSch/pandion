@@ -34,6 +34,34 @@ func IsTransientProvision(err error) bool {
 	return errors.As(err, &t)
 }
 
+// ProgressFunc receives human-readable provisioning progress ("instance abc
+// booting (2m10s)") from providers whose launch can take minutes, so the CLI can
+// show the operator that a slow boot is moving rather than hung. Optional.
+type ProgressFunc func(msg string)
+
+// LaunchedError reports a CreateServer failure that happened AFTER the provider
+// accepted the launch: the instance exists (and may bill) even though it never
+// became usable — e.g. the boot outlived the provisioning deadline. Carrying the
+// id lets the orchestrator journal it and destroy it directly, instead of hoping
+// a later list-by-tag still finds it.
+type LaunchedError struct {
+	ServerID string
+	Err      error
+}
+
+func (e *LaunchedError) Error() string { return e.Err.Error() }
+func (e *LaunchedError) Unwrap() error { return e.Err }
+
+// LaunchedServerID returns the id of an instance that was launched before err
+// occurred, or "" if err carries none.
+func LaunchedServerID(err error) string {
+	var le *LaunchedError
+	if errors.As(err, &le) {
+		return le.ServerID
+	}
+	return ""
+}
+
 // ServerSpec describes a server to create. Type is selected by SPEC (cores/RAM)
 // plus a region preference, never by a hardcoded type name — spike S1 finding F3:
 // Hetzner type names rotate (cpx11 retired) and availability is sparse per region.
@@ -53,6 +81,8 @@ type ServerSpec struct {
 	// GPU is an optional GPU requirement. A zero GPU (Count == 0) means CPU-only —
 	// CPU providers ignore it, so existing backends are unaffected (G0).
 	GPU GPUReq
+	// Progress, if set, receives launch progress from slow-booting providers.
+	Progress ProgressFunc
 }
 
 // GPUReq is an optional GPU requirement on a ServerSpec. A zero GPUReq
@@ -84,9 +114,29 @@ type Server struct {
 	Type      string
 	Region    string
 	IP        string
-	Created   time.Time // when the server was created (for `reap --older-than`)
-	GPU       GPUInfo   // zero for CPU nodes
+	// Created is when the server was created (for `reap --older-than`, uptime and
+	// receipts). Zero = the provider reports no creation time; callers must treat
+	// that as UNKNOWN, never as "ancient" or "just now". A provider that only knows
+	// a later milestone (Lambda's first_healthy) may report it — a lower bound on
+	// the server's age.
+	Created time.Time
+	GPU     GPUInfo // zero for CPU nodes
+	// Status is the provider's lifecycle state when it is anything other than
+	// plainly running: e.g. "booting", "terminating", "unhealthy". Empty means
+	// running/normal. A server in StatusTerminating has had its teardown accepted
+	// but still exists at the provider — it may still bill, so it is never
+	// reported as gone.
+	Status string
 }
+
+// StatusTerminating marks a server whose teardown the provider has accepted but
+// not finished. Listing calls MUST still return such servers (with this status)
+// so `down` can wait for them and `ls` can show them — hiding them makes Pandion
+// claim "nothing running" while the provider still lists (and may bill) them.
+const StatusTerminating = "terminating"
+
+// Terminating reports whether the server's teardown is already in progress.
+func (s Server) Terminating() bool { return s.Status == StatusTerminating }
 
 // Provider is the cloud backend contract.
 type Provider interface {

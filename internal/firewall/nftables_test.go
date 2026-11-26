@@ -189,3 +189,27 @@ func TestNFTables_Enforced_NoAuditLog(t *testing.T) {
 		t.Errorf("enforced mode must not emit audit logs:\n%s", out)
 	}
 }
+
+// #8: blocked egress is REJECTED (fast "connection refused") rather than
+// silently dropped (a ~10-minute hang per apt call on a paid GPU node); the
+// policy stays drop as the backstop, and audit mode enforces nothing.
+func TestNFTables_EgressRejectsFast(t *testing.T) {
+	out := NFTables(Spec{AllowDNS: true})
+	outChain := out[strings.Index(out, "chain output"):]
+	for _, want := range []string{"policy drop;", "meta l4proto tcp reject with tcp reset", "reject with icmpx type admin-prohibited"} {
+		if !strings.Contains(outChain, want) {
+			t.Errorf("output chain missing %q:\n%s", want, outChain)
+		}
+	}
+	inChain := out[strings.Index(out, "chain input"):strings.Index(out, "chain output")]
+	if strings.Contains(inChain, "reject") {
+		t.Errorf("inbound must stay a silent drop:\n%s", inChain)
+	}
+	// rejects come AFTER every accept, so they never shadow an allow rule.
+	if strings.LastIndex(outChain, "accept") > strings.Index(outChain, "reject") {
+		t.Errorf("a reject precedes an accept:\n%s", outChain)
+	}
+	if audit := NFTables(Spec{AllowDNS: true, AuditOnly: true}); strings.Contains(audit, "reject") {
+		t.Errorf("audit mode must enforce nothing:\n%s", audit)
+	}
+}

@@ -176,6 +176,14 @@ func NFTables(in Spec) string {
 		// log (and, via policy accept, allow) what a real egress deny would drop —
 		// including the metadata endpoint — so the operator sees the full picture.
 		b.WriteString("    log prefix \"pandion-audit-out \" counter\n")
+	} else {
+		// REJECT (not silently drop) everything else the node itself initiates, so a
+		// blocked apt/pip/curl/git fails in milliseconds with "connection refused"
+		// instead of hanging until its timeout — one apt-get burned ~10 minutes of
+		// paid GPU time that way. The policy stays drop as the backstop. This only
+		// answers the node's OWN process; inbound probes are still dropped silently.
+		b.WriteString("    meta l4proto tcp reject with tcp reset\n")
+		b.WriteString("    reject with icmpx type admin-prohibited\n")
 	}
 	b.WriteString("  }\n")
 

@@ -189,20 +189,49 @@ func (l *Lambda) CreateServer(ctx context.Context, spec provider.ServerSpec) (pr
 	if len(lr.Data.InstanceIDs) == 0 {
 		return provider.Server{}, fmt.Errorf("lambda: launch returned no instance id")
 	}
-	return l.waitRunning(ctx, lr.Data.InstanceIDs[0], spec.ClusterID)
+	id := lr.Data.InstanceIDs[0]
+	srv, err := l.waitRunning(ctx, id, spec.ClusterID, spec.Progress)
+	if err != nil && !provider.IsTransientProvision(err) {
+		// The launch was ACCEPTED: the instance exists (and may bill) even though it
+		// never became usable — typically a boot that outlived the deadline. Say so,
+		// and hand the id back so the caller can destroy it rather than orphan it.
+		return provider.Server{}, &provider.LaunchedError{
+			ServerID: id,
+			Err:      fmt.Errorf("lambda instance %s was launched but never became ready: %w", id, err),
+		}
+	}
+	return srv, err
 }
 
+// progressEvery is how often waitRunning repeats an unchanged status, so a long
+// boot still shows signs of life. A var so tests can shorten it.
+var progressEvery = time.Minute
+
+// pollEvery is the instance status poll interval. A var so tests can shorten it.
+var pollEvery = 5 * time.Second
+
 // waitRunning polls until the instance is active with an IP, then returns it.
-func (l *Lambda) waitRunning(ctx context.Context, id, clusterID string) (provider.Server, error) {
+// Lambda boots take 2–15 minutes, so every status change (and a periodic
+// heartbeat) is reported through progress — otherwise `up` looks hung.
+func (l *Lambda) waitRunning(ctx context.Context, id, clusterID string, progress provider.ProgressFunc) (provider.Server, error) {
+	start := time.Now()
+	lastStatus, lastReport := "", time.Time{}
 	for {
 		inst, err := l.getInstance(ctx, id)
 		if err != nil {
 			return provider.Server{}, err
 		}
+		if progress != nil {
+			st := strings.ToLower(strings.TrimSpace(inst.Status))
+			if st != lastStatus || time.Since(lastReport) >= progressEvery {
+				progress(fmt.Sprintf("lambda instance %s: %s (%s elapsed)", shortID(id), dashIfEmpty(st), time.Since(start).Round(time.Second)))
+				lastStatus, lastReport = st, time.Now()
+			}
+		}
 		if strings.EqualFold(inst.Status, "active") && inst.IP != "" {
 			return toServer(inst, clusterID), nil
 		}
-		if strings.EqualFold(inst.Status, "terminated") || strings.EqualFold(inst.Status, "error") {
+		if isGone(inst.Status) || strings.EqualFold(inst.Status, "error") {
 			// Lambda killed the VM during boot (capacity/spot). Best-effort clean up
 			// the dead instance, then signal a TRANSIENT failure so the orchestrator
 			// relaunches a fresh one instead of failing the whole up.
@@ -214,9 +243,24 @@ func (l *Lambda) waitRunning(ctx context.Context, id, clusterID string) (provide
 		select {
 		case <-ctx.Done():
 			return provider.Server{}, ctx.Err()
-		case <-time.After(5 * time.Second):
+		case <-time.After(pollEvery):
 		}
 	}
+}
+
+// shortID trims a 32-hex Lambda instance id for progress lines.
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // DestroyServer terminates an instance by id. Idempotent: an already-absent
@@ -265,9 +309,15 @@ func (l *Lambda) ListAllTagged(ctx context.Context) ([]provider.Server, error) {
 
 // toServer maps a Lambda instance to a provider.Server, deriving the GPU from the
 // instance type name/description.
+//
+// Lambda reports no creation/launch timestamp — only first_healthy (null until
+// the VM first passes health checks). It is used as Created: a LOWER bound on
+// the instance's age (billing starts at launch, earlier). Callers combine it with
+// Pandion's own journaled launch time; a never-healthy instance has a zero
+// Created, i.e. "unknown".
 func toServer(in instance, clusterID string) provider.Server {
 	gpu, _ := parseGPU(in.InstanceType.Name, in.InstanceType.Description)
-	return provider.Server{
+	s := provider.Server{
 		ID:        in.ID,
 		Name:      in.Name,
 		ClusterID: clusterID,
@@ -275,6 +325,25 @@ func toServer(in instance, clusterID string) provider.Server {
 		Region:    in.Region.Name,
 		IP:        in.IP,
 		GPU:       gpu,
+		Status:    serverStatus(in.Status),
+	}
+	if in.FirstHealthy != nil {
+		if t, err := time.Parse(time.RFC3339, *in.FirstHealthy); err == nil {
+			s.Created = t
+		}
+	}
+	return s
+}
+
+// serverStatus maps a Lambda status onto provider.Server.Status ("" = running).
+func serverStatus(st string) string {
+	switch st = strings.ToLower(strings.TrimSpace(st)); st {
+	case "active", "":
+		return ""
+	case "terminating":
+		return provider.StatusTerminating
+	default:
+		return st // booting, unhealthy, ...
 	}
 }
 
@@ -317,6 +386,9 @@ type instance struct {
 	Status       string `json:"status"`
 	Region       region `json:"region"`
 	InstanceType itype  `json:"instance_type"`
+	// FirstHealthy is when the instance first passed health checks (RFC3339), or
+	// null if it never has — Lambda's only timestamp on an instance.
+	FirstHealthy *string `json:"first_healthy"`
 }
 
 type region struct {
@@ -354,15 +426,15 @@ func (l *Lambda) listInstances(ctx context.Context) ([]instance, error) {
 	if err := l.do(ctx, http.MethodGet, "/instances", nil, &r); err != nil {
 		return nil, err
 	}
-	// Lambda termination is ASYNC: the API keeps returning an instance in
-	// "terminating"/"terminated" status for ~30s after DestroyServer. For
-	// reconciliation (ListByTag/ListAllTagged → Down's verify-empty, reap, ls) such
-	// an instance is already gone — including it makes Down report "teardown
-	// incomplete" and over-counts cost. Filter it out here (getInstance, used by
-	// waitRunning, is a separate path and still sees these states).
+	// Lambda termination is ASYNC: after DestroyServer the API keeps returning the
+	// instance as "terminating" — usually ~30s, but an instance that never finished
+	// launching has been seen stuck there for 20+ minutes. A terminating instance
+	// is NOT gone (it may still bill), so it is kept, tagged
+	// provider.StatusTerminating: `down` waits for it and `ls` shows it. Only
+	// terminal states ("terminated", "preempted") are dropped.
 	out := r.Data[:0]
 	for _, in := range r.Data {
-		if isTerminating(in.Status) {
+		if isGone(in.Status) {
 			continue
 		}
 		out = append(out, in)
@@ -370,11 +442,11 @@ func (l *Lambda) listInstances(ctx context.Context) ([]instance, error) {
 	return out, nil
 }
 
-// isTerminating reports whether a Lambda instance status means "gone" for
-// reconciliation purposes.
-func isTerminating(status string) bool {
+// isGone reports whether a Lambda instance status is terminal — the instance no
+// longer exists for reconciliation (and no longer bills).
+func isGone(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "terminating", "terminated":
+	case "terminated", "preempted":
 		return true
 	}
 	return false

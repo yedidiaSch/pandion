@@ -51,6 +51,19 @@ func TestUpPreflight(t *testing.T) {
 		}
 	})
 
+	t.Run("only a terminating server left -> allowed (it is on its way out)", func(t *testing.T) {
+		m := mock.New()
+		m.StuckTerminating = true
+		srv, err := m.CreateServer(ctx, provider.ServerSpec{Name: "node-a", ClusterID: "gpu-lab"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = m.DestroyServer(ctx, srv.ID) // accepted, stays listed as terminating
+		if msg := upPreflight(ctx, m, "gpu-lab", "mock", ""); msg != "" {
+			t.Fatalf("a terminating leftover must not block a re-up, got: %q", msg)
+		}
+	})
+
 	t.Run("same provider recorded locally but nothing running -> allowed (re-up after out-of-band teardown)", func(t *testing.T) {
 		if msg := upPreflight(ctx, mock.New(), "x", "mock", "mock"); msg != "" {
 			t.Fatalf("want allow, got refusal: %q", msg)

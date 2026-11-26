@@ -21,7 +21,61 @@ import (
 const DefaultRemotePath = "/root/workspace"
 
 // Ignore matches paths to exclude from the archive (a pragmatic .gitignore subset).
-type Ignore struct{ patterns []string }
+type Ignore struct {
+	patterns []string
+	// reinclude holds "!pattern" lines: an explicit opt-in that lifts the default
+	// secret exclusion for matching files (negation of ordinary patterns is not
+	// supported).
+	reinclude []string
+	// SkippedSecrets lists the files Archive left out because they look like
+	// secrets (see secretPatterns), so the caller can say so.
+	SkippedSecrets []string
+}
+
+// secretPatterns name files that are excluded from EVERY sync, whatever the
+// ignore files say: in source mode the filter is .gitignore, and a .env or key
+// file someone forgot to gitignore would otherwise be copied to a cloud node
+// without a word. Matched against the file's base name. Re-include one
+// deliberately with a "!name" line in .pandionignore.
+var secretPatterns = []string{
+	".env", ".env.*", "*.pem", "*.key", "*.p12", "*.pfx", "*.kdbx",
+	"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+	".netrc", ".npmrc", ".pypirc", "credentials.json",
+}
+
+// secretTemplates are .env-style files that by convention hold no real secrets.
+var secretTemplates = []string{".env.example", ".env.sample", ".env.template", ".env.dist"}
+
+// isSecret reports whether a file (by its slash-separated relative path) looks
+// like a secret and has not been re-included.
+func (ig *Ignore) isSecret(rel string) bool {
+	base := filepath.Base(filepath.FromSlash(rel))
+	for _, t := range secretTemplates {
+		if base == t {
+			return false
+		}
+	}
+	hit := false
+	for _, p := range secretPatterns {
+		if ok, _ := filepath.Match(p, base); ok {
+			hit = true
+			break
+		}
+	}
+	if !hit {
+		return false
+	}
+	for _, r := range ig.reinclude {
+		r = strings.TrimPrefix(r, "/")
+		if ok, _ := filepath.Match(r, base); ok {
+			return false
+		}
+		if ok, _ := filepath.Match(r, filepath.ToSlash(rel)); ok {
+			return false
+		}
+	}
+	return true
+}
 
 // LoadIgnore reads .pandionignore, or .gitignore if the former is absent.
 func LoadIgnore(root string) *Ignore {
@@ -50,6 +104,12 @@ func NewIgnore(lines []string) *Ignore {
 	for _, l := range lines {
 		l = strings.TrimSpace(l)
 		if l == "" || strings.HasPrefix(l, "#") {
+			continue
+		}
+		if strings.HasPrefix(l, "!") {
+			if r := strings.TrimSpace(l[1:]); r != "" {
+				ig.reinclude = append(ig.reinclude, r)
+			}
 			continue
 		}
 		ig.patterns = append(ig.patterns, l)
@@ -199,6 +259,10 @@ func Archive(root string, ig *Ignore) ([]byte, int, error) {
 		}
 		if info.Mode()&os.ModeSymlink != 0 || (!info.Mode().IsRegular() && !d.IsDir()) {
 			return nil // skip symlinks / sockets / devices
+		}
+		if !d.IsDir() && ig.isSecret(rel) {
+			ig.SkippedSecrets = append(ig.SkippedSecrets, filepath.ToSlash(rel))
+			return nil // never ship a likely secret to a cloud node by accident
 		}
 		hdr, herr := tar.FileInfoHeader(info, "")
 		if herr != nil {
