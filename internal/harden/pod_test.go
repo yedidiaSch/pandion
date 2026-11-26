@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -69,6 +70,9 @@ func bashSyntax(t *testing.T, script string) {
 // The entrypoint really decodes and runs the script from the env var, and the
 // readiness command reports a failed bootstrap with the log tail.
 func TestPodEntrypointAndReady(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runs the scripts with temp-dir paths; Windows paths don't survive bash (the script itself only ever runs in a Linux container)")
+	}
 	if _, err := exec.LookPath("bash"); err != nil {
 		t.Skip("bash not available")
 	}
