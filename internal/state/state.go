@@ -29,7 +29,9 @@ type Node struct {
 	Name     string `json:"name"`
 	ServerID string `json:"server_id,omitempty"`
 	IP       string `json:"ip,omitempty"`
-	Phase    Phase  `json:"phase"`
+	// SSHPort is the node's sshd port when it is not 22 (container providers).
+	SSHPort int   `json:"ssh_port,omitempty"`
+	Phase   Phase `json:"phase"`
 	// Launched is when Pandion asked the provider to create this node — the start
 	// of billing as far as Pandion can know. It is the fallback (or the earlier
 	// bound) for providers that report no creation time (Lambda), and it belongs

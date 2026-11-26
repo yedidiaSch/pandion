@@ -27,7 +27,7 @@ var clusterStarterTemplate []byte
 //	pandion init [--provider NAME] [--token TOK] [--region R] [--size S] [--ttl D] [--force]
 func runInit(args []string) {
 	fs := newCmdFlagSet("init")
-	provider := fs.String("provider", "", "default cloud provider (hetzner|digitalocean|vultr|linode|scaleway|lambda|mock; lambda is GPU-only)")
+	provider := fs.String("provider", "", "default cloud provider (hetzner|digitalocean|vultr|linode|scaleway|lambda|runpod|mock; lambda and runpod are GPU-only)")
 	token := fs.String("token", "", "API token to store (else prompted on a terminal)")
 	region := fs.String("region", "", "default region (optional)")
 	size := fs.String("size", "", "default server size/type, e.g. cpx21 (optional)")

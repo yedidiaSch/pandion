@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/yedidiaSch/pandion/internal/harden"
 	"github.com/yedidiaSch/pandion/internal/orchestrator"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
 	gossh "golang.org/x/crypto/ssh"
@@ -214,4 +215,31 @@ func egressLockdownNote() string {
 	return "  note: outbound connections from the node are now refused (apt/pip/curl/git fail with \"connection refused\").\n" +
 		"        install apt packages with --packages and other software with --setup (both run BEFORE the lockdown),\n" +
 		"        or allow specific destinations with --egress-allow host1,host2 (cluster.yaml: egress_allow).\n"
+}
+
+// containerPostureNote states what Pandion does and does NOT protect on a
+// container node, so nobody assumes the VM hardening is in place.
+func containerPostureNote(prov string) string {
+	return fmt.Sprintf("security on %s (container node): SSH is key-only with a host key Pandion generated and pins;\n"+
+		"  the workload runs as an unprivileged user and secrets are not synced.\n"+
+		"  NOT available in a container: egress lockdown (nftables), WireGuard overlay, idle poweroff,\n"+
+		"  fail2ban/auditd, LUKS. The node is reachable only over SSH, but outbound traffic is unrestricted,\n"+
+		"  and nothing powers it off — it bills until `pandion down`.\n", prov)
+}
+
+// waitPodReady connects to a container node (pinned) and waits for its bootstrap
+// (sshd → toolchain → packages → run user). It fails fast, with the bootstrap
+// log's tail, if the bootstrap reported a failure.
+func waitPodReady(ctx context.Context, node, addr string, signer gossh.Signer, pinned gossh.PublicKey, onAttempt func(int, string)) error {
+	statusln("connecting (host-key pinned; waiting for the container bootstrap: sshd, toolchain, packages)...")
+	stopHB := startHeartbeat("bootstrap on " + node)
+	defer stopHB()
+	if _, err := envssh.RunWithRetry(ctx, addr, "root", signer, pinned, "true", 5*time.Second, onAttempt); err != nil {
+		return fmt.Errorf("sshd never answered: %w", err)
+	}
+	if out, err := envssh.Run(ctx, addr, "root", signer, pinned, harden.PodReadyCmd()); err != nil {
+		return fmt.Errorf("bootstrap failed: %v\n%s", err, out)
+	}
+	statusln("node ready (bootstrap complete).")
+	return nil
 }

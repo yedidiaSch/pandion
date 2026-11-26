@@ -40,6 +40,7 @@ import (
 	"github.com/yedidiaSch/pandion/internal/provider/lambda"
 	"github.com/yedidiaSch/pandion/internal/provider/linode"
 	"github.com/yedidiaSch/pandion/internal/provider/mock"
+	"github.com/yedidiaSch/pandion/internal/provider/runpod"
 	"github.com/yedidiaSch/pandion/internal/provider/scaleway"
 	"github.com/yedidiaSch/pandion/internal/provider/vultr"
 	envssh "github.com/yedidiaSch/pandion/internal/ssh"
@@ -172,8 +173,16 @@ func newProvider(name string) (provider.Provider, error) {
 			return nil, err
 		}
 		return lambda.New(token), nil
+	case "runpod":
+		token, err := providerToken("runpod", "RUNPOD_API_KEY")
+		if err != nil {
+			return nil, err
+		}
+		// RUNPOD_CLOUD picks the tier: secure (default) | community. `up`/`list-gpus`
+		// set it from --cloud.
+		return runpod.New(token, runpod.WithCloud(os.Getenv("RUNPOD_CLOUD")))
 	default:
-		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway|lambda)", name)
+		return nil, fmt.Errorf("unknown provider %q (use mock|hetzner|digitalocean|vultr|linode|scaleway|lambda|runpod)", name)
 	}
 }
 
@@ -203,7 +212,7 @@ func applyUpDefaults(size, region string, ttl time.Duration, ttlSet, noTTL bool,
 func runUp(args []string) {
 	flagArgs, runCmd := splitRunCmd(args)
 	fs := newCmdFlagSet("up")
-	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda (aliases in parens; default: from `pandion init` or your credentials)")
+	prov := fs.String("provider", "", "provider: mock|hetzner|digitalocean(do)|vultr|linode(akamai)|scaleway(scw)|lambda|runpod (aliases in parens; default: from `pandion init` or your credentials)")
 	id := fs.String("id", "demo", "cluster id")
 	node := fs.String("node", "node-a", "node name")
 	noToolchain := fs.Bool("no-toolchain", false, "skip the built-in C++ toolchain (install only --packages, faster)")
@@ -235,6 +244,8 @@ func runUp(args []string) {
 	capAdd := fs.String("cap-add", "", "comma-separated capabilities to grant the workload (e.g. NET_RAW)")
 	provisionTimeout := fs.Duration("provision-timeout", 0, "how long the provider may take to boot the server before up gives up and rolls back (default 10m; 25m with --gpu — Lambda GPU boots take 2–15+ min)")
 	setupTimeout := fs.Duration("setup-timeout", 0, "budget for everything after the server boots: cloud-init, sync, --setup, build, firewall (default 30m)")
+	image := fs.String("image", "", "base image for the node, where the provider lets you choose one (runpod: the container image; default "+runpod.DefaultImage+")")
+	cloudTier := fs.String("cloud", "", "runpod: cloud tier, secure (default; RunPod data centers) or community (cheaper, community-hosted); also RUNPOD_CLOUD")
 	fShort, fLong := addFileFlag(fs, "", "cluster.yaml for a multi-node topology")
 	_ = fs.Parse(flagArgs)
 	file := func() *string { s := resolveFileFlag(fs, fShort, fLong); return &s }()
@@ -255,6 +266,7 @@ func runUp(args []string) {
 		fmt.Fprintln(os.Stderr, "no provider set. Run `pandion init`, or pass --provider=<name>.")
 		os.Exit(2)
 	}
+	applyCloudTier(*cloudTier)
 	p, err := newProvider(provName)
 	must(err)
 	o := orchestrator.New(p, mustStore())
@@ -294,6 +306,10 @@ func runUp(args []string) {
 	// defaulted from ~/.pandion/config.yaml by applyUpDefaults above), so
 	// cluster.yaml still beats an unset flag. A per-node override in the topology
 	// (more specific) still wins.
+	if *file != "" && provider.IsContainerHost(p) {
+		fmt.Fprintf(os.Stderr, "provider %q runs nodes as containers: multi-node clusters (-f, WireGuard mesh) are not supported there — use a single-node `up`\n", p.Name())
+		os.Exit(2)
+	}
 	if *file != "" {
 		ov := clusterFlagOverrides{}
 		if set["size"] {
@@ -354,6 +370,7 @@ func runUp(args []string) {
 			engine: *engine, containerImage: *containerImage, caps: capsFor(splitCSV(*capAdd), nil),
 			maxCost: *maxCost, lockPath: *lock, encryptWorkspace: *encWorkspace, noRun: *noRun,
 			provisionTimeout: *provisionTimeout, setupTimeout: *setupTimeout,
+			image: *image,
 		})
 	default:
 		// never silently no-op: a provider that resolves + prices but is missing
@@ -388,6 +405,7 @@ type hetznerUpOpts struct {
 	noRun            bool          // deploy only: don't launch the run command (start later)
 	provisionTimeout time.Duration // provider boot deadline; 0 = default (CPU/GPU)
 	setupTimeout     time.Duration // post-provision budget; 0 = default
+	image            string        // --image: node base image (container providers); "" = provider default
 }
 
 // clusterFlagOverrides carries the `up` flags that must win over cluster.yaml's
@@ -558,6 +576,26 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	provTimeout := provisionTimeoutFor(opt.provisionTimeout, opt.gpu.Wanted())
 	setupTimeout := setupTimeoutFor(opt.setupTimeout)
 
+	// Container providers (RunPod) have no cloud-init, systemd or CAP_NET_ADMIN:
+	// the node is bootstrapped by a shell script, and the VM-only protections
+	// (nftables lockdown, WireGuard overlay, idle poweroff, LUKS) don't apply.
+	pod := provider.IsContainerHost(o.P)
+	if pod {
+		if opt.engine == "docker" {
+			fmt.Fprintf(os.Stderr, "--engine docker is not available on %s: the node already IS a container (choose its image with --image)\n", prov)
+			os.Exit(2)
+		}
+		if opt.encryptWorkspace {
+			fmt.Fprintf(os.Stderr, "--encrypt-workspace is not available on %s: a container cannot create LUKS volumes\n", prov)
+			os.Exit(2)
+		}
+		if len(opt.egressAllow) > 0 || opt.firewallAudit {
+			fmt.Fprintf(os.Stderr, "--egress-allow/--firewall-audit have no effect on %s: a container cannot apply a host firewall\n", prov)
+			os.Exit(2)
+		}
+		opt.firewall, opt.overlay = false, false
+	}
+
 	// 1) generate the host key (to inject + pin) and the login key (S1)
 	host, err := sshkeys.Generate("pandion-host")
 	must(err)
@@ -616,6 +654,9 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	}
 	lockPkgs := append([]string(nil), ci.Packages...)
 	userData := harden.Build(ci)
+	if pod {
+		userData = harden.PodBootstrap(ci)
+	}
 
 	// --max-cost preflight (before spending a cent): the single node auto-discovers
 	// its type; project its hourly × TTL and refuse if it exceeds the cap.
@@ -654,21 +695,30 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	o.Progress = slowBootPrinter("  ", provTimeout, time.Now)
 	provCtx, provCancel := context.WithTimeout(context.Background(), provTimeout)
 	stopProvHB := startHeartbeat("provisioning " + node + " at " + prov)
-	c, err := o.UpSpec(provCtx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
+	c, err := o.UpSpec(provCtx, id, orchestrator.NodeSpec{Name: node, Type: opt.size, Image: opt.image, RegionPref: opt.regionPref, GPU: opt.gpu}, userData, login.PublicAuthorized)
 	stopProvHB()
 	provCancel()
 	if err != nil {
 		rollbackFailedProvision(o, prov, id, err) // never returns
 	}
-	ip := c.Nodes[0].IP
-	man.IP = ip
+	ip, sshPort := c.Nodes[0].IP, c.Nodes[0].SSHPort
+	man.IP, man.Port = ip, sshPort
 	saveMan() // reachable from here on: `pandion ssh/down/ls` work even if setup fails
+	addr := provider.SSHAddr(ip, sshPort)
 	audit.Event("provision", "id", id, "node", node, "provider", prov, "ip", ip, "engine", opt.engine)
+	shown := ip
+	if sshPort != 0 && sshPort != 22 {
+		shown = addr + " (ssh)"
+	}
 	fmt.Printf("UP (%s): cluster %q node %q running at %s (host fp %s)\n",
-		prov, c.ID, node, ip, host.Fingerprint())
-	// Surface the consequential silent default up front: the node powers ITSELF off
-	// after the idle TTL (P2.6) — otherwise a forgotten node just vanishes.
-	statusln(idleTTLNotice(opt.idleTTL))
+		prov, c.ID, node, shown, host.Fingerprint())
+	if pod {
+		fmt.Print(containerPostureNote(prov))
+	} else {
+		// Surface the consequential silent default up front: the node powers ITSELF
+		// off after the idle TTL (P2.6) — otherwise a forgotten node just vanishes.
+		statusln(idleTTLNotice(opt.idleTTL))
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), setupTimeout)
 	defer cancel()
@@ -682,20 +732,28 @@ func upHetzner(o *orchestrator.Orchestrator, opt hetznerUpOpts) {
 	//    window (until our key is installed, pinning rejects and we wait), and
 	//    `cloud-init status --wait` blocks until packages + hardening are applied
 	//    (S1/F4) — so the toolchain is READY before we run the user command.
-	addr := ip + ":22"
-	statusln("connecting (host-key pinned; waiting for cloud-init + toolchain)...")
 	onAttempt := func(n int, reason string) { fmt.Printf("  attempt %d: %s\n", n, reason) }
-	stopHB := startHeartbeat("cloud-init readiness on " + node)
-	_, rerr := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
-		"cloud-init status --wait || true", 5*time.Second, onAttempt)
-	stopHB()
-	if rerr != nil {
-		fmt.Fprintf(os.Stderr, "readiness gate failed: %v (node left running for debugging)\n", rerr)
-		stageDeadlineHint("cloud-init readiness", rerr, prov, id)
-		liveNodeHints(prov, id)
-		os.Exit(codeInfraDegraded)
+	if pod {
+		if rerr := waitPodReady(ctx, node, addr, login.Signer, host.Public, onAttempt); rerr != nil {
+			fmt.Fprintf(os.Stderr, "readiness gate failed: %v (node left running for debugging)\n", rerr)
+			stageDeadlineHint("bootstrap", rerr, prov, id)
+			liveNodeHints(prov, id)
+			os.Exit(codeInfraDegraded)
+		}
+	} else {
+		statusln("connecting (host-key pinned; waiting for cloud-init + toolchain)...")
+		stopHB := startHeartbeat("cloud-init readiness on " + node)
+		_, rerr := envssh.RunWithRetry(ctx, addr, "root", login.Signer, host.Public,
+			"cloud-init status --wait || true", 5*time.Second, onAttempt)
+		stopHB()
+		if rerr != nil {
+			fmt.Fprintf(os.Stderr, "readiness gate failed: %v (node left running for debugging)\n", rerr)
+			stageDeadlineHint("cloud-init readiness", rerr, prov, id)
+			liveNodeHints(prov, id)
+			os.Exit(codeInfraDegraded)
+		}
+		statusln("node ready (cloud-init complete).")
 	}
-	statusln("node ready (cloud-init complete).")
 
 	// reproducibility (H2): record the resolved toolchain versions so a later
 	// `up --lock ~/.pandion/lock/<id>.json` reproduces this environment.
@@ -1440,7 +1498,9 @@ func runListGPUs(args []string) {
 	prov := fs.String("provider", "", "provider to query (default: from `pandion init` or your credentials)")
 	asJSON := fs.Bool("json", false, "machine-readable output")
 	refresh := fs.Bool("refresh", false, "bypass the local cache and re-fetch the live catalog")
+	cloudTier := fs.String("cloud", "", "runpod: cloud tier to list, secure (default) or community; also RUNPOD_CLOUD")
 	_ = fs.Parse(args)
+	applyCloudTier(*cloudTier)
 
 	provName := resolveProvider(*prov)
 	if provName == "" {
@@ -1458,7 +1518,9 @@ func runListGPUs(args []string) {
 	// `up` always resolves live at create, so a stale cache can't launch the wrong SKU.
 	const gpuCacheTTL = 6 * time.Hour
 	var offers []provider.GPUOffering
-	if !*refresh {
+	// RunPod availability moves minute to minute (and differs per cloud tier), so
+	// its list is always live.
+	if !*refresh && p.Name() != "runpod" {
 		offers, _ = gpucache.Load(envHome(), p.Name(), gpuCacheTTL)
 	}
 	if offers == nil {
@@ -2407,4 +2469,12 @@ func containsAny(s string, subs ...string) bool {
 		}
 	}
 	return false
+}
+
+// applyCloudTier exports --cloud as RUNPOD_CLOUD for the provider constructor
+// (an explicit flag wins over the environment).
+func applyCloudTier(tier string) {
+	if t := strings.TrimSpace(tier); t != "" {
+		os.Setenv("RUNPOD_CLOUD", t)
+	}
 }

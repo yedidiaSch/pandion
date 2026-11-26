@@ -7,6 +7,14 @@ versions follow [SemVer](https://semver.org). Each released version's artifacts 
 ## [Unreleased]
 
 ### Added
+- **RunPod provider (`--provider runpod`).** Per-second-billed GPU pods through RunPod's REST
+  API v2, with `list-gpus` (live availability), `--dry-run`/`--max-cost` pricing, `--cloud
+  secure|community`, `--image`, `ls`, `down` and `reap`. Pods are containers, so the node is
+  bootstrapped by a shell script instead of cloud-init (sshd with a Pandion-generated pinned
+  host key, toolchain, `--packages`, run user) and reached on its mapped SSH port; Pandion now
+  carries a per-node SSH port through the journal, the manifest, and `ssh`/`cp`/`code`/`start`/
+  `attach`. The VM-only protections (egress lockdown, WireGuard, idle poweroff, LUKS, multi-node
+  clusters) are unavailable there; `up` says so, and refuses the flags that would imply them.
 - **`pandion doctor` — reconcile local state against the provider.** The crash-consistent
   journal was written but never read back, so stale or leaked state was invisible. `doctor`
   walks `~/.pandion/{state,keys}`, reconciles each cluster against its provider (when the

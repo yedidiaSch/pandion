@@ -14,9 +14,9 @@ import (
 )
 
 // cloudProviders is the canonical set (mock is offline and always available).
-// lambda is GPU-only: it resolves for `--gpu`/`list-gpus` and errors clearly on a
+// lambda and runpod are GPU-only: they resolve for `--gpu`/`list-gpus` and errors clearly on a
 // plain CPU `up`.
-var cloudProviders = []string{"hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda"}
+var cloudProviders = []string{"hetzner", "digitalocean", "vultr", "linode", "scaleway", "lambda", "runpod"}
 
 // isCloudProvider reports whether a canonical provider name is one of the real
 // cloud backends (i.e. takes the hardened `up` flow). Derived from cloudProviders

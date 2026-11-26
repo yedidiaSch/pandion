@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -106,18 +107,36 @@ func runSSH(args []string) {
 // connInfo holds the pinned-connection parameters shared by ssh + cp.
 type connInfo struct {
 	addr    string
+	port    int // sshd port; 0 = 22
 	keyPath string
 	khPath  string
 }
 
-// opts returns the common openssh options (identity + host-key pinning).
-func (c connInfo) opts() []string {
-	return []string{
+// opts returns the common openssh options (identity + host-key pinning) for ssh;
+// scpOpts the same for scp, whose port flag is -P.
+func (c connInfo) opts() []string    { return c.baseOpts("-p") }
+func (c connInfo) scpOpts() []string { return c.baseOpts("-P") }
+
+func (c connInfo) baseOpts(portFlag string) []string {
+	o := []string{
 		"-i", c.keyPath,
 		"-o", "IdentitiesOnly=yes",
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "UserKnownHostsFile=" + c.khPath,
 	}
+	if c.port != 0 && c.port != 22 {
+		o = append(o, portFlag, strconv.Itoa(c.port))
+	}
+	return o
+}
+
+// knownHostsAddr is the known_hosts host field: bare for port 22, "[host]:port"
+// otherwise (OpenSSH's format, so a mapped port is still pinned).
+func knownHostsAddr(host string, port int) string {
+	if port == 0 || port == 22 {
+		return host
+	}
+	return "[" + host + "]:" + strconv.Itoa(port)
 }
 
 // dialInfo resolves the node address, the persisted login key, and a throwaway
@@ -143,13 +162,17 @@ func dialInfo(cmdName, id string, target nodeManifest, useOverlay bool) (connInf
 		fmt.Fprintf(os.Stderr, "%s: login key not found (%s): %v\n", cmdName, keyPath, err)
 		os.Exit(3)
 	}
+	port := 0
+	if !useOverlay {
+		port = target.Port // container providers publish sshd on a mapped port
+	}
 	kh, err := os.CreateTemp("", "pandion-known-hosts-*")
 	must(err)
-	if _, err := kh.WriteString(knownHostsLine(addr, target.HostPub)); err != nil {
+	if _, err := kh.WriteString(knownHostsLine(knownHostsAddr(addr, port), target.HostPub)); err != nil {
 		must(err)
 	}
 	kh.Close()
-	return connInfo{addr: addr, keyPath: keyPath, khPath: kh.Name()}, func() { os.Remove(kh.Name()) }
+	return connInfo{addr: addr, port: port, keyPath: keyPath, khPath: kh.Name()}, func() { os.Remove(kh.Name()) }
 }
 
 // runClient execs an openssh-family client (ssh/scp), wiring stdio through and
@@ -202,7 +225,7 @@ func runCP(args []string) {
 	conn, cleanup := dialInfo("cp", *id, target, useOverlay)
 	defer cleanup()
 
-	runClient("scp", append(conn.opts(), "-p", scpEndpoint(conn.addr, src), scpEndpoint(conn.addr, dst)))
+	runClient("scp", append(conn.scpOpts(), "-p", scpEndpoint(conn.addr, src), scpEndpoint(conn.addr, dst)))
 }
 
 // scpEndpoint rewrites a ":"-prefixed node path to scp's root@addr:path form;
@@ -237,7 +260,7 @@ func writeClusterKnownHosts(path string, nodes []nodeManifest) error {
 	var b strings.Builder
 	for _, n := range nodes {
 		if n.IP != "" {
-			b.WriteString(knownHostsLine(n.IP, n.HostPub))
+			b.WriteString(knownHostsLine(knownHostsAddr(n.IP, n.Port), n.HostPub))
 		}
 		if n.OverlayIP != "" {
 			b.WriteString(knownHostsLine(n.OverlayIP, n.HostPub))
@@ -293,6 +316,9 @@ func runCode(args []string) {
 
 	alias := "pandion-" + *id + "-" + target.Name
 	block := sshConfigBlock(alias, addr, keyPath, khPath)
+	if !useOverlay && target.Port != 0 && target.Port != 22 {
+		block += fmt.Sprintf("    Port %d\n", target.Port)
+	}
 
 	printUsage := func() {
 		fmt.Println("\n# One-time: add this line to ~/.ssh/config")

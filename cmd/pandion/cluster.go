@@ -377,6 +377,7 @@ const operatorOverlayIP = "10.99.0.254"
 type nodeManifest struct {
 	Name      string `json:"name"`
 	IP        string `json:"ip"`
+	Port      int    `json:"port,omitempty"` // sshd port when not 22 (container providers)
 	OverlayIP string `json:"overlay_ip"`
 	HostPub   string `json:"host_pub"`         // authorized-keys line, to pin
 	L2IP      string `json:"l2_ip,omitempty"`  // Layer-2 overlay IP (security.overlay: l2)
@@ -391,6 +392,9 @@ type nodeManifest struct {
 	RunUser      string   `json:"run_user,omitempty"`      // unprivileged user to run as
 	Caps         []string `json:"caps,omitempty"`          // capabilities to grant back
 }
+
+// sshAddr is the node's public sshd address (its mapped port on container providers).
+func (n nodeManifest) sshAddr() string { return provider.SSHAddr(n.IP, n.Port) }
 
 // l2Segment records the cluster's Layer-2 overlay (security.overlay: l2).
 type l2Segment struct {
@@ -1281,10 +1285,10 @@ func attachCluster(id string) error {
 			continue
 		}
 		wg.Add(1)
-		go func(name, ip string, pk gossh.PublicKey) {
+		go func(name, addr string, pk gossh.PublicKey) {
 			defer wg.Done()
-			tailLog(ctx, ip+":22", signer, pk, name, printer)
-		}(n.Name, n.IP, pinned)
+			tailLog(ctx, addr, signer, pk, name, printer)
+		}(n.Name, n.sshAddr(), pinned)
 	}
 	wg.Wait()
 	return nil

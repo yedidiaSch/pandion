@@ -77,7 +77,7 @@ func startCluster(id, only string, detach bool) error {
 		} else {
 			runShell = runAs(n.RunUser, n.Workdir, n.Run, n.Caps)
 		}
-		if err := launchRun(ctx, n.IP+":22", signer, pinned, runShell); err != nil {
+		if err := launchRun(ctx, n.sshAddr(), signer, pinned, runShell); err != nil {
 			return fmt.Errorf("launch on %s failed: %w", n.Name, err)
 		}
 		audit.Event("start", "id", id, "node", n.Name)
@@ -106,10 +106,10 @@ func startCluster(id, only string, detach bool) error {
 	for _, n := range sel {
 		pinned, _ := parsePinned(n.HostPub) // already validated above
 		wg.Add(1)
-		go func(name, ip string, pk gossh.PublicKey) {
+		go func(name, addr string, pk gossh.PublicKey) {
 			defer wg.Done()
-			tailLog(streamCtx, ip+":22", signer, pk, name, printer)
-		}(n.Name, n.IP, pinned)
+			tailLog(streamCtx, addr, signer, pk, name, printer)
+		}(n.Name, n.sshAddr(), pinned)
 	}
 	wg.Wait()
 	return nil
