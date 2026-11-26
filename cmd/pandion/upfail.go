@@ -180,6 +180,32 @@ func progressPrinter(prefix string) func(string) {
 	return func(msg string) { statusln(prefix + msg) }
 }
 
+// slowBootAfter is when a still-booting server earns the one-time slow-boot hint.
+// A var so tests can shorten it.
+var slowBootAfter = 10 * time.Minute
+
+// slowBootPrinter is progressPrinter plus a ONE-TIME hint once the boot passes
+// slowBootAfter: the same GPU type has booted in 4 minutes and in 24 on Lambda,
+// so a slow boot isn't necessarily stuck — but the operator should know the
+// deadline, that a timeout rolls back automatically, and what to try next.
+func slowBootPrinter(prefix string, deadline time.Duration, now func() time.Time) func(string) {
+	start := now()
+	hinted := false
+	return func(msg string) {
+		statusln(prefix + msg)
+		if !hinted && now().Sub(start) >= slowBootAfter {
+			hinted = true
+			statusln(prefix + slowBootHint(now().Sub(start), deadline))
+		}
+	}
+}
+
+func slowBootHint(elapsed, deadline time.Duration) string {
+	return fmt.Sprintf("slow boot: %s so far (deadline %s). GPU boots vary a lot (4–24+ min seen on Lambda); "+
+		"if it times out, the server is destroyed automatically — then retry with fallback regions "+
+		"(--region a,b) or a longer --provision-timeout (e.g. 40m).", shortDur(elapsed.Round(time.Minute)), shortDur(deadline))
+}
+
 // egressLockdownNote explains what the egress default-deny means for later work
 // on the node (#8): anything that reaches out (apt, pip, curl, git clone) over
 // `pandion ssh` is now refused, and names the flags that install software before
